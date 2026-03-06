@@ -1,0 +1,18 @@
+{
+  "expo": {
+    "name": "Solar Lead Mobile",
+    "slug": "solar-lead-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "android": {
+      "package": "com.solar.leadmobile"
+    },
+    "ios": {
+      "bundleIdentifier": "com.solar.leadmobile"
+    }
+  }
+}
+

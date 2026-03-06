@@ -1,0 +1,149 @@
+import { api } from "./api";
+
+export type LeadDocumentUploadFile = {
+  uri: string;
+  fileName: string;
+  fileType: string;
+  fileSize: number;
+};
+
+type UploadProgressCallback = (progressPercent: number) => void;
+
+type UploadLeadDocumentInput = {
+  leadId: string;
+  category: string;
+  file: LeadDocumentUploadFile;
+  onProgress?: UploadProgressCallback;
+  maxAttempts?: number;
+};
+
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function normalizeCategory(category: string) {
+  const normalized = category.trim().toLowerCase().replace(/\s+/g, "_");
+  if (normalized.length >= 2) {
+    return normalized.slice(0, 80);
+  }
+  return "general";
+}
+
+function inferMimeType(fileName: string, fileType?: string) {
+  if (fileType && fileType !== "application/octet-stream") {
+    return fileType;
+  }
+
+  const lower = fileName.toLowerCase();
+  if (lower.endsWith(".pdf")) return "application/pdf";
+  if (lower.endsWith(".png")) return "image/png";
+  if (lower.endsWith(".webp")) return "image/webp";
+  if (lower.endsWith(".heic")) return "image/heic";
+  if (lower.endsWith(".heif")) return "image/heif";
+  return "image/jpeg";
+}
+
+function extractErrorMessage(error: unknown, fallback: string) {
+  const value = error as {
+    response?: { data?: { message?: string } };
+    message?: string;
+  };
+  return value?.response?.data?.message || value?.message || fallback;
+}
+
+async function readBlobFromUri(uri: string) {
+  const response = await fetch(uri);
+  if (!response.ok) {
+    throw new Error("Unable to read selected file from local device.");
+  }
+  return response.blob();
+}
+
+async function uploadBlobToS3(
+  uploadUrl: string,
+  fileType: string,
+  blob: Blob,
+  onProgress?: UploadProgressCallback
+) {
+  return new Promise<void>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("PUT", uploadUrl);
+    xhr.setRequestHeader("Content-Type", fileType);
+
+    xhr.upload.onprogress = (event) => {
+      if (!onProgress || !event.lengthComputable) return;
+      const ratio = event.total > 0 ? event.loaded / event.total : 0;
+      onProgress(Math.max(1, Math.min(99, Math.round(ratio * 100))));
+    };
+
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        if (onProgress) onProgress(100);
+        resolve();
+        return;
+      }
+      reject(new Error(`S3 upload failed (${xhr.status})`));
+    };
+
+    xhr.onerror = () => {
+      reject(new Error("S3 upload failed due to network error."));
+    };
+
+    xhr.onabort = () => {
+      reject(new Error("S3 upload was aborted."));
+    };
+
+    xhr.send(blob);
+  });
+}
+
+export async function uploadLeadDocument(input: UploadLeadDocumentInput) {
+  const maxAttempts = input.maxAttempts ?? 2;
+  const category = normalizeCategory(input.category);
+  const fileType = inferMimeType(input.file.fileName, input.file.fileType);
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      if (input.onProgress) input.onProgress(1);
+
+      const blob = await readBlobFromUri(input.file.uri);
+      const resolvedFileSize =
+        input.file.fileSize && input.file.fileSize > 0 ? input.file.fileSize : blob.size;
+
+      const presignResp = await api.post(`/api/leads/${input.leadId}/documents/presign`, {
+        category,
+        fileName: input.file.fileName,
+        fileType,
+        fileSize: resolvedFileSize
+      });
+
+      const uploadUrl = presignResp.data?.data?.uploadUrl as string | undefined;
+      const s3Key = presignResp.data?.data?.s3Key as string | undefined;
+      if (!uploadUrl || !s3Key) {
+        throw new Error("Invalid presign response from server.");
+      }
+
+      await uploadBlobToS3(uploadUrl, fileType, blob, input.onProgress);
+
+      const completeResp = await api.post(`/api/leads/${input.leadId}/documents/complete`, {
+        category,
+        s3Key,
+        fileName: input.file.fileName,
+        fileType,
+        fileSize: resolvedFileSize
+      });
+
+      return completeResp.data?.data;
+    } catch (error) {
+      lastError = error;
+      if (attempt < maxAttempts) {
+        await delay(attempt * 600);
+      }
+    }
+  }
+
+  throw new Error(
+    extractErrorMessage(lastError, "Unable to upload document after retries.")
+  );
+}

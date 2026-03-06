@@ -1,0 +1,229 @@
+import React, { useEffect, useMemo } from "react";
+import { ActivityIndicator, AppState, Pressable, Text, View } from "react-native";
+import { NavigationContainer, DefaultTheme as NavigationDefaultTheme } from "@react-navigation/native";
+import { createNativeStackNavigator } from "@react-navigation/native-stack";
+import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
+import { Ionicons } from "@expo/vector-icons";
+import NetInfo from "@react-native-community/netinfo";
+import { LoginScreen } from "./screens/LoginScreen";
+import { LeadListScreen } from "./screens/LeadListScreen";
+import { LeadCreateScreen } from "./screens/LeadCreateScreen";
+import { LeadDetailScreen } from "./screens/LeadDetailScreen";
+import { CustomerDetailsScreen } from "./screens/CustomerDetailsScreen";
+import { HomeScreen } from "./screens/HomeScreen";
+import { NotificationsScreen } from "./screens/NotificationsScreen";
+import { ProfileScreen } from "./screens/ProfileScreen";
+import { BiometricUnlockScreen } from "./screens/BiometricUnlockScreen";
+import { useAuthStore } from "./store/auth-store";
+import { useQueueStore } from "./store/queue-store";
+import { usePreferencesStore } from "./store/preferences-store";
+import { AppPalette, getPalette, radius } from "./ui/theme";
+
+type AuthStackParamList = {
+  Login: undefined;
+};
+
+type LeadsStackParamList = {
+  LeadList: undefined;
+  LeadCreate: undefined;
+  LeadDetail: { leadId: string };
+  CustomerDetails: { leadId: string; leadName?: string };
+};
+
+type RootTabParamList = {
+  Home: undefined;
+  Leads: undefined;
+  Notifications: undefined;
+  Profile: undefined;
+};
+
+const AuthStack = createNativeStackNavigator<AuthStackParamList>();
+const LeadsStack = createNativeStackNavigator<LeadsStackParamList>();
+const Tab = createBottomTabNavigator<RootTabParamList>();
+
+function LeadsNavigator({ colors }: { colors: AppPalette }) {
+  return (
+    <LeadsStack.Navigator
+      screenOptions={{
+        headerStyle: { backgroundColor: colors.surface },
+        headerTintColor: colors.text,
+        headerTitleStyle: { fontWeight: "700" }
+      }}
+    >
+      <LeadsStack.Screen
+        name="LeadList"
+        component={LeadListScreen}
+        options={({ navigation }) => ({
+          title: "Leads",
+          headerRight: () => (
+            <Pressable onPress={() => navigation.navigate("LeadCreate")}>
+              <Text style={{ color: colors.primary, fontWeight: "700" }}>New</Text>
+            </Pressable>
+          )
+        })}
+      />
+      <LeadsStack.Screen name="LeadCreate" component={LeadCreateScreen} options={{ title: "Create Lead" }} />
+      <LeadsStack.Screen name="LeadDetail" component={LeadDetailScreen} options={{ title: "Lead Detail" }} />
+      <LeadsStack.Screen
+        name="CustomerDetails"
+        component={CustomerDetailsScreen}
+        options={{ title: "Customer Details" }}
+      />
+    </LeadsStack.Navigator>
+  );
+}
+
+function MainTabs({ colors }: { colors: AppPalette }) {
+  return (
+    <Tab.Navigator
+      screenOptions={({ route }) => ({
+        headerStyle: { backgroundColor: colors.surface },
+        headerTintColor: colors.text,
+        headerTitleStyle: { fontWeight: "700" },
+        tabBarActiveTintColor: colors.primary,
+        tabBarInactiveTintColor: colors.textMuted,
+        tabBarStyle: {
+          borderTopColor: colors.border,
+          backgroundColor: colors.surface,
+          height: 62,
+          paddingTop: 6,
+          paddingBottom: 8
+        },
+        tabBarIcon: ({ focused, color, size }) => {
+          const iconName =
+            route.name === "Home"
+              ? focused
+                ? "home"
+                : "home-outline"
+              : route.name === "Leads"
+                ? focused
+                  ? "list"
+                  : "list-outline"
+                : route.name === "Notifications"
+                  ? focused
+                    ? "notifications"
+                    : "notifications-outline"
+                  : focused
+                    ? "person"
+                    : "person-outline";
+          return <Ionicons name={iconName} size={size} color={color} />;
+        }
+      })}
+    >
+      <Tab.Screen name="Home" component={HomeScreen} />
+      <Tab.Screen name="Leads" options={{ headerShown: false }}>
+        {() => <LeadsNavigator colors={colors} />}
+      </Tab.Screen>
+      <Tab.Screen name="Notifications" component={NotificationsScreen} />
+      <Tab.Screen name="Profile" component={ProfileScreen} />
+    </Tab.Navigator>
+  );
+}
+
+function AuthNavigator() {
+  return (
+    <AuthStack.Navigator screenOptions={{ headerShown: false }}>
+      <AuthStack.Screen name="Login" component={LoginScreen} />
+    </AuthStack.Navigator>
+  );
+}
+
+function BootScreen({ colors }: { colors: AppPalette }) {
+  return (
+    <View
+      style={{
+        flex: 1,
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 12,
+        backgroundColor: colors.background
+      }}
+    >
+      <View
+        style={{
+          backgroundColor: colors.surface,
+          borderRadius: radius.lg,
+          borderWidth: 1,
+          borderColor: colors.border,
+          padding: 20,
+          alignItems: "center",
+          minWidth: 220
+        }}
+      >
+        <ActivityIndicator size="large" color={colors.primary} />
+        <Text style={{ marginTop: 10, color: colors.text }}>Loading session...</Text>
+      </View>
+    </View>
+  );
+}
+
+export default function App() {
+  const themeMode = usePreferencesStore((s) => s.themeMode);
+  const prefsHydrated = usePreferencesStore((s) => s.hydrated);
+  const hydratePreferences = usePreferencesStore((s) => s.hydrate);
+
+  const user = useAuthStore((s) => s.user);
+  const isBootstrapping = useAuthStore((s) => s.isBootstrapping);
+  const biometricEnabled = useAuthStore((s) => s.biometricEnabled);
+  const isBiometricUnlocked = useAuthStore((s) => s.isBiometricUnlocked);
+  const bootstrap = useAuthStore((s) => s.bootstrap);
+  const unlockWithBiometric = useAuthStore((s) => s.unlockWithBiometric);
+  const lockBiometric = useAuthStore((s) => s.lockBiometric);
+  const logout = useAuthStore((s) => s.logout);
+
+  const hydrate = useQueueStore((s) => s.hydrate);
+  const flush = useQueueStore((s) => s.flush);
+
+  const colors = useMemo(() => getPalette(themeMode), [themeMode]);
+  const navTheme = useMemo(
+    () => ({
+      ...NavigationDefaultTheme,
+      colors: {
+        ...NavigationDefaultTheme.colors,
+        background: colors.background,
+        card: colors.surface,
+        text: colors.text,
+        border: colors.border,
+        primary: colors.primary
+      }
+    }),
+    [colors]
+  );
+
+  useEffect(() => {
+    void hydratePreferences();
+    void bootstrap();
+    void hydrate();
+
+    const netUnsub = NetInfo.addEventListener((state) => {
+      if (state.isConnected) {
+        void flush();
+      }
+    });
+
+    const appStateSub = AppState.addEventListener("change", (nextState) => {
+      if (nextState !== "active") {
+        lockBiometric();
+      }
+    });
+
+    return () => {
+      netUnsub();
+      appStateSub.remove();
+    };
+  }, [bootstrap, flush, hydrate, hydratePreferences, lockBiometric]);
+
+  if (isBootstrapping || !prefsHydrated) {
+    return <BootScreen colors={colors} />;
+  }
+
+  if (user && biometricEnabled && !isBiometricUnlocked) {
+    return <BiometricUnlockScreen onUnlock={unlockWithBiometric} onLogout={logout} />;
+  }
+
+  return (
+    <NavigationContainer theme={navTheme}>
+      {user ? <MainTabs colors={colors} /> : <AuthNavigator />}
+    </NavigationContainer>
+  );
+}

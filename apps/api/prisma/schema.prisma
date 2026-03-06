@@ -1,0 +1,404 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum UserStatus {
+  ACTIVE    @map("active")
+  PENDING   @map("pending")
+  SUSPENDED @map("suspended")
+}
+
+enum UserRole {
+  SUPER_ADMIN @map("super_admin")
+  ADMIN       @map("admin")
+  MANAGER     @map("manager")
+  EXECUTIVE   @map("executive")
+}
+
+enum DocumentReviewStatus {
+  PENDING  @map("pending")
+  VERIFIED @map("verified")
+  REJECTED @map("rejected")
+}
+
+enum PaymentStatus {
+  PENDING  @map("pending")
+  VERIFIED @map("verified")
+  REJECTED @map("rejected")
+}
+
+enum PaymentMethod {
+  UPI_GATEWAY @map("upi_gateway")
+  QR_UTR      @map("qr_utr")
+}
+
+enum NotificationChannel {
+  SMS      @map("sms")
+  EMAIL    @map("email")
+  WHATSAPP @map("whatsapp")
+  PUSH     @map("push")
+}
+
+enum DevicePlatform {
+  WEB
+  ANDROID
+  IOS
+}
+
+model User {
+  id               String                   @id @default(uuid()) @db.Uuid
+  email            String                   @unique
+  passwordHash     String                   @map("password_hash")
+  fullName         String                   @map("full_name")
+  phone            String?
+  role             UserRole
+  employeeId       String?                  @unique @map("employee_id")
+  status           UserStatus               @default(PENDING)
+  createdAt        DateTime                 @default(now()) @map("created_at")
+  updatedAt        DateTime                 @updatedAt @map("updated_at")
+  lastLoginAt      DateTime?                @map("last_login_at")
+  districts        UserDistrictAssignment[]
+  assignedAsExec   Lead[]                   @relation("LeadAssignedExecutive")
+  assignedAsMgr    Lead[]                   @relation("LeadAssignedManager")
+  statusHistory    LeadStatusHistory[]
+  uploadedDocs     Document[]               @relation("DocumentsUploadedBy")
+  reviewedDocs     Document[]               @relation("DocumentsReviewedBy")
+  collectedPayment Payment[]                @relation("PaymentCollectedBy")
+  verifiedPayment  Payment[]                @relation("PaymentVerifiedBy")
+  auditLogs        AuditLog[]
+  deviceTokens     UserDeviceToken[]
+
+  @@index([role, status])
+  @@index([status])
+  @@map("users")
+}
+
+model District {
+  id              String                   @id @default(uuid()) @db.Uuid
+  name            String
+  state           String
+  isActive        Boolean                  @default(true) @map("is_active")
+  createdAt       DateTime                 @default(now()) @map("created_at")
+  assignments     UserDistrictAssignment[]
+  leads           Lead[]
+  customerDetails CustomerDetail[]
+
+  @@unique([name, state])
+  @@index([state, isActive])
+  @@map("districts")
+}
+
+model UserDistrictAssignment {
+  id         String   @id @default(uuid()) @db.Uuid
+  userId     String   @map("user_id") @db.Uuid
+  districtId String   @map("district_id") @db.Uuid
+  assignedAt DateTime @default(now()) @map("assigned_at")
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  district   District @relation(fields: [districtId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, districtId])
+  @@index([districtId])
+  @@index([userId])
+  @@map("user_district_assignments")
+}
+
+model UserDeviceToken {
+  id         String         @id @default(uuid()) @db.Uuid
+  userId     String         @map("user_id") @db.Uuid
+  token      String         @unique
+  platform   DevicePlatform
+  deviceId   String?        @map("device_id")
+  appVersion String?        @map("app_version")
+  createdAt  DateTime       @default(now()) @map("created_at")
+  updatedAt  DateTime       @updatedAt @map("updated_at")
+  lastSeenAt DateTime       @default(now()) @map("last_seen_at")
+  user       User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, token])
+  @@index([userId, platform])
+  @@map("user_device_tokens")
+}
+
+model LeadStatus {
+  id                     String                 @id @default(uuid()) @db.Uuid
+  name                   String                 @unique
+  description            String?
+  orderIndex             Int                    @map("order_index")
+  isTerminal             Boolean                @default(false) @map("is_terminal")
+  slaDurationHours       Int?                   @map("sla_duration_hours")
+  colorCode              String?                @map("color_code")
+  requiresNote           Boolean                @default(false) @map("requires_note")
+  requiresDocument       Boolean                @default(false) @map("requires_document")
+  notifyCustomer         Boolean                @default(false) @map("notify_customer")
+  notificationTemplateId String?                @map("notification_template_id") @db.Uuid
+  createdAt              DateTime               @default(now()) @map("created_at")
+  updatedAt              DateTime               @updatedAt @map("updated_at")
+  notificationTemplate   NotificationTemplate?  @relation(fields: [notificationTemplateId], references: [id], onDelete: SetNull)
+  fromTransitions        LeadStatusTransition[] @relation("StatusTransitionFrom")
+  toTransitions          LeadStatusTransition[] @relation("StatusTransitionTo")
+  leads                  Lead[]
+  fromHistory            LeadStatusHistory[]    @relation("StatusHistoryFrom")
+  toHistory              LeadStatusHistory[]    @relation("StatusHistoryTo")
+
+  @@index([orderIndex])
+  @@index([isTerminal])
+  @@map("lead_statuses")
+}
+
+model LeadStatusTransition {
+  id           String     @id @default(uuid()) @db.Uuid
+  fromStatusId String     @map("from_status_id") @db.Uuid
+  toStatusId   String     @map("to_status_id") @db.Uuid
+  fromStatus   LeadStatus @relation("StatusTransitionFrom", fields: [fromStatusId], references: [id], onDelete: Cascade)
+  toStatus     LeadStatus @relation("StatusTransitionTo", fields: [toStatusId], references: [id], onDelete: Cascade)
+
+  @@unique([fromStatusId, toStatusId])
+  @@index([fromStatusId])
+  @@index([toStatusId])
+  @@map("lead_status_transitions")
+}
+
+model Lead {
+  id                  String              @id @default(uuid()) @db.Uuid
+  externalId          String              @unique @default(uuid()) @map("external_id") @db.Uuid
+  name                String
+  phone               String
+  email               String?
+  monthlyBill         Decimal?            @map("monthly_bill") @db.Decimal(12, 2)
+  districtId          String              @map("district_id") @db.Uuid
+  state               String?
+  installationType    String?             @map("installation_type")
+  message             String?
+  currentStatusId     String              @map("current_status_id") @db.Uuid
+  assignedExecutiveId String?             @map("assigned_executive_id") @db.Uuid
+  assignedManagerId   String?             @map("assigned_manager_id") @db.Uuid
+  utmSource           String?             @map("utm_source")
+  utmMedium           String?             @map("utm_medium")
+  utmCampaign         String?             @map("utm_campaign")
+  utmTerm             String?             @map("utm_term")
+  utmContent          String?             @map("utm_content")
+  sourceIp            String?             @map("source_ip")
+  recaptchaScore      Decimal?            @map("recaptcha_score") @db.Decimal(5, 4)
+  consentGiven        Boolean             @default(false) @map("consent_given")
+  consentTimestamp    DateTime?           @map("consent_timestamp")
+  isOverdue           Boolean             @default(false) @map("is_overdue")
+  createdAt           DateTime            @default(now()) @map("created_at")
+  updatedAt           DateTime            @updatedAt @map("updated_at")
+  district            District            @relation(fields: [districtId], references: [id])
+  currentStatus       LeadStatus          @relation(fields: [currentStatusId], references: [id])
+  assignedExecutive   User?               @relation("LeadAssignedExecutive", fields: [assignedExecutiveId], references: [id], onDelete: SetNull)
+  assignedManager     User?               @relation("LeadAssignedManager", fields: [assignedManagerId], references: [id], onDelete: SetNull)
+  statusHistory       LeadStatusHistory[]
+  customerDetail      CustomerDetail?
+  documents           Document[]
+  payments            Payment[]
+  notificationLogs    NotificationLog[]
+  loanDetails         LoanDetail?
+
+  @@index([districtId])
+  @@index([currentStatusId])
+  @@index([assignedExecutiveId])
+  @@index([assignedManagerId])
+  @@index([districtId, currentStatusId])
+  @@index([assignedExecutiveId, currentStatusId])
+  @@index([createdAt])
+  @@index([phone])
+  @@index([email])
+  @@map("leads")
+}
+
+model LeadStatusHistory {
+  id              String      @id @default(uuid()) @db.Uuid
+  leadId          String      @map("lead_id") @db.Uuid
+  fromStatusId    String?     @map("from_status_id") @db.Uuid
+  toStatusId      String      @map("to_status_id") @db.Uuid
+  changedByUserId String      @map("changed_by_user_id") @db.Uuid
+  notes           String?
+  createdAt       DateTime    @default(now()) @map("created_at")
+  lead            Lead        @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  fromStatus      LeadStatus? @relation("StatusHistoryFrom", fields: [fromStatusId], references: [id], onDelete: SetNull)
+  toStatus        LeadStatus  @relation("StatusHistoryTo", fields: [toStatusId], references: [id])
+  changedByUser   User        @relation(fields: [changedByUserId], references: [id])
+
+  @@index([leadId])
+  @@index([leadId, createdAt])
+  @@index([changedByUserId])
+  @@map("lead_status_history")
+}
+
+model CustomerDetail {
+  id                   String    @id @default(uuid()) @db.Uuid
+  leadId               String    @unique @map("lead_id") @db.Uuid
+  fullName             String    @map("full_name")
+  dateOfBirth          DateTime? @map("date_of_birth")
+  gender               String?
+  fatherHusbandName    String?   @map("father_husband_name")
+  aadhaarEncrypted     String?   @map("aadhaar_encrypted")
+  panEncrypted         String?   @map("pan_encrypted")
+  addressLine1         String?   @map("address_line1")
+  addressLine2         String?   @map("address_line2")
+  villageLocality      String?   @map("village_locality")
+  pincode              String?
+  districtId           String?   @map("district_id") @db.Uuid
+  alternatePhone       String?   @map("alternate_phone")
+  propertyOwnership    String?   @map("property_ownership")
+  roofArea             Decimal?  @map("roof_area") @db.Decimal(12, 2)
+  recommendedCapacity  Decimal?  @map("recommended_capacity") @db.Decimal(10, 2)
+  shadowFreeArea       Decimal?  @map("shadow_free_area") @db.Decimal(12, 2)
+  roofType             String?   @map("roof_type")
+  verifiedMonthlyBill  Decimal?  @map("verified_monthly_bill") @db.Decimal(12, 2)
+  connectionType       String?   @map("connection_type")
+  consumerNumber       String?   @map("consumer_number")
+  discomName           String?   @map("discom_name")
+  bankAccountEncrypted String?   @map("bank_account_encrypted")
+  bankName             String?   @map("bank_name")
+  ifscCode             String?   @map("ifsc_code")
+  accountHolderName    String?   @map("account_holder_name")
+  loanRequired         Boolean   @default(false) @map("loan_required")
+  loanAmountRequired   Decimal?  @map("loan_amount_required") @db.Decimal(12, 2)
+  preferredLender      String?   @map("preferred_lender")
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
+  lead                 Lead      @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  district             District? @relation(fields: [districtId], references: [id], onDelete: SetNull)
+
+  @@index([districtId])
+  @@index([pincode])
+  @@map("customer_details")
+}
+
+model Document {
+  id               String               @id @default(uuid()) @db.Uuid
+  leadId           String               @map("lead_id") @db.Uuid
+  category         String
+  s3Key            String               @map("s3_key")
+  fileName         String               @map("file_name")
+  fileType         String               @map("file_type")
+  fileSize         Int                  @map("file_size")
+  version          Int                  @default(1)
+  isLatest         Boolean              @default(true) @map("is_latest")
+  uploadedByUserId String?              @map("uploaded_by_user_id") @db.Uuid
+  reviewStatus     DocumentReviewStatus @default(PENDING) @map("review_status")
+  reviewNotes      String?              @map("review_notes")
+  reviewedByUserId String?              @map("reviewed_by_user_id") @db.Uuid
+  reviewedAt       DateTime?            @map("reviewed_at")
+  createdAt        DateTime             @default(now()) @map("created_at")
+  lead             Lead                 @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  uploadedByUser   User?                @relation("DocumentsUploadedBy", fields: [uploadedByUserId], references: [id], onDelete: SetNull)
+  reviewedByUser   User?                @relation("DocumentsReviewedBy", fields: [reviewedByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([leadId, category, version])
+  @@index([leadId])
+  @@index([leadId, isLatest])
+  @@index([reviewStatus])
+  @@index([uploadedByUserId])
+  @@map("documents")
+}
+
+model Payment {
+  id                String        @id @default(uuid()) @db.Uuid
+  leadId            String        @map("lead_id") @db.Uuid
+  amount            Decimal       @db.Decimal(12, 2)
+  method            PaymentMethod
+  gatewayOrderId    String?       @map("gateway_order_id")
+  gatewayPaymentId  String?       @map("gateway_payment_id")
+  utrNumber         String?       @map("utr_number")
+  status            PaymentStatus @default(PENDING)
+  collectedByUserId String?       @map("collected_by_user_id") @db.Uuid
+  verifiedByUserId  String?       @map("verified_by_user_id") @db.Uuid
+  rejectionReason   String?       @map("rejection_reason")
+  createdAt         DateTime      @default(now()) @map("created_at")
+  verifiedAt        DateTime?     @map("verified_at")
+  lead              Lead          @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  collectedByUser   User?         @relation("PaymentCollectedBy", fields: [collectedByUserId], references: [id], onDelete: SetNull)
+  verifiedByUser    User?         @relation("PaymentVerifiedBy", fields: [verifiedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([leadId])
+  @@index([leadId, status])
+  @@index([method])
+  @@index([collectedByUserId])
+  @@index([verifiedByUserId])
+  @@map("payments")
+}
+
+model NotificationTemplate {
+  id               String              @id @default(uuid()) @db.Uuid
+  name             String              @unique
+  channel          NotificationChannel
+  subject          String?
+  bodyTemplate     String              @map("body_template")
+  isActive         Boolean             @default(true) @map("is_active")
+  createdAt        DateTime            @default(now()) @map("created_at")
+  updatedAt        DateTime            @updatedAt @map("updated_at")
+  leadStatuses     LeadStatus[]
+  notificationLogs NotificationLog[]
+
+  @@index([channel, isActive])
+  @@map("notification_templates")
+}
+
+model NotificationLog {
+  id                String                @id @default(uuid()) @db.Uuid
+  leadId            String?               @map("lead_id") @db.Uuid
+  channel           NotificationChannel
+  templateId        String?               @map("template_id") @db.Uuid
+  recipient         String
+  contentSent       String                @map("content_sent")
+  deliveryStatus    String                @map("delivery_status")
+  providerMessageId String?               @map("provider_message_id")
+  attempts          Int                   @default(0)
+  createdAt         DateTime              @default(now()) @map("created_at")
+  lastAttemptedAt   DateTime?             @map("last_attempted_at")
+  lead              Lead?                 @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  template          NotificationTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+
+  @@index([leadId, createdAt])
+  @@index([channel, createdAt])
+  @@index([templateId])
+  @@index([deliveryStatus])
+  @@map("notification_logs")
+}
+
+model LoanDetail {
+  id                String    @id @default(uuid()) @db.Uuid
+  leadId            String    @unique @map("lead_id") @db.Uuid
+  lenderName        String    @map("lender_name")
+  applicationNumber String?   @map("application_number")
+  appliedAmount     Decimal?  @map("applied_amount") @db.Decimal(12, 2)
+  approvedAmount    Decimal?  @map("approved_amount") @db.Decimal(12, 2)
+  applicationStatus String    @map("application_status")
+  appliedAt         DateTime? @map("applied_at")
+  approvedAt        DateTime? @map("approved_at")
+  disbursedAt       DateTime? @map("disbursed_at")
+  rejectionReason   String?   @map("rejection_reason")
+  notes             String?
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+  lead              Lead      @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@index([applicationStatus])
+  @@index([lenderName])
+  @@map("loan_details")
+}
+
+model AuditLog {
+  id          String   @id @default(uuid()) @db.Uuid
+  actorUserId String?  @map("actor_user_id") @db.Uuid
+  action      String
+  entityType  String   @map("entity_type")
+  entityId    String?  @map("entity_id")
+  detailsJson Json?    @map("details_json")
+  ipAddress   String?  @map("ip_address")
+  createdAt   DateTime @default(now()) @map("created_at")
+  actorUser   User?    @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([actorUserId, createdAt])
+  @@index([entityType, entityId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
