@@ -2,10 +2,11 @@ import dotenv from "dotenv";
 import { z } from "zod";
 
 dotenv.config();
+const resolvedPort = Number(process.env.PORT) || 10000;
 
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
-  PORT: z.coerce.number().default(4000),
+  PORT: z.number().default(resolvedPort),
   DATABASE_URL: z.string().url(),
   REDIS_URL: z.string().url(),
   JWT_ACCESS_SECRET: z.string().min(16),
@@ -39,4 +40,7 @@ const envSchema = z.object({
   PAYMENT_GST: z.string().min(5).default("")
 });
 
-export const env = envSchema.parse(process.env);
+export const env = envSchema.parse({
+  ...process.env,
+  PORT: resolvedPort
+});

@@ -54,7 +54,11 @@ app.use(requestLogger);
 app.get("/", (_req, res) => {
   return ok(res, { service: "Solar Lead API" });
 });
+app.get("/health", (_req, res) => {
+  return res.status(200).json({ status: "ok" });
+});
 app.use("/health", healthRouter);
+app.use("/api/health", healthRouter);
 app.use("/public", publicRouter);
 app.use("/api/public", publicRouter);
 app.use("/auth", authRouter);
