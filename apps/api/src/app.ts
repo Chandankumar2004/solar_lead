@@ -27,6 +27,7 @@ export const app = express();
 const allowedOrigins = new Set([
   "http://localhost:3000",
   "https://solar-lead-web-ceql.vercel.app",
+  "https://solar-lead-1.onrender.com",
   ...env.WEB_ORIGIN.split(",")
     .map((origin) => origin.trim())
     .filter((origin) => origin.length > 0)
@@ -42,7 +43,11 @@ const corsOptions = {
       return;
     }
 
-    if (allowedOrigins.has(origin) || origin.endsWith(".vercel.app")) {
+    if (
+      allowedOrigins.has(origin) ||
+      origin.endsWith(".vercel.app") ||
+      origin.endsWith(".onrender.com")
+    ) {
       callback(null, true);
       return;
     }

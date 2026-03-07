@@ -16,26 +16,29 @@ import { validateBody } from "../middleware/validate.js";
 
 export const authRouter = Router();
 
+const isProduction = env.NODE_ENV === "production";
+const cookieSameSite = isProduction ? ("none" as const) : ("lax" as const);
+
 const refreshCookieConfig = {
   httpOnly: true,
-  secure: env.NODE_ENV === "production",
-  sameSite: "lax" as const,
+  secure: isProduction,
+  sameSite: cookieSameSite,
   maxAge: 7 * 24 * 60 * 60 * 1000,
   path: "/"
 };
 
 const accessCookieConfig = {
   httpOnly: true,
-  secure: env.NODE_ENV === "production",
-  sameSite: "lax" as const,
+  secure: isProduction,
+  sameSite: cookieSameSite,
   maxAge: 15 * 60 * 1000,
   path: "/"
 };
 
 const clearCookieConfig = {
   httpOnly: true,
-  secure: env.NODE_ENV === "production",
-  sameSite: "lax" as const,
+  secure: isProduction,
+  sameSite: cookieSameSite,
   path: "/"
 };
 
