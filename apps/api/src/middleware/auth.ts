@@ -1,5 +1,6 @@
 import { NextFunction, Request, Response } from "express";
 import jwt from "jsonwebtoken";
+import { UserRole, UserStatus } from "@prisma/client";
 import { fail } from "../lib/http.js";
 import { env } from "../config/env.js";
 import { AuthUser } from "../types.js";
@@ -10,6 +11,23 @@ interface AccessPayload {
   email: string;
   role: AuthUser["role"];
   typ: "access";
+}
+
+function normalizeRole(rawRole: string): UserRole | null {
+  const role = rawRole.trim().toUpperCase();
+  if (role === "SUPER_ADMIN") return "SUPER_ADMIN";
+  if (role === "ADMIN") return "ADMIN";
+  if (role === "MANAGER" || role === "DISTRICT_MANAGER") return "MANAGER";
+  if (role === "EXECUTIVE" || role === "FIELD_EXECUTIVE") return "EXECUTIVE";
+  return null;
+}
+
+function normalizeStatus(rawStatus: string): UserStatus | null {
+  const status = rawStatus.trim().toUpperCase();
+  if (status === "ACTIVE") return "ACTIVE";
+  if (status === "PENDING") return "PENDING";
+  if (status === "SUSPENDED") return "SUSPENDED";
+  return null;
 }
 
 export async function requireAuth(req: Request, res: Response, next: NextFunction) {
@@ -29,16 +47,84 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
     return fail(res, 401, "UNAUTHORIZED", "Invalid token payload");
   }
 
-  const user = await prisma.user.findUnique({
-    where: { id: payload.sub },
-    select: {
-      id: true,
-      email: true,
-      fullName: true,
-      role: true,
-      status: true
+  let user = null as
+    | {
+        id: string;
+        email: string;
+        fullName: string;
+        role: UserRole;
+        status: UserStatus;
+      }
+    | null;
+
+  try {
+    user = await prisma.user.findUnique({
+      where: { id: payload.sub },
+      select: {
+        id: true,
+        email: true,
+        fullName: true,
+        role: true,
+        status: true
+      }
+    });
+  } catch (error) {
+    console.error("auth_user_find_failed", {
+      userId: payload.sub,
+      error
+    });
+  }
+
+  if (!user) {
+    try {
+      const fallbackRows = await prisma.$queryRaw<
+        Array<{
+          id: string;
+          email: string;
+          fullName: string;
+          role: string;
+          status: string;
+        }>
+      >`
+        SELECT
+          id::text AS "id",
+          email,
+          full_name AS "fullName",
+          role::text AS "role",
+          status::text AS "status"
+        FROM users
+        WHERE id = ${payload.sub}::uuid
+        LIMIT 1
+      `;
+
+      const row = fallbackRows[0];
+      if (row) {
+        const role = normalizeRole(row.role);
+        const status = normalizeStatus(row.status);
+        if (role && status) {
+          user = {
+            id: row.id,
+            email: row.email,
+            fullName: row.fullName,
+            role,
+            status
+          };
+        } else {
+          console.error("auth_user_enum_mismatch", {
+            userId: row.id,
+            role: row.role,
+            status: row.status
+          });
+        }
+      }
+    } catch (error) {
+      console.error("auth_user_fallback_failed", {
+        userId: payload.sub,
+        error
+      });
     }
-  });
+  }
+
   if (!user || user.status !== "ACTIVE") {
     return fail(res, 401, "UNAUTHORIZED", "User is not active");
   }

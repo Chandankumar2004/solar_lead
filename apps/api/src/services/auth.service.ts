@@ -2,7 +2,7 @@ import bcrypt from "bcryptjs";
 import crypto from "node:crypto";
 import { randomUUID } from "node:crypto";
 import jwt from "jsonwebtoken";
-import { UserRole } from "@prisma/client";
+import { UserRole, UserStatus } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { env } from "../config/env.js";
 
@@ -31,8 +31,168 @@ type PublicUser = {
   email: string;
   fullName: string;
   role: UserRole;
-  status: "ACTIVE" | "PENDING" | "SUSPENDED";
+  status: UserStatus;
 };
+
+type LoginUser = {
+  id: string;
+  email: string;
+  fullName: string;
+  role: UserRole;
+  status: UserStatus;
+  passwordHash: string;
+};
+
+type SessionUser = {
+  id: string;
+  email: string;
+  fullName: string;
+  role: UserRole;
+  status: UserStatus;
+};
+
+function normalizeRole(rawRole: string): UserRole | null {
+  const role = rawRole.trim().toUpperCase();
+  if (role === "SUPER_ADMIN") return "SUPER_ADMIN";
+  if (role === "ADMIN") return "ADMIN";
+  if (role === "MANAGER" || role === "DISTRICT_MANAGER") return "MANAGER";
+  if (role === "EXECUTIVE" || role === "FIELD_EXECUTIVE") return "EXECUTIVE";
+  return null;
+}
+
+function normalizeStatus(rawStatus: string): UserStatus | null {
+  const status = rawStatus.trim().toUpperCase();
+  if (status === "ACTIVE") return "ACTIVE";
+  if (status === "PENDING") return "PENDING";
+  if (status === "SUSPENDED") return "SUSPENDED";
+  return null;
+}
+
+async function findLoginUserByEmail(email: string): Promise<LoginUser | null> {
+  try {
+    return await prisma.user.findUnique({
+      where: { email },
+      select: {
+        id: true,
+        email: true,
+        fullName: true,
+        role: true,
+        status: true,
+        passwordHash: true
+      }
+    });
+  } catch (error) {
+    console.error("login_find_user_failed", { email, error });
+  }
+
+  try {
+    const fallbackRows = await prisma.$queryRaw<
+      Array<{
+        id: string;
+        email: string;
+        fullName: string;
+        role: string;
+        status: string;
+        passwordHash: string | null;
+      }>
+    >`
+      SELECT
+        id::text AS "id",
+        email,
+        full_name AS "fullName",
+        role::text AS "role",
+        status::text AS "status",
+        password_hash AS "passwordHash"
+      FROM users
+      WHERE email = ${email}
+      LIMIT 1
+    `;
+
+    const row = fallbackRows[0];
+    if (!row || !row.passwordHash) return null;
+
+    const role = normalizeRole(row.role);
+    const status = normalizeStatus(row.status);
+    if (!role || !status) {
+      console.error("login_user_enum_mismatch", {
+        email: row.email,
+        role: row.role,
+        status: row.status
+      });
+      return null;
+    }
+
+    return {
+      id: row.id,
+      email: row.email,
+      fullName: row.fullName,
+      role,
+      status,
+      passwordHash: row.passwordHash
+    };
+  } catch (error) {
+    console.error("login_fallback_query_failed", { email, error });
+    throw error;
+  }
+}
+
+async function findSessionUserById(userId: string): Promise<SessionUser | null> {
+  try {
+    return await prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, email: true, fullName: true, role: true, status: true }
+    });
+  } catch (error) {
+    console.error("session_find_user_failed", { userId, error });
+  }
+
+  try {
+    const fallbackRows = await prisma.$queryRaw<
+      Array<{
+        id: string;
+        email: string;
+        fullName: string;
+        role: string;
+        status: string;
+      }>
+    >`
+      SELECT
+        id::text AS "id",
+        email,
+        full_name AS "fullName",
+        role::text AS "role",
+        status::text AS "status"
+      FROM users
+      WHERE id = ${userId}::uuid
+      LIMIT 1
+    `;
+
+    const row = fallbackRows[0];
+    if (!row) return null;
+
+    const role = normalizeRole(row.role);
+    const status = normalizeStatus(row.status);
+    if (!role || !status) {
+      console.error("session_user_enum_mismatch", {
+        userId: row.id,
+        role: row.role,
+        status: row.status
+      });
+      return null;
+    }
+
+    return {
+      id: row.id,
+      email: row.email,
+      fullName: row.fullName,
+      role,
+      status
+    };
+  } catch (error) {
+    console.error("session_fallback_query_failed", { userId, error });
+    throw error;
+  }
+}
 
 export type LoginFailureReason =
   | "INVALID_CREDENTIALS"
@@ -162,17 +322,7 @@ async function maybeUpgradePasswordHash(userId: string, plainPassword: string, h
 }
 
 export async function login(email: string, password: string): Promise<LoginResult> {
-  const user = await prisma.user.findUnique({
-    where: { email },
-    select: {
-      id: true,
-      email: true,
-      fullName: true,
-      role: true,
-      status: true,
-      passwordHash: true
-    }
-  });
+  const user = await findLoginUserByEmail(email);
 
   if (!user) {
     return { ok: false, reason: "INVALID_CREDENTIALS" };
@@ -251,10 +401,7 @@ export async function rotateRefreshToken(refreshToken: string) {
     return null;
   }
 
-  const user = await prisma.user.findUnique({
-    where: { id: payload.sub },
-    select: { id: true, email: true, fullName: true, role: true, status: true }
-  });
+  const user = await findSessionUserById(payload.sub);
   if (!user || user.status !== "ACTIVE") {
     return null;
   }
