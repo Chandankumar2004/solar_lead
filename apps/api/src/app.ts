@@ -24,28 +24,33 @@ import { documentsRouter } from "./routes/documents.js";
 
 export const app = express();
 
-const allowedOrigins = env.WEB_ORIGIN.split(",")
-  .map((origin) => origin.trim())
-  .filter((origin) => origin.length > 0);
+const allowedOrigins = new Set([
+  "http://localhost:3000",
+  "https://solar-lead-web-ceql.vercel.app",
+  ...env.WEB_ORIGIN.split(",")
+    .map((origin) => origin.trim())
+    .filter((origin) => origin.length > 0)
+]);
 
-app.use(
-  cors({
-    origin: (origin, callback) => {
-      if (!origin) {
-        callback(null, true);
-        return;
-      }
+const corsOptions = {
+  origin: (origin, callback) => {
+    if (!origin) {
+      callback(null, true);
+      return;
+    }
 
-      if (allowedOrigins.includes(origin)) {
-        callback(null, true);
-        return;
-      }
+    if (allowedOrigins.has(origin) || origin.endsWith(".vercel.app")) {
+      callback(null, true);
+      return;
+    }
 
-      callback(new Error(`Origin ${origin} not allowed by CORS`));
-    },
-    credentials: true
-  })
-);
+    callback(new Error(`CORS not allowed for origin: ${origin}`));
+  },
+  credentials: true
+};
+
+app.use(cors(corsOptions));
+app.options("*", cors(corsOptions));
 app.use(express.json({ limit: "2mb" }));
 app.use(cookieParser());
 app.use(morgan("dev"));
