@@ -1,6 +1,21 @@
 {
-  "generatedAt": null,
-  "states": [],
-  "mapping": {},
-  "districts": []
+  "generatedAt": "2026-03-07T06:35:45.316Z",
+  "states": [
+    "delhi"
+  ],
+  "mapping": {
+    "delhi": [
+      {
+        "id": "0e134727-79ce-45c3-815f-48c9b2047e5e",
+        "name": "11"
+      }
+    ]
+  },
+  "districts": [
+    {
+      "id": "0e134727-79ce-45c3-815f-48c9b2047e5e",
+      "name": "11",
+      "state": "delhi"
+    }
+  ]
 }
