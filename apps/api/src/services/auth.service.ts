@@ -202,7 +202,14 @@ export async function login(email: string, password: string): Promise<LoginResul
     return { ok: false, reason: "ACCOUNT_SUSPENDED", userId: user.id };
   }
 
-  await maybeUpgradePasswordHash(user.id, password, user.passwordHash);
+  try {
+    await maybeUpgradePasswordHash(user.id, password, user.passwordHash);
+  } catch (error) {
+    console.error("password_hash_upgrade_failed", {
+      userId: user.id,
+      error
+    });
+  }
   const tokens = await createTokenPair(user);
 
   try {
