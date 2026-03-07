@@ -5,13 +5,13 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "tsc -p tsconfig.json",
+    "build": "pnpm --dir ../../packages/shared build && pnpm run prisma:generate && tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "start": "node dist/index.js",
     "token:access": "node src/scripts/create-access-token.js",
     "token:secret": "node src/scripts/generate-jwt-secret.js 64",
     "districts:export:web": "tsx src/scripts/export-districts-mapping.ts",
-    "prisma:generate": "prisma generate",
+    "prisma:generate": "prisma generate --schema=./prisma/schema.prisma",
     "prisma:migrate": "prisma migrate dev",
     "prisma:seed": "tsx prisma/seed.ts",
     "lint": "eslint \"src/**/*.{ts,js}\" \"prisma/**/*.ts\""
