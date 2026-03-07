@@ -21,6 +21,12 @@
     "paths": {
       "@/*": [
         "./src/*"
+      ],
+      "@solar/shared": [
+        "../../packages/shared/src/index.ts"
+      ],
+      "@solar/shared/*": [
+        "../../packages/shared/src/*"
       ]
     },
     "plugins": [
