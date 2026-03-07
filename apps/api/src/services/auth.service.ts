@@ -178,7 +178,18 @@ export async function login(email: string, password: string): Promise<LoginResul
     return { ok: false, reason: "INVALID_CREDENTIALS" };
   }
 
-  const passwordOk = await bcrypt.compare(password, user.passwordHash);
+  // Some older or manually seeded records may contain an invalid hash shape.
+  // Treat those as invalid credentials instead of throwing a 500.
+  let passwordOk = false;
+  try {
+    passwordOk = await bcrypt.compare(password, user.passwordHash);
+  } catch (error) {
+    console.error("password_compare_failed", {
+      userId: user.id,
+      error
+    });
+    return { ok: false, reason: "INVALID_CREDENTIALS", userId: user.id };
+  }
   if (!passwordOk) {
     return { ok: false, reason: "INVALID_CREDENTIALS", userId: user.id };
   }
@@ -194,10 +205,17 @@ export async function login(email: string, password: string): Promise<LoginResul
   await maybeUpgradePasswordHash(user.id, password, user.passwordHash);
   const tokens = await createTokenPair(user);
 
-  await prisma.user.update({
-    where: { id: user.id },
-    data: { lastLoginAt: new Date() }
-  });
+  try {
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { lastLoginAt: new Date() }
+    });
+  } catch (error) {
+    console.error("login_last_login_update_failed", {
+      userId: user.id,
+      error
+    });
+  }
 
   return {
     ok: true,
