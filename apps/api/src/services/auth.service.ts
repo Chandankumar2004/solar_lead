@@ -4,7 +4,6 @@ import { randomUUID } from "node:crypto";
 import jwt from "jsonwebtoken";
 import { UserRole } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
-import { redis } from "../lib/redis.js";
 import { env } from "../config/env.js";
 
 const ACCESS_TOKEN_TTL_SECONDS = 15 * 60;
@@ -106,50 +105,21 @@ function deleteMemoryRefreshTokens(keys: string[]) {
 }
 
 async function setRefreshTokenStore(key: string, hash: string, ttlSeconds: number) {
-  try {
-    await redis.set(key, hash, "EX", ttlSeconds);
-    return;
-  } catch {
-    setMemoryRefreshToken(key, hash, ttlSeconds);
-  }
+  setMemoryRefreshToken(key, hash, ttlSeconds);
 }
 
 async function getRefreshTokenStore(key: string) {
-  try {
-    const redisValue = await redis.get(key);
-    if (redisValue !== null) return redisValue;
-  } catch {
-    // Fall back to in-memory store if Redis is unavailable.
-  }
   return getMemoryRefreshToken(key);
 }
 
 async function deleteRefreshTokenStore(keys: string[]) {
   if (!keys.length) return;
-  try {
-    await redis.del(...keys);
-  } catch {
-    // Fall back to in-memory store if Redis is unavailable.
-  }
   deleteMemoryRefreshTokens(keys);
 }
 
 async function listRefreshTokenKeysForUser(userId: string) {
   const match = `auth:refresh:${userId}:*`;
-  try {
-    let cursor = "0";
-    const redisKeys: string[] = [];
-    do {
-      const [nextCursor, keys] = await redis.scan(cursor, "MATCH", match, "COUNT", 200);
-      if (keys.length) {
-        redisKeys.push(...keys);
-      }
-      cursor = nextCursor;
-    } while (cursor !== "0");
-    return redisKeys;
-  } catch {
-    return [...memoryRefreshStore.keys()].filter((key) => key.startsWith(match.slice(0, -1)));
-  }
+  return [...memoryRefreshStore.keys()].filter((key) => key.startsWith(match.slice(0, -1)));
 }
 
 async function createTokenPair(user: { id: string; email: string; role: UserRole }) {
