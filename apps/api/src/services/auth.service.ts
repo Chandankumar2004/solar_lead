@@ -102,6 +102,96 @@ function normalizeStatus(rawStatus: string): UserStatus | null {
   return null;
 }
 
+async function queryFallbackUserRowByEmail(email: string): Promise<LooseDbRow | null> {
+  const variants: Array<{ name: string; run: () => Promise<Array<LooseDbRow>> }> = [
+    {
+      name: "users_table",
+      run: () =>
+        prisma.$queryRaw<Array<LooseDbRow>>`
+          SELECT *
+          FROM users
+          WHERE lower(email) = lower(${email})
+          LIMIT 1
+        `
+    },
+    {
+      name: "User_table",
+      run: () =>
+        prisma.$queryRaw<Array<LooseDbRow>>`
+          SELECT *
+          FROM "User"
+          WHERE lower("email") = lower(${email})
+          LIMIT 1
+        `
+    }
+  ];
+
+  let lastError: unknown = null;
+  for (const variant of variants) {
+    try {
+      const rows = await variant.run();
+      if (rows[0]) {
+        return rows[0];
+      }
+    } catch (error) {
+      lastError = error;
+      console.error("AUTH_LOGIN_DB_ERROR", {
+        stage: "LOGIN_USER_FALLBACK_EMAIL_LOOKUP",
+        variant: variant.name,
+        email,
+        error
+      });
+    }
+  }
+
+  if (lastError) {
+    throw lastError;
+  }
+  return null;
+}
+
+async function queryFallbackUserRowById(userId: string): Promise<LooseDbRow | null> {
+  const variants: Array<{ name: string; run: () => Promise<Array<LooseDbRow>> }> = [
+    {
+      name: "users_table",
+      run: () =>
+        prisma.$queryRaw<Array<LooseDbRow>>`
+          SELECT *
+          FROM users
+          WHERE id::text = ${userId}
+          LIMIT 1
+        `
+    },
+    {
+      name: "User_table",
+      run: () =>
+        prisma.$queryRaw<Array<LooseDbRow>>`
+          SELECT *
+          FROM "User"
+          WHERE "id"::text = ${userId}
+          LIMIT 1
+        `
+    }
+  ];
+
+  for (const variant of variants) {
+    try {
+      const rows = await variant.run();
+      if (rows[0]) {
+        return rows[0];
+      }
+    } catch (error) {
+      console.error("AUTH_LOGIN_DB_ERROR", {
+        stage: "SESSION_USER_FALLBACK_ID_LOOKUP",
+        variant: variant.name,
+        userId,
+        error
+      });
+    }
+  }
+  return null;
+}
+
 async function findLoginUserByEmail(email: string): Promise<LoginUser | null> {
   let primaryLookupFailed = false;
 
@@ -119,26 +209,29 @@ async function findLoginUserByEmail(email: string): Promise<LoginUser | null> {
     });
   } catch (error) {
     primaryLookupFailed = true;
-    console.error("login_find_user_failed", { email, error });
+    console.error("AUTH_LOGIN_DB_ERROR", {
+      stage: "LOGIN_USER_PRISMA_LOOKUP",
+      email,
+      error
+    });
   }
 
   try {
-    const fallbackRows = await prisma.$queryRaw<Array<LooseDbRow>>`
-      SELECT *
-      FROM users
-      WHERE lower(email) = lower(${email})
-      LIMIT 1
-    `;
-
-    const row = fallbackRows[0];
+    const row = await queryFallbackUserRowByEmail(email);
     if (!row) return null;
 
-    const id = readFirstString(row, ["id"]);
-    const resolvedEmail = readFirstString(row, ["email"]);
-    const fullName = readFirstString(row, ["full_name", "fullName"]) ?? resolvedEmail;
-    const passwordHash = readFirstString(row, ["password_hash", "passwordHash", "password"]);
-    const rawRole = readFirstString(row, ["role"]);
-    const rawStatus = readFirstString(row, ["status"]);
+    const id = readFirstString(row, ["id", "ID", "user_id", "userId"]);
+    const resolvedEmail = readFirstString(row, ["email", "Email", "EMAIL"]);
+    const fullName =
+      readFirstString(row, ["full_name", "fullName", "fullname", "name"]) ?? resolvedEmail;
+    const passwordHash = readFirstString(row, [
+      "password_hash",
+      "passwordHash",
+      "password",
+      "pwd_hash"
+    ]);
+    const rawRole = readFirstString(row, ["role", "user_role", "userRole"]);
+    const rawStatus = readFirstString(row, ["status", "user_status", "userStatus"]);
 
     if (!id || !resolvedEmail || !fullName || !passwordHash || !rawRole || !rawStatus) {
       console.error("login_user_row_missing_required_fields", {
@@ -173,7 +266,11 @@ async function findLoginUserByEmail(email: string): Promise<LoginUser | null> {
       passwordHash
     };
   } catch (error) {
-    console.error("login_fallback_query_failed", { email, error });
+    console.error("AUTH_LOGIN_DB_ERROR", {
+      stage: "LOGIN_USER_FALLBACK_LOOKUP",
+      email,
+      error
+    });
     if (primaryLookupFailed) {
       throw error;
     }
@@ -188,25 +285,22 @@ async function findSessionUserById(userId: string): Promise<SessionUser | null> 
       select: { id: true, email: true, fullName: true, role: true, status: true }
     });
   } catch (error) {
-    console.error("session_find_user_failed", { userId, error });
+    console.error("AUTH_LOGIN_DB_ERROR", {
+      stage: "SESSION_USER_PRISMA_LOOKUP",
+      userId,
+      error
+    });
   }
 
   try {
-    const fallbackRows = await prisma.$queryRaw<Array<LooseDbRow>>`
-      SELECT *
-      FROM users
-      WHERE id::text = ${userId}
-      LIMIT 1
-    `;
-
-    const row = fallbackRows[0];
+    const row = await queryFallbackUserRowById(userId);
     if (!row) return null;
 
-    const id = readFirstString(row, ["id"]);
-    const email = readFirstString(row, ["email"]);
-    const fullName = readFirstString(row, ["full_name", "fullName"]) ?? email;
-    const rawRole = readFirstString(row, ["role"]);
-    const rawStatus = readFirstString(row, ["status"]);
+    const id = readFirstString(row, ["id", "ID", "user_id", "userId"]);
+    const email = readFirstString(row, ["email", "Email", "EMAIL"]);
+    const fullName = readFirstString(row, ["full_name", "fullName", "fullname", "name"]) ?? email;
+    const rawRole = readFirstString(row, ["role", "user_role", "userRole"]);
+    const rawStatus = readFirstString(row, ["status", "user_status", "userStatus"]);
 
     if (!id || !email || !fullName || !rawRole || !rawStatus) {
       console.error("session_user_row_missing_required_fields", {
@@ -239,7 +333,11 @@ async function findSessionUserById(userId: string): Promise<SessionUser | null> 
       status
     };
   } catch (error) {
-    console.error("session_fallback_query_failed", { userId, error });
+    console.error("AUTH_LOGIN_DB_ERROR", {
+      stage: "SESSION_USER_FALLBACK_LOOKUP",
+      userId,
+      error
+    });
     return null;
   }
 }
@@ -388,6 +486,10 @@ export async function login(email: string, password: string): Promise<LoginResul
   const normalizedEmail = email.trim().toLowerCase();
   const normalizedPassword = password ?? "";
   if (!normalizedEmail || !normalizedPassword) {
+    console.warn("AUTH_LOGIN_ERROR", {
+      reason: "MISSING_EMAIL_OR_PASSWORD",
+      email: normalizedEmail || null
+    });
     return { ok: false, reason: "INVALID_CREDENTIALS" };
   }
 
@@ -395,6 +497,11 @@ export async function login(email: string, password: string): Promise<LoginResul
   try {
     user = await findLoginUserByEmail(normalizedEmail);
   } catch (error) {
+    console.error("AUTH_LOGIN_DB_ERROR", {
+      stage: "LOGIN_USER_LOOKUP",
+      email: normalizedEmail,
+      error
+    });
     console.error("AUTH_LOGIN_ERROR", {
       reason: "USER_LOOKUP_FAILED",
       email: normalizedEmail,
@@ -403,7 +510,18 @@ export async function login(email: string, password: string): Promise<LoginResul
     return { ok: false, reason: "AUTH_BACKEND_ERROR" };
   }
 
-  if (!user || !user.passwordHash) {
+  if (!user) {
+    console.warn("AUTH_LOGIN_USER_NOT_FOUND", {
+      email: normalizedEmail
+    });
+    return { ok: false, reason: "INVALID_CREDENTIALS" };
+  }
+
+  if (!user.passwordHash || user.passwordHash.trim().length === 0) {
+    console.error("AUTH_LOGIN_ERROR", {
+      reason: "PASSWORD_HASH_MISSING",
+      userId: user.id
+    });
     return { ok: false, reason: "INVALID_CREDENTIALS" };
   }
 
@@ -413,13 +531,18 @@ export async function login(email: string, password: string): Promise<LoginResul
   try {
     passwordOk = await bcrypt.compare(normalizedPassword, user.passwordHash);
   } catch (error) {
-    console.error("password_compare_failed", {
+    console.error("AUTH_LOGIN_ERROR", {
+      reason: "BCRYPT_COMPARE_FAILED",
       userId: user.id,
       error
     });
     return { ok: false, reason: "INVALID_CREDENTIALS", userId: user.id };
   }
   if (!passwordOk) {
+    console.warn("AUTH_LOGIN_PASSWORD_MISMATCH", {
+      userId: user.id,
+      email: normalizedEmail
+    });
     return { ok: false, reason: "INVALID_CREDENTIALS", userId: user.id };
   }
 
@@ -434,14 +557,15 @@ export async function login(email: string, password: string): Promise<LoginResul
   try {
     await maybeUpgradePasswordHash(user.id, normalizedPassword, user.passwordHash);
   } catch (error) {
-    console.error("password_hash_upgrade_failed", {
+    console.error("AUTH_LOGIN_DB_ERROR", {
+      stage: "PASSWORD_HASH_UPGRADE",
       userId: user.id,
       error
     });
   }
   const tokens = await createTokenPair(user);
   if (!tokens) {
-    console.error("AUTH_LOGIN_ERROR", {
+    console.error("AUTH_LOGIN_JWT_CONFIG_ERROR", {
       userId: user.id,
       reason: "JWT_SECRET_MISSING_OR_INVALID"
     });

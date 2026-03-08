@@ -141,6 +141,7 @@ authRouter.post("/login", async (req, res) => {
           action: recaptchaResult.action,
           requestId: req.requestId ?? null
         };
+        console.error("AUTH_LOGIN_RECAPTCHA_ERROR", recaptchaMeta);
 
         if (recaptchaResult.reason === "SECRET_MISSING") {
           console.error("AUTH_ENV_ERROR", {
@@ -152,7 +153,8 @@ authRouter.post("/login", async (req, res) => {
             res,
             500,
             "RECAPTCHA_CONFIG_ERROR",
-            "reCAPTCHA is not configured on server"
+            "reCAPTCHA is not configured on server",
+            recaptchaMeta
           );
         }
 
@@ -191,7 +193,7 @@ authRouter.post("/login", async (req, res) => {
           });
           return fail(
             res,
-            400,
+            401,
             "RECAPTCHA_TOKEN_INVALID",
             "reCAPTCHA verification failed",
             recaptchaMeta
@@ -287,7 +289,32 @@ authRouter.post("/login", async (req, res) => {
         });
       }
 
-      return fail(res, statusCode, result.reason, reasonMessage);
+      const details =
+        result.reason === "AUTH_CONFIG_ERROR"
+          ? { reason: "AUTH_LOGIN_JWT_CONFIG_ERROR", requestId: req.requestId ?? null }
+          : result.reason === "AUTH_BACKEND_ERROR"
+            ? { reason: "AUTH_LOGIN_DB_ERROR", requestId: req.requestId ?? null }
+            : undefined;
+
+      return fail(res, statusCode, result.reason, reasonMessage, details);
+    }
+
+    if (!result.accessToken || !result.refreshToken) {
+      console.error("AUTH_LOGIN_ERROR", {
+        reason: "TOKEN_PAIR_EMPTY",
+        userId: result.user.id,
+        requestId: req.requestId ?? null
+      });
+      return fail(
+        res,
+        500,
+        "AUTH_BACKEND_ERROR",
+        "Authentication service temporarily unavailable",
+        {
+          reason: "TOKEN_PAIR_EMPTY",
+          requestId: req.requestId ?? null
+        }
+      );
     }
 
     res.cookie(accessCookieName, result.accessToken, accessCookieConfig);
