@@ -70,14 +70,18 @@ function normalizePrismaDatasourceUrl(rawUrl: string) {
   }
 }
 
-const runtimeDirectUrl = (process.env.DIRECT_URL ?? "").trim();
 const runtimeDatabaseUrl = (env.DATABASE_URL ?? process.env.DATABASE_URL ?? "").trim();
-const rawPrismaUrl = runtimeDirectUrl || runtimeDatabaseUrl;
+const runtimeDirectUrl = (process.env.DIRECT_URL ?? "").trim();
+const rawPrismaUrl = runtimeDatabaseUrl || runtimeDirectUrl;
 const prismaDatasourceUrl = normalizePrismaDatasourceUrl(rawPrismaUrl);
 
-if (runtimeDirectUrl) {
+if (runtimeDatabaseUrl) {
   console.info("DB_SCHEMA_CONTEXT", {
-    reason: "USING_DIRECT_URL_FOR_RUNTIME"
+    reason: "USING_DATABASE_URL_FOR_RUNTIME"
+  });
+} else if (runtimeDirectUrl) {
+  console.info("DB_SCHEMA_CONTEXT", {
+    reason: "USING_DIRECT_URL_FALLBACK_FOR_RUNTIME"
   });
 }
 
