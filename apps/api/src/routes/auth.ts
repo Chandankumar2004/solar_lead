@@ -143,6 +143,10 @@ authRouter.post("/login", async (req, res) => {
         };
 
         if (recaptchaResult.reason === "SECRET_MISSING") {
+          console.error("AUTH_ENV_ERROR", {
+            reason: "RECAPTCHA_SECRET_MISSING",
+            requestId: req.requestId ?? null
+          });
           console.error("RECAPTCHA_CONFIG_ERROR", recaptchaMeta);
           return fail(
             res,
@@ -222,6 +226,10 @@ authRouter.post("/login", async (req, res) => {
     }
 
     if (!hasJwtSecrets()) {
+      console.error("AUTH_ENV_ERROR", {
+        reason: "JWT_SECRETS_MISSING_OR_INVALID",
+        requestId: req.requestId ?? null
+      });
       console.error("AUTH_LOGIN_ERROR", {
         reason: "JWT_SECRETS_MISSING_OR_INVALID",
         requestId: req.requestId ?? null
@@ -262,6 +270,13 @@ authRouter.post("/login", async (req, res) => {
             : 403;
 
       if (result.reason === "AUTH_CONFIG_ERROR" || result.reason === "AUTH_BACKEND_ERROR") {
+        if (result.reason === "AUTH_CONFIG_ERROR") {
+          console.error("AUTH_ENV_ERROR", {
+            reason: "TOKEN_GENERATION_FAILED",
+            userId: result.userId ?? null,
+            requestId: req.requestId ?? null
+          });
+        }
         console.error("AUTH_LOGIN_ERROR", {
           reason:
             result.reason === "AUTH_CONFIG_ERROR"
@@ -314,6 +329,10 @@ authRouter.post("/login", async (req, res) => {
 authRouter.post("/refresh", async (req, res) => {
   try {
     if (!hasJwtSecrets()) {
+      console.error("AUTH_ENV_ERROR", {
+        reason: "JWT_SECRETS_MISSING_OR_INVALID",
+        requestId: req.requestId ?? null
+      });
       console.error("AUTH_REFRESH_ERROR", {
         reason: "JWT_SECRETS_MISSING_OR_INVALID",
         requestId: req.requestId ?? null

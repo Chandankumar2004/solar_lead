@@ -51,6 +51,26 @@ type SessionUser = {
   status: UserStatus;
 };
 
+type LooseDbRow = Record<string, unknown>;
+
+function toNonEmptyString(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function readFirstString(row: LooseDbRow, keys: string[]): string | null {
+  for (const key of keys) {
+    const value = toNonEmptyString(row[key]);
+    if (value) {
+      return value;
+    }
+  }
+  return null;
+}
+
 function resolveAccessSecret() {
   const secret = (env.JWT_ACCESS_SECRET ?? process.env.JWT_ACCESS_SECRET ?? "").trim();
   return secret.length >= 16 ? secret : null;
@@ -64,9 +84,13 @@ function resolveRefreshSecret() {
 function normalizeRole(rawRole: string): UserRole | null {
   const role = rawRole.trim().toUpperCase();
   if (role === "SUPER_ADMIN") return "SUPER_ADMIN";
+  if (role === "SUPERADMIN") return "SUPER_ADMIN";
+  if (role === "SUPER-ADMIN") return "SUPER_ADMIN";
   if (role === "ADMIN") return "ADMIN";
   if (role === "MANAGER" || role === "DISTRICT_MANAGER") return "MANAGER";
+  if (role === "DISTRICT-MANAGER" || role === "DISTRICTMANAGER") return "MANAGER";
   if (role === "EXECUTIVE" || role === "FIELD_EXECUTIVE") return "EXECUTIVE";
+  if (role === "FIELD-EXECUTIVE" || role === "FIELDEXECUTIVE") return "EXECUTIVE";
   return null;
 }
 
@@ -99,49 +123,54 @@ async function findLoginUserByEmail(email: string): Promise<LoginUser | null> {
   }
 
   try {
-    const fallbackRows = await prisma.$queryRaw<
-      Array<{
-        id: string;
-        email: string;
-        fullName: string;
-        role: string;
-        status: string;
-        passwordHash: string | null;
-      }>
-    >`
-      SELECT
-        id::text AS "id",
-        email,
-        full_name AS "fullName",
-        role::text AS "role",
-        status::text AS "status",
-        password_hash AS "passwordHash"
+    const fallbackRows = await prisma.$queryRaw<Array<LooseDbRow>>`
+      SELECT *
       FROM users
-      WHERE email = ${email}
+      WHERE lower(email) = lower(${email})
       LIMIT 1
     `;
 
     const row = fallbackRows[0];
-    if (!row || !row.passwordHash) return null;
+    if (!row) return null;
 
-    const role = normalizeRole(row.role);
-    const status = normalizeStatus(row.status);
+    const id = readFirstString(row, ["id"]);
+    const resolvedEmail = readFirstString(row, ["email"]);
+    const fullName = readFirstString(row, ["full_name", "fullName"]) ?? resolvedEmail;
+    const passwordHash = readFirstString(row, ["password_hash", "passwordHash", "password"]);
+    const rawRole = readFirstString(row, ["role"]);
+    const rawStatus = readFirstString(row, ["status"]);
+
+    if (!id || !resolvedEmail || !fullName || !passwordHash || !rawRole || !rawStatus) {
+      console.error("login_user_row_missing_required_fields", {
+        email,
+        hasId: Boolean(id),
+        hasEmail: Boolean(resolvedEmail),
+        hasFullName: Boolean(fullName),
+        hasPasswordHash: Boolean(passwordHash),
+        hasRole: Boolean(rawRole),
+        hasStatus: Boolean(rawStatus)
+      });
+      return null;
+    }
+
+    const role = normalizeRole(rawRole);
+    const status = normalizeStatus(rawStatus);
     if (!role || !status) {
       console.error("login_user_enum_mismatch", {
-        email: row.email,
-        role: row.role,
-        status: row.status
+        email: resolvedEmail,
+        role: rawRole,
+        status: rawStatus
       });
       return null;
     }
 
     return {
-      id: row.id,
-      email: row.email,
-      fullName: row.fullName,
+      id,
+      email: resolvedEmail,
+      fullName,
       role,
       status,
-      passwordHash: row.passwordHash
+      passwordHash
     };
   } catch (error) {
     console.error("login_fallback_query_failed", { email, error });
@@ -163,44 +192,49 @@ async function findSessionUserById(userId: string): Promise<SessionUser | null> 
   }
 
   try {
-    const fallbackRows = await prisma.$queryRaw<
-      Array<{
-        id: string;
-        email: string;
-        fullName: string;
-        role: string;
-        status: string;
-      }>
-    >`
-      SELECT
-        id::text AS "id",
-        email,
-        full_name AS "fullName",
-        role::text AS "role",
-        status::text AS "status"
+    const fallbackRows = await prisma.$queryRaw<Array<LooseDbRow>>`
+      SELECT *
       FROM users
-      WHERE id = ${userId}::uuid
+      WHERE id::text = ${userId}
       LIMIT 1
     `;
 
     const row = fallbackRows[0];
     if (!row) return null;
 
-    const role = normalizeRole(row.role);
-    const status = normalizeStatus(row.status);
+    const id = readFirstString(row, ["id"]);
+    const email = readFirstString(row, ["email"]);
+    const fullName = readFirstString(row, ["full_name", "fullName"]) ?? email;
+    const rawRole = readFirstString(row, ["role"]);
+    const rawStatus = readFirstString(row, ["status"]);
+
+    if (!id || !email || !fullName || !rawRole || !rawStatus) {
+      console.error("session_user_row_missing_required_fields", {
+        userId,
+        hasId: Boolean(id),
+        hasEmail: Boolean(email),
+        hasFullName: Boolean(fullName),
+        hasRole: Boolean(rawRole),
+        hasStatus: Boolean(rawStatus)
+      });
+      return null;
+    }
+
+    const role = normalizeRole(rawRole);
+    const status = normalizeStatus(rawStatus);
     if (!role || !status) {
       console.error("session_user_enum_mismatch", {
-        userId: row.id,
-        role: row.role,
-        status: row.status
+        userId: id,
+        role: rawRole,
+        status: rawStatus
       });
       return null;
     }
 
     return {
-      id: row.id,
-      email: row.email,
-      fullName: row.fullName,
+      id,
+      email,
+      fullName,
       role,
       status
     };
