@@ -204,6 +204,32 @@ See `DEVOPS.md` for target deployment architecture:
 - Files: S3 + CloudFront
 - Monitoring: CloudWatch + Sentry
 
+## Render Deployment Checklist (Web + API)
+- API service root directory: `apps/api`
+- API build command: `pnpm install --frozen-lockfile && pnpm build`
+- API start command: `pnpm start`
+- API required env:
+  - `NODE_ENV=production`
+  - `PORT=10000` (or use Render default)
+  - `DATABASE_URL` (pooled URL)
+  - `DIRECT_URL` (direct DB URL for Prisma migrate/seed)
+  - `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET`
+  - `WEB_ORIGIN` (comma-separated frontend origins)
+  - `SEED_SUPER_ADMIN_PASSWORD` (+ optional `SEED_SUPER_ADMIN_*`)
+- After deploy (or as one-off job), run:
+  - `pnpm prisma:generate`
+  - `pnpm prisma:migrate:deploy`
+  - `pnpm prisma:seed`
+- Web service root directory: `apps/web`
+- Web build command: `pnpm install --frozen-lockfile && pnpm build`
+- Web start command: `pnpm start`
+- Web env:
+  - `NEXT_PUBLIC_API_BASE_URL=https://<your-api-service>.onrender.com`
+- Verify in browser network tab:
+  - `POST /api/auth/login` returns `200`
+  - response has both `Set-Cookie` headers (`accessToken`, `refreshToken`)
+  - next `GET /api/auth/me` returns `200` (not `401`)
+
 ## Troubleshooting
 - CORS blocked from web:
   - ensure `WEB_ORIGIN` contains exact web origin (`http://localhost:3200`)
@@ -223,4 +249,3 @@ See `DEVOPS.md` for target deployment architecture:
 - Rotate JWT/Firebase/AWS keys if exposed
 - Keep `AWS_*` credentials only on backend
 - Mobile must use backend pre-signed URLs only
-

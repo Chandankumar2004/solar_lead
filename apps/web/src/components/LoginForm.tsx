@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
+import axios from "axios";
 import { loginSchema } from "@solar/shared";
 import { api } from "@/lib/api";
 import { useRouter } from "next/navigation";
@@ -29,8 +30,24 @@ export function LoginForm() {
       const resp = await api.post("/api/auth/login", values);
       setUser(resp.data.data.user);
       router.push("/dashboard");
-    } catch {
-      setError("Invalid credentials");
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        const apiMessage = error.response?.data?.message;
+        if (typeof apiMessage === "string" && apiMessage.trim().length > 0) {
+          setError(apiMessage);
+          return;
+        }
+
+        if (error.response?.status) {
+          setError(`Login failed (${error.response.status})`);
+          return;
+        }
+
+        setError("Unable to reach API server");
+        return;
+      }
+
+      setError("Login failed");
     }
   });
 
@@ -66,4 +83,3 @@ export function LoginForm() {
     </form>
   );
 }
-

@@ -13,6 +13,7 @@
     "districts:export:web": "tsx src/scripts/export-districts-mapping.ts",
     "prisma:generate": "prisma generate --schema=./prisma/schema.prisma",
     "prisma:migrate": "prisma migrate dev",
+    "prisma:migrate:deploy": "prisma migrate deploy --schema=./prisma/schema.prisma",
     "prisma:seed": "tsx prisma/seed.ts",
     "lint": "eslint \"src/**/*.{ts,js}\" \"prisma/**/*.ts\""
   },
