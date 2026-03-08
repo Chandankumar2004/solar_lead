@@ -41,9 +41,25 @@ export function getApiErrorMessage(error: unknown, fallbackMessage: string) {
 
   const apiMessage = error.response?.data?.message;
   const apiCode = error.response?.data?.error?.code;
+  const apiReason = error.response?.data?.error?.details?.reason;
+  const apiErrorCodes = error.response?.data?.error?.details?.errorCodes;
   if (typeof apiMessage === "string" && apiMessage.trim().length > 0) {
+    const extraBits: string[] = [];
     if (typeof apiCode === "string" && apiCode.trim().length > 0) {
-      return `${apiMessage} [${apiCode}]`;
+      extraBits.push(apiCode.trim());
+    }
+    if (typeof apiReason === "string" && apiReason.trim().length > 0) {
+      extraBits.push(apiReason.trim());
+    }
+    if (
+      Array.isArray(apiErrorCodes) &&
+      apiErrorCodes.length > 0 &&
+      typeof apiErrorCodes[0] === "string"
+    ) {
+      extraBits.push(apiErrorCodes[0]);
+    }
+    if (extraBits.length > 0) {
+      return `${apiMessage} [${extraBits.join(" | ")}]`;
     }
     return apiMessage;
   }

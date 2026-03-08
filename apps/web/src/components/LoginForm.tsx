@@ -120,7 +120,10 @@ export function LoginForm() {
     try {
       const resp = await api.post("/api/auth/login", {
         ...values,
-        recaptcha_token: recaptchaToken ?? undefined
+        recaptchaToken: recaptchaToken ?? undefined,
+        recaptcha_token: recaptchaToken ?? undefined,
+        recaptchaAction: "admin_login",
+        recaptcha_action: "admin_login"
       });
       setUser(resp.data.data.user);
       router.push("/dashboard");

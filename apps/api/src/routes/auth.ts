@@ -64,34 +64,72 @@ const changePasswordSchema = z.object({
   path: ["newPassword"]
 });
 
+const loginRequestSchema = z.object({
+  email: z.string().optional(),
+  password: z.string().optional(),
+  recaptchaToken: z.string().optional(),
+  recaptcha_token: z.string().optional(),
+  recaptchaAction: z.string().optional(),
+  recaptcha_action: z.string().optional()
+});
+
 authRouter.post("/login", async (req, res) => {
   try {
-    const rawEmail = typeof req.body?.email === "string" ? req.body.email.trim() : "";
-    const rawPassword = typeof req.body?.password === "string" ? req.body.password : "";
-    const rawRecaptchaToken =
-      typeof req.body?.recaptchaToken === "string"
-        ? req.body.recaptchaToken.trim()
-        : typeof req.body?.recaptcha_token === "string"
-          ? req.body.recaptcha_token.trim()
-          : "";
+    const parsedRequest = loginRequestSchema.safeParse(req.body ?? {});
+    if (!parsedRequest.success) {
+      return fail(res, 400, "INVALID_REQUEST_BODY", "invalid request body", parsedRequest.error);
+    }
 
-    if (!rawEmail || !rawPassword) {
+    const loginRequest = parsedRequest.data;
+    const rawEmail = typeof loginRequest.email === "string" ? loginRequest.email.trim() : "";
+    const rawPassword = typeof loginRequest.password === "string" ? loginRequest.password : "";
+    const rawRecaptchaToken =
+      typeof loginRequest.recaptchaToken === "string"
+        ? loginRequest.recaptchaToken.trim()
+        : typeof loginRequest.recaptcha_token === "string"
+          ? loginRequest.recaptcha_token.trim()
+          : "";
+    const recaptchaAction =
+      typeof loginRequest.recaptchaAction === "string" && loginRequest.recaptchaAction.trim()
+        ? loginRequest.recaptchaAction.trim()
+        : typeof loginRequest.recaptcha_action === "string" && loginRequest.recaptcha_action.trim()
+          ? loginRequest.recaptcha_action.trim()
+          : "admin_login";
+
+    if (!rawEmail) {
       await createAuditLog({
         action: "LOGIN_FAILED",
         entityType: "auth",
         detailsJson: {
-          reason: "MISSING_EMAIL_OR_PASSWORD",
-          email: rawEmail || null
+          reason: "MISSING_EMAIL",
+          email: null
         },
         ipAddress: requestIp(req)
       });
-      return fail(res, 400, "VALIDATION_ERROR", "Email and password are required");
+      return fail(res, 400, "EMAIL_REQUIRED", "email is required");
+    }
+
+    if (!rawPassword) {
+      await createAuditLog({
+        action: "LOGIN_FAILED",
+        entityType: "auth",
+        detailsJson: {
+          reason: "MISSING_PASSWORD",
+          email: rawEmail
+        },
+        ipAddress: requestIp(req)
+      });
+      return fail(res, 400, "PASSWORD_REQUIRED", "password is required");
     }
 
     if (enforceRecaptchaOnLogin) {
+      if (!rawRecaptchaToken) {
+        return fail(res, 400, "RECAPTCHA_TOKEN_REQUIRED", "recaptchaToken is required");
+      }
+
       const recaptchaResult = await verifyRecaptchaToken({
         token: rawRecaptchaToken,
-        expectedAction: "admin_login",
+        expectedAction: recaptchaAction,
         remoteIp: requestIp(req)
       });
 
