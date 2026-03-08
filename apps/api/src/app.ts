@@ -24,14 +24,29 @@ import { documentsRouter } from "./routes/documents.js";
 
 export const app = express();
 
-const allowedOrigins = new Set([
-  "http://localhost:3000",
-  "https://solar-lead-web-ceql.vercel.app",
-  "https://solar-lead-1.onrender.com",
-  ...env.WEB_ORIGIN.split(",")
-    .map((origin) => origin.trim())
-    .filter((origin) => origin.length > 0)
-]);
+if (process.env.RENDER === "true" || process.env.RENDER_EXTERNAL_URL) {
+  app.set("trust proxy", 1);
+}
+
+function normalizeOrigin(origin: string) {
+  return origin.trim().replace(/\/+$/, "");
+}
+
+const configuredOrigins = env.WEB_ORIGIN.split(",")
+  .map((origin) => normalizeOrigin(origin))
+  .filter((origin) => origin.length > 0);
+
+const devOrigins =
+  env.NODE_ENV === "production"
+    ? []
+    : [
+        "http://localhost:3000",
+        "http://localhost:3200",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:3200"
+      ];
+
+const allowedOrigins = new Set([...configuredOrigins, ...devOrigins]);
 
 const corsOptions = {
   origin: (
@@ -43,16 +58,17 @@ const corsOptions = {
       return;
     }
 
-    if (
-      allowedOrigins.has(origin) ||
-      origin.endsWith(".vercel.app") ||
-      origin.endsWith(".onrender.com")
-    ) {
+    const normalizedOrigin = normalizeOrigin(origin);
+    if (allowedOrigins.has(normalizedOrigin)) {
       callback(null, true);
       return;
     }
 
-    callback(new Error(`CORS not allowed for origin: ${origin}`));
+    console.error("CORS_ORIGIN_BLOCKED", {
+      origin,
+      requestId: null
+    });
+    callback(null, false);
   },
   credentials: true
 };

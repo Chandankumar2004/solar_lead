@@ -51,6 +51,16 @@ type SessionUser = {
   status: UserStatus;
 };
 
+function resolveAccessSecret() {
+  const secret = (env.JWT_ACCESS_SECRET ?? process.env.JWT_ACCESS_SECRET ?? "").trim();
+  return secret.length >= 16 ? secret : null;
+}
+
+function resolveRefreshSecret() {
+  const secret = (env.JWT_REFRESH_SECRET ?? process.env.JWT_REFRESH_SECRET ?? "").trim();
+  return secret.length >= 16 ? secret : null;
+}
+
 function normalizeRole(rawRole: string): UserRole | null {
   const role = rawRole.trim().toUpperCase();
   if (role === "SUPER_ADMIN") return "SUPER_ADMIN";
@@ -132,7 +142,7 @@ async function findLoginUserByEmail(email: string): Promise<LoginUser | null> {
     };
   } catch (error) {
     console.error("login_fallback_query_failed", { email, error });
-    throw error;
+    return null;
   }
 }
 
@@ -190,14 +200,15 @@ async function findSessionUserById(userId: string): Promise<SessionUser | null> 
     };
   } catch (error) {
     console.error("session_fallback_query_failed", { userId, error });
-    throw error;
+    return null;
   }
 }
 
 export type LoginFailureReason =
   | "INVALID_CREDENTIALS"
   | "ACCOUNT_PENDING"
-  | "ACCOUNT_SUSPENDED";
+  | "ACCOUNT_SUSPENDED"
+  | "AUTH_CONFIG_ERROR";
 
 export type LoginResult =
   | {
@@ -213,16 +224,24 @@ export type LoginResult =
     };
 
 function signAccessToken(user: { id: string; email: string; role: UserRole }) {
+  const secret = resolveAccessSecret();
+  if (!secret) {
+    return null;
+  }
   const payload: AccessPayload = {
     sub: user.id,
     email: user.email,
     role: user.role,
     typ: "access"
   };
-  return jwt.sign(payload, env.JWT_ACCESS_SECRET, { expiresIn: ACCESS_TOKEN_TTL_SECONDS });
+  return jwt.sign(payload, secret, { expiresIn: ACCESS_TOKEN_TTL_SECONDS });
 }
 
 function signRefreshToken(user: { id: string; email: string; role: UserRole }, jti: string) {
+  const secret = resolveRefreshSecret();
+  if (!secret) {
+    return null;
+  }
   const payload: RefreshPayload = {
     sub: user.id,
     email: user.email,
@@ -230,7 +249,7 @@ function signRefreshToken(user: { id: string; email: string; role: UserRole }, j
     typ: "refresh",
     jti
   };
-  return jwt.sign(payload, env.JWT_REFRESH_SECRET, { expiresIn: REFRESH_TOKEN_TTL_SECONDS });
+  return jwt.sign(payload, secret, { expiresIn: REFRESH_TOKEN_TTL_SECONDS });
 }
 
 function hashToken(token: string) {
@@ -286,6 +305,9 @@ async function createTokenPair(user: { id: string; email: string; role: UserRole
   const accessToken = signAccessToken(user);
   const jti = randomUUID();
   const refreshToken = signRefreshToken(user, jti);
+  if (!accessToken || !refreshToken) {
+    return null;
+  }
   await setRefreshTokenStore(
     refreshStoreKey(user.id, jti),
     hashToken(refreshToken),
@@ -322,9 +344,15 @@ async function maybeUpgradePasswordHash(userId: string, plainPassword: string, h
 }
 
 export async function login(email: string, password: string): Promise<LoginResult> {
-  const user = await findLoginUserByEmail(email);
+  const normalizedEmail = email.trim().toLowerCase();
+  const normalizedPassword = password ?? "";
+  if (!normalizedEmail || !normalizedPassword) {
+    return { ok: false, reason: "INVALID_CREDENTIALS" };
+  }
 
-  if (!user) {
+  const user = await findLoginUserByEmail(normalizedEmail);
+
+  if (!user || !user.passwordHash) {
     return { ok: false, reason: "INVALID_CREDENTIALS" };
   }
 
@@ -332,7 +360,7 @@ export async function login(email: string, password: string): Promise<LoginResul
   // Treat those as invalid credentials instead of throwing a 500.
   let passwordOk = false;
   try {
-    passwordOk = await bcrypt.compare(password, user.passwordHash);
+    passwordOk = await bcrypt.compare(normalizedPassword, user.passwordHash);
   } catch (error) {
     console.error("password_compare_failed", {
       userId: user.id,
@@ -353,7 +381,7 @@ export async function login(email: string, password: string): Promise<LoginResul
   }
 
   try {
-    await maybeUpgradePasswordHash(user.id, password, user.passwordHash);
+    await maybeUpgradePasswordHash(user.id, normalizedPassword, user.passwordHash);
   } catch (error) {
     console.error("password_hash_upgrade_failed", {
       userId: user.id,
@@ -361,6 +389,13 @@ export async function login(email: string, password: string): Promise<LoginResul
     });
   }
   const tokens = await createTokenPair(user);
+  if (!tokens) {
+    console.error("AUTH_LOGIN_ERROR", {
+      userId: user.id,
+      reason: "JWT_SECRET_MISSING_OR_INVALID"
+    });
+    return { ok: false, reason: "AUTH_CONFIG_ERROR", userId: user.id };
+  }
 
   try {
     await prisma.user.update({
@@ -383,8 +418,10 @@ export async function login(email: string, password: string): Promise<LoginResul
 }
 
 function verifyRefresh(refreshToken: string): RefreshPayload | null {
+  const secret = resolveRefreshSecret();
+  if (!secret) return null;
   try {
-    const payload = jwt.verify(refreshToken, env.JWT_REFRESH_SECRET) as RefreshPayload;
+    const payload = jwt.verify(refreshToken, secret) as RefreshPayload;
     if (payload.typ !== "refresh" || !payload.jti || !payload.sub) return null;
     return payload;
   } catch {
@@ -408,6 +445,9 @@ export async function rotateRefreshToken(refreshToken: string) {
 
   await deleteRefreshTokenStore([refreshStoreKey(payload.sub, payload.jti)]);
   const tokens = await createTokenPair(user);
+  if (!tokens) {
+    return null;
+  }
 
   return {
     user: toPublicUser(user),
@@ -452,6 +492,7 @@ export async function changePassword(params: {
   await revokeAllUserRefreshSessions(user.id);
 
   const tokens = await createTokenPair(user);
+  if (!tokens) return null;
   return {
     user: toPublicUser(user),
     accessToken: tokens.accessToken,

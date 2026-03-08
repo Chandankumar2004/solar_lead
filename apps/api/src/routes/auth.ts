@@ -16,11 +16,20 @@ import { validateBody } from "../middleware/validate.js";
 
 export const authRouter = Router();
 
+const accessCookieName = (env.ACCESS_COOKIE_NAME ?? "accessToken").trim() || "accessToken";
+const refreshCookieName = (env.REFRESH_COOKIE_NAME ?? "refreshToken").trim() || "refreshToken";
+
 const isSecureCookieEnv =
   env.NODE_ENV === "production" ||
   process.env.RENDER === "true" ||
   Boolean(process.env.RENDER_EXTERNAL_URL);
 const cookieSameSite = isSecureCookieEnv ? ("none" as const) : ("lax" as const);
+
+function hasJwtSecrets() {
+  const accessSecret = (env.JWT_ACCESS_SECRET ?? process.env.JWT_ACCESS_SECRET ?? "").trim();
+  const refreshSecret = (env.JWT_REFRESH_SECRET ?? process.env.JWT_REFRESH_SECRET ?? "").trim();
+  return accessSecret.length >= 16 && refreshSecret.length >= 16;
+}
 
 const refreshCookieConfig = {
   httpOnly: true,
@@ -54,116 +63,184 @@ const changePasswordSchema = z.object({
 });
 
 authRouter.post("/login", async (req, res) => {
-  const parsed = loginSchema.safeParse(req.body);
-  if (!parsed.success) {
-    await createAuditLog({
-      action: "LOGIN_FAILED",
-      entityType: "auth",
-      detailsJson: {
-        reason: "VALIDATION_ERROR",
-        email: typeof req.body?.email === "string" ? req.body.email : null
-      },
-      ipAddress: requestIp(req)
-    });
-    return fail(res, 400, "VALIDATION_ERROR", "Invalid login payload", parsed.error);
-  }
+  try {
+    const rawEmail = typeof req.body?.email === "string" ? req.body.email.trim() : "";
+    const rawPassword = typeof req.body?.password === "string" ? req.body.password : "";
 
-  const body = parsed.data;
-  const result = await login(body.email, body.password);
-  if (!result.ok) {
-    const reasonMessage =
-      result.reason === "ACCOUNT_PENDING"
-        ? "Your account is pending approval"
-        : result.reason === "ACCOUNT_SUSPENDED"
-          ? "Your account is suspended"
-          : "Invalid email/password";
+    if (!rawEmail || !rawPassword) {
+      await createAuditLog({
+        action: "LOGIN_FAILED",
+        entityType: "auth",
+        detailsJson: {
+          reason: "MISSING_EMAIL_OR_PASSWORD",
+          email: rawEmail || null
+        },
+        ipAddress: requestIp(req)
+      });
+      return fail(res, 400, "VALIDATION_ERROR", "Email and password are required");
+    }
 
-    await createAuditLog({
-      actorUserId: result.userId ?? null,
-      action: "LOGIN_FAILED",
-      entityType: "auth",
-      detailsJson: {
-        email: body.email,
-        reason: result.reason
-      },
-      ipAddress: requestIp(req)
-    });
+    const parsed = loginSchema.safeParse({ email: rawEmail, password: rawPassword });
+    if (!parsed.success) {
+      await createAuditLog({
+        action: "LOGIN_FAILED",
+        entityType: "auth",
+        detailsJson: {
+          reason: "VALIDATION_ERROR",
+          email: rawEmail
+        },
+        ipAddress: requestIp(req)
+      });
+      return fail(res, 400, "VALIDATION_ERROR", "Invalid login payload", parsed.error);
+    }
 
-    const statusCode = result.reason === "INVALID_CREDENTIALS" ? 401 : 403;
-    return fail(res, statusCode, result.reason, reasonMessage);
-  }
+    if (!hasJwtSecrets()) {
+      console.error("AUTH_LOGIN_ERROR", {
+        reason: "JWT_SECRETS_MISSING_OR_INVALID",
+        requestId: req.requestId ?? null
+      });
+      return fail(res, 500, "AUTH_CONFIG_ERROR", "Authentication is not configured");
+    }
 
-  res.cookie("accessToken", result.accessToken, accessCookieConfig);
-  res.cookie("refreshToken", result.refreshToken, refreshCookieConfig);
+    const body = parsed.data;
+    const result = await login(body.email, body.password);
+    if (!result.ok) {
+      const reasonMessage =
+        result.reason === "ACCOUNT_PENDING"
+          ? "Your account is pending approval"
+          : result.reason === "ACCOUNT_SUSPENDED"
+            ? "Your account is suspended"
+            : result.reason === "AUTH_CONFIG_ERROR"
+              ? "Authentication is not configured"
+              : "Invalid email/password";
 
-  await createAuditLog({
-    actorUserId: result.user.id,
-    action: "LOGIN_SUCCESS",
-    entityType: "auth",
-    detailsJson: { email: result.user.email },
-    ipAddress: requestIp(req)
-  });
+      await createAuditLog({
+        actorUserId: result.userId ?? null,
+        action: "LOGIN_FAILED",
+        entityType: "auth",
+        detailsJson: {
+          email: body.email,
+          reason: result.reason
+        },
+        ipAddress: requestIp(req)
+      });
 
-  return ok(
-    res,
-    {
-      user: {
-        id: result.user.id,
-        email: result.user.email,
-        fullName: result.user.fullName,
-        role: toRbacRole(result.user.role),
-        roleLabel: ROLE_LABEL[toRbacRole(result.user.role)],
-        status: result.user.status
+      const statusCode =
+        result.reason === "INVALID_CREDENTIALS"
+          ? 401
+          : result.reason === "AUTH_CONFIG_ERROR"
+            ? 500
+            : 403;
+
+      if (result.reason === "AUTH_CONFIG_ERROR") {
+        console.error("AUTH_LOGIN_ERROR", {
+          reason: "TOKEN_GENERATION_FAILED",
+          userId: result.userId ?? null,
+          requestId: req.requestId ?? null
+        });
       }
-    },
-    "Logged in"
-  );
+
+      return fail(res, statusCode, result.reason, reasonMessage);
+    }
+
+    res.cookie(accessCookieName, result.accessToken, accessCookieConfig);
+    res.cookie(refreshCookieName, result.refreshToken, refreshCookieConfig);
+
+    await createAuditLog({
+      actorUserId: result.user.id,
+      action: "LOGIN_SUCCESS",
+      entityType: "auth",
+      detailsJson: { email: result.user.email },
+      ipAddress: requestIp(req)
+    });
+
+    return ok(
+      res,
+      {
+        user: {
+          id: result.user.id,
+          email: result.user.email,
+          fullName: result.user.fullName,
+          role: toRbacRole(result.user.role),
+          roleLabel: ROLE_LABEL[toRbacRole(result.user.role)],
+          status: result.user.status
+        }
+      },
+      "Logged in"
+    );
+  } catch (error) {
+    console.error("AUTH_LOGIN_ERROR", {
+      requestId: req.requestId ?? null,
+      error
+    });
+    return fail(res, 500, "INTERNAL_ERROR", "Unexpected server error", {
+      requestId: req.requestId ?? null
+    });
+  }
 });
 
 authRouter.post("/refresh", async (req, res) => {
-  const refreshToken = req.cookies?.refreshToken as string | undefined;
-  if (!refreshToken) {
+  try {
+    if (!hasJwtSecrets()) {
+      console.error("AUTH_REFRESH_ERROR", {
+        reason: "JWT_SECRETS_MISSING_OR_INVALID",
+        requestId: req.requestId ?? null
+      });
+      return fail(res, 500, "AUTH_CONFIG_ERROR", "Authentication is not configured");
+    }
+
+    const refreshToken = req.cookies?.[refreshCookieName] as string | undefined;
+    if (!refreshToken) {
+      await createAuditLog({
+        action: "TOKEN_REFRESH_FAILED",
+        entityType: "auth",
+        detailsJson: { reason: "MISSING_REFRESH_COOKIE" },
+        ipAddress: requestIp(req)
+      });
+      return fail(res, 401, "UNAUTHORIZED", "Missing refresh token");
+    }
+
+    const rotated = await rotateRefreshToken(refreshToken);
+    if (!rotated) {
+      await createAuditLog({
+        action: "TOKEN_REFRESH_FAILED",
+        entityType: "auth",
+        detailsJson: { reason: "INVALID_REFRESH_TOKEN" },
+        ipAddress: requestIp(req)
+      });
+      return fail(res, 401, "UNAUTHORIZED", "Invalid refresh token");
+    }
+
+    res.cookie(accessCookieName, rotated.accessToken, accessCookieConfig);
+    res.cookie(refreshCookieName, rotated.refreshToken, refreshCookieConfig);
+
     await createAuditLog({
-      action: "TOKEN_REFRESH_FAILED",
+      actorUserId: rotated.user.id,
+      action: "TOKEN_REFRESH_SUCCESS",
       entityType: "auth",
-      detailsJson: { reason: "MISSING_REFRESH_COOKIE" },
+      detailsJson: { userId: rotated.user.id },
       ipAddress: requestIp(req)
     });
-    return fail(res, 401, "UNAUTHORIZED", "Missing refresh token");
-  }
 
-  const rotated = await rotateRefreshToken(refreshToken);
-  if (!rotated) {
-    await createAuditLog({
-      action: "TOKEN_REFRESH_FAILED",
-      entityType: "auth",
-      detailsJson: { reason: "INVALID_REFRESH_TOKEN" },
-      ipAddress: requestIp(req)
+    return ok(res, {}, "Token refreshed");
+  } catch (error) {
+    console.error("AUTH_REFRESH_ERROR", {
+      requestId: req.requestId ?? null,
+      error
     });
-    return fail(res, 401, "UNAUTHORIZED", "Invalid refresh token");
+    return fail(res, 500, "INTERNAL_ERROR", "Unexpected server error", {
+      requestId: req.requestId ?? null
+    });
   }
-
-  res.cookie("accessToken", rotated.accessToken, accessCookieConfig);
-  res.cookie("refreshToken", rotated.refreshToken, refreshCookieConfig);
-
-  await createAuditLog({
-    actorUserId: rotated.user.id,
-    action: "TOKEN_REFRESH_SUCCESS",
-    entityType: "auth",
-    detailsJson: { userId: rotated.user.id },
-    ipAddress: requestIp(req)
-  });
-
-  return ok(res, {}, "Token refreshed");
 });
 
 authRouter.post("/logout", requireAuth, async (req, res) => {
-  const refreshToken = req.cookies?.refreshToken as string | undefined;
+  const refreshToken = req.cookies?.[refreshCookieName] as string | undefined;
   const userId = req.user?.id ?? null;
 
   await revokeRefreshToken(refreshToken);
-  res.clearCookie("accessToken", clearCookieConfig);
-  res.clearCookie("refreshToken", clearCookieConfig);
+  res.clearCookie(accessCookieName, clearCookieConfig);
+  res.clearCookie(refreshCookieName, clearCookieConfig);
 
   await createAuditLog({
     actorUserId: userId,
@@ -177,25 +254,35 @@ authRouter.post("/logout", requireAuth, async (req, res) => {
 });
 
 authRouter.get("/me", requireAuth, async (req, res) => {
-  await createAuditLog({
-    actorUserId: req.user!.id,
-    action: "AUTH_ME",
-    entityType: "user",
-    entityId: req.user!.id,
-    detailsJson: { route: "/auth/me" },
-    ipAddress: requestIp(req)
-  });
+  try {
+    await createAuditLog({
+      actorUserId: req.user!.id,
+      action: "AUTH_ME",
+      entityType: "user",
+      entityId: req.user!.id,
+      detailsJson: { route: "/auth/me" },
+      ipAddress: requestIp(req)
+    });
 
-  return ok(res, {
-    user: {
-      id: req.user!.id,
-      email: req.user!.email,
-      fullName: req.user!.fullName,
-      role: toRbacRole(req.user!.role),
-      roleLabel: ROLE_LABEL[toRbacRole(req.user!.role)],
-      status: req.user!.status
-    }
-  });
+    return ok(res, {
+      user: {
+        id: req.user!.id,
+        email: req.user!.email,
+        fullName: req.user!.fullName,
+        role: toRbacRole(req.user!.role),
+        roleLabel: ROLE_LABEL[toRbacRole(req.user!.role)],
+        status: req.user!.status
+      }
+    });
+  } catch (error) {
+    console.error("AUTH_ME_ERROR", {
+      requestId: req.requestId ?? null,
+      error
+    });
+    return fail(res, 500, "INTERNAL_ERROR", "Unexpected server error", {
+      requestId: req.requestId ?? null
+    });
+  }
 });
 
 authRouter.post("/change-password", requireAuth, validateBody(changePasswordSchema), async (req, res) => {
@@ -216,8 +303,8 @@ authRouter.post("/change-password", requireAuth, validateBody(changePasswordSche
     return fail(res, 400, "INVALID_PASSWORD", "Current password is invalid");
   }
 
-  res.cookie("accessToken", changed.accessToken, accessCookieConfig);
-  res.cookie("refreshToken", changed.refreshToken, refreshCookieConfig);
+  res.cookie(accessCookieName, changed.accessToken, accessCookieConfig);
+  res.cookie(refreshCookieName, changed.refreshToken, refreshCookieConfig);
 
   await createAuditLog({
     actorUserId: req.user!.id,
