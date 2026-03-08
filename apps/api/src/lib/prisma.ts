@@ -1,4 +1,140 @@
 import { PrismaClient } from "@prisma/client";
+import { env } from "../config/env.js";
 
-export const prisma = new PrismaClient();
+const DEFAULT_APP_DB_SCHEMA = "public";
 
+function normalizePrismaDatasourceUrl(rawUrl: string) {
+  if (!rawUrl.trim()) {
+    return rawUrl;
+  }
+
+  try {
+    const parsed = new URL(rawUrl);
+    const isPostgres = parsed.protocol === "postgresql:" || parsed.protocol === "postgres:";
+    if (!isPostgres) {
+      return rawUrl;
+    }
+
+    const configuredSchema = (parsed.searchParams.get("schema") ?? "").trim();
+    if (!configuredSchema) {
+      parsed.searchParams.set("schema", DEFAULT_APP_DB_SCHEMA);
+      return parsed.toString();
+    }
+
+    if (configuredSchema.toLowerCase() !== DEFAULT_APP_DB_SCHEMA) {
+      console.error("DB_METADATA_CHECK_ERROR", {
+        reason: "DATABASE_URL_SCHEMA_OVERRIDE",
+        fromSchema: configuredSchema,
+        toSchema: DEFAULT_APP_DB_SCHEMA
+      });
+      parsed.searchParams.set("schema", DEFAULT_APP_DB_SCHEMA);
+      return parsed.toString();
+    }
+
+    return rawUrl;
+  } catch {
+    return rawUrl;
+  }
+}
+
+const prismaDatasourceUrl = normalizePrismaDatasourceUrl(
+  env.DATABASE_URL ?? process.env.DATABASE_URL ?? ""
+);
+
+export const prisma = prismaDatasourceUrl
+  ? new PrismaClient({
+      datasources: {
+        db: {
+          url: prismaDatasourceUrl
+        }
+      }
+    })
+  : new PrismaClient();
+
+type BoolCell = { exists: boolean | null };
+
+async function checkSupabaseMetadataTable() {
+  try {
+    const rows = await prisma.$queryRaw<Array<BoolCell>>`
+      SELECT EXISTS (
+        SELECT 1
+        FROM information_schema.tables
+        WHERE table_schema = 'supabase_migrations'
+          AND table_name = 'schema_migrations'
+      ) AS "exists"
+    `;
+
+    const exists = rows[0]?.exists === true;
+    if (!exists) {
+      console.error("DB_METADATA_CHECK_ERROR", {
+        reason: "SUPABASE_SCHEMA_MIGRATIONS_NOT_FOUND"
+      });
+    }
+  } catch (error) {
+    console.error("DB_METADATA_CHECK_ERROR", {
+      reason: "SUPABASE_METADATA_CHECK_FAILED",
+      error
+    });
+  }
+}
+
+async function checkAppUserTable() {
+  try {
+    const rows = await prisma.$queryRaw<Array<{ users: string | null; user: string | null }>>`
+      SELECT
+        to_regclass('public.users')::text AS users,
+        to_regclass('public."User"')::text AS "user"
+    `;
+    const hasUsers = Boolean(rows[0]?.users);
+    const hasUser = Boolean(rows[0]?.user);
+    if (!hasUsers && !hasUser) {
+      console.error("PRISMA_INIT_ERROR", {
+        reason: "APP_USER_TABLE_NOT_FOUND",
+        expectedTables: ["public.users", "public.\"User\""]
+      });
+    }
+  } catch (error) {
+    console.error("PRISMA_INIT_ERROR", {
+      reason: "APP_TABLE_METADATA_CHECK_FAILED",
+      error
+    });
+  }
+}
+
+export async function runPrismaStartupChecks() {
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+  } catch (error) {
+    console.error("PRISMA_INIT_ERROR", {
+      reason: "DATABASE_CONNECTION_FAILED",
+      error
+    });
+    return;
+  }
+
+  try {
+    const rows = await prisma.$queryRaw<
+      Array<{
+        currentSchema: string | null;
+        searchPath: string | null;
+      }>
+    >`
+      SELECT
+        current_schema()::text AS "currentSchema",
+        current_setting('search_path', true)::text AS "searchPath"
+    `;
+    const row = rows[0] ?? null;
+    console.info("DB_SCHEMA_CONTEXT", {
+      currentSchema: row?.currentSchema ?? null,
+      searchPath: row?.searchPath ?? null
+    });
+  } catch (error) {
+    console.error("DB_METADATA_CHECK_ERROR", {
+      reason: "DB_SCHEMA_CONTEXT_READ_FAILED",
+      error
+    });
+  }
+
+  await checkSupabaseMetadataTable();
+  await checkAppUserTable();
+}

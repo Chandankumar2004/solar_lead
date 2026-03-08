@@ -109,7 +109,7 @@ async function queryFallbackUserRowByEmail(email: string): Promise<LooseDbRow | 
       run: () =>
         prisma.$queryRaw<Array<LooseDbRow>>`
           SELECT *
-          FROM users
+          FROM public.users
           WHERE lower(email) = lower(${email})
           LIMIT 1
         `
@@ -119,7 +119,7 @@ async function queryFallbackUserRowByEmail(email: string): Promise<LooseDbRow | 
       run: () =>
         prisma.$queryRaw<Array<LooseDbRow>>`
           SELECT *
-          FROM "User"
+          FROM public."User"
           WHERE lower("email") = lower(${email})
           LIMIT 1
         `
@@ -157,7 +157,7 @@ async function queryFallbackUserRowById(userId: string): Promise<LooseDbRow | nu
       run: () =>
         prisma.$queryRaw<Array<LooseDbRow>>`
           SELECT *
-          FROM users
+          FROM public.users
           WHERE id::text = ${userId}
           LIMIT 1
         `
@@ -167,7 +167,7 @@ async function queryFallbackUserRowById(userId: string): Promise<LooseDbRow | nu
       run: () =>
         prisma.$queryRaw<Array<LooseDbRow>>`
           SELECT *
-          FROM "User"
+          FROM public."User"
           WHERE "id"::text = ${userId}
           LIMIT 1
         `

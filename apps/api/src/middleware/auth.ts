@@ -13,12 +13,28 @@ interface AccessPayload {
   typ: "access";
 }
 
+type LooseDbRow = Record<string, unknown>;
+
+function readString(row: LooseDbRow, keys: string[]) {
+  for (const key of keys) {
+    const value = row[key];
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  return null;
+}
+
 function normalizeRole(rawRole: string): UserRole | null {
   const role = rawRole.trim().toUpperCase();
   if (role === "SUPER_ADMIN") return "SUPER_ADMIN";
+  if (role === "SUPERADMIN") return "SUPER_ADMIN";
+  if (role === "SUPER-ADMIN") return "SUPER_ADMIN";
   if (role === "ADMIN") return "ADMIN";
   if (role === "MANAGER" || role === "DISTRICT_MANAGER") return "MANAGER";
+  if (role === "DISTRICT-MANAGER" || role === "DISTRICTMANAGER") return "MANAGER";
   if (role === "EXECUTIVE" || role === "FIELD_EXECUTIVE") return "EXECUTIVE";
+  if (role === "FIELD-EXECUTIVE" || role === "FIELDEXECUTIVE") return "EXECUTIVE";
   return null;
 }
 
@@ -92,50 +108,77 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
 
   if (!user) {
     try {
-      const fallbackRows = await prisma.$queryRaw<
-        Array<{
-          id: string;
-          email: string;
-          fullName: string;
-          role: string;
-          status: string;
-        }>
-      >`
-        SELECT
-          id::text AS "id",
-          email,
-          full_name AS "fullName",
-          role::text AS "role",
-          status::text AS "status"
-        FROM users
-        WHERE id = ${payload.sub}::uuid
-        LIMIT 1
-      `;
+      const fallbackCandidates = [
+        prisma.$queryRaw<Array<LooseDbRow>>`
+          SELECT *
+          FROM public.users
+          WHERE id::text = ${payload.sub}
+          LIMIT 1
+        `,
+        prisma.$queryRaw<Array<LooseDbRow>>`
+          SELECT *
+          FROM public."User"
+          WHERE "id"::text = ${payload.sub}
+          LIMIT 1
+        `
+      ];
 
-      const row = fallbackRows[0];
+      let row: LooseDbRow | null = null;
+      for (const candidate of fallbackCandidates) {
+        try {
+          const rows = await candidate;
+          if (rows[0]) {
+            row = rows[0];
+            break;
+          }
+        } catch (error) {
+          console.error("AUTH_ME_ERROR", {
+            reason: "FALLBACK_USER_LOOKUP_QUERY_FAILED",
+            userId: payload.sub,
+            requestId: req.requestId ?? null
+          });
+          console.error("auth_user_fallback_query_failed", {
+            userId: payload.sub,
+            error
+          });
+        }
+      }
+
       if (row) {
-        const role = normalizeRole(row.role);
-        const status = normalizeStatus(row.status);
-        if (role && status) {
+        const id = readString(row, ["id", "ID", "user_id", "userId"]);
+        const email = readString(row, ["email", "Email", "EMAIL"]);
+        const fullName = readString(row, ["full_name", "fullName", "fullname", "name"]) ?? email;
+        const rawRole = readString(row, ["role", "user_role", "userRole"]);
+        const rawStatus = readString(row, ["status", "user_status", "userStatus"]);
+        const role = rawRole ? normalizeRole(rawRole) : null;
+        const status = rawStatus ? normalizeStatus(rawStatus) : null;
+
+        if (id && email && fullName && role && status) {
           user = {
-            id: row.id,
-            email: row.email,
-            fullName: row.fullName,
+            id,
+            email,
+            fullName,
             role,
             status
           };
         } else {
           console.error("AUTH_ME_ERROR", {
             reason: "USER_ENUM_MISMATCH",
-            userId: row.id,
+            userId: id ?? payload.sub,
             requestId: req.requestId ?? null
           });
           console.error("auth_user_enum_mismatch", {
-            userId: row.id,
-            role: row.role,
-            status: row.status
+            userId: id ?? payload.sub,
+            role: rawRole,
+            status: rawStatus
           });
         }
+      } else {
+        console.error("AUTH_ME_ERROR", {
+          reason: "FALLBACK_USER_NOT_FOUND",
+          userId: payload.sub,
+          requestId: req.requestId ?? null
+        });
       }
     } catch (error) {
       console.error("AUTH_ME_ERROR", {
