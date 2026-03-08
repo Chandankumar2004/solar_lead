@@ -30,7 +30,10 @@ type PublicLeadFormProps = {
 
 export function PublicLeadForm({ districtMapping }: PublicLeadFormProps) {
   const searchParams = useSearchParams();
-  const rawRecaptchaSiteKey = process.env.NEXT_PUBLIC_RECAPTCHA_SITE_KEY;
+  const rawRecaptchaSiteKey =
+    process.env.NEXT_PUBLIC_RECAPTCHA_SITE_KEY ??
+    process.env.NEXT_PUBLIC_GOOGLE_RECAPTCHA_SITE_KEY ??
+    process.env.NEXT_PUBLIC_RECAPTCHA_SITEKEY;
   const recaptchaSiteKey = resolveRecaptchaSiteKey(rawRecaptchaSiteKey);
   const recaptchaConfigInvalid = Boolean(rawRecaptchaSiteKey?.trim()) && !recaptchaSiteKey;
   const [districtSearch, setDistrictSearch] = useState("");

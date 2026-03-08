@@ -2,6 +2,17 @@ import { env } from "../config/env.js";
 
 const RECAPTCHA_VERIFY_ENDPOINT = "https://www.google.com/recaptcha/api/siteverify";
 
+function stripWrappingQuotes(raw: string) {
+  const trimmed = raw.trim();
+  if (
+    (trimmed.startsWith("\"") && trimmed.endsWith("\"")) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed.slice(1, -1).trim();
+  }
+  return trimmed;
+}
+
 type RecaptchaErrorReason =
   | "SECRET_MISSING"
   | "TOKEN_MISSING"
@@ -25,13 +36,15 @@ export type VerifyRecaptchaResult =
     };
 
 export function resolveRecaptchaSecret() {
-  const secret = (
+  const secret = stripWrappingQuotes(
     env.RECAPTCHA_SECRET_KEY ??
     env.GOOGLE_RECAPTCHA_SECRET_KEY ??
+    process.env.RECAPTCHA_SECRET ??
+    process.env.GOOGLE_RECAPTCHA_SECRET ??
     process.env.RECAPTCHA_SECRET_KEY ??
     process.env.GOOGLE_RECAPTCHA_SECRET_KEY ??
     ""
-  ).trim();
+  );
 
   return secret.length > 0 ? secret : null;
 }

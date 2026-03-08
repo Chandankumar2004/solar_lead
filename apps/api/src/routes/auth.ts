@@ -123,7 +123,8 @@ authRouter.post("/login", async (req, res) => {
             res,
             400,
             "RECAPTCHA_TOKEN_MISSING",
-            "reCAPTCHA token is required"
+            "reCAPTCHA token is required",
+            recaptchaMeta
           );
         }
 
@@ -134,9 +135,10 @@ authRouter.post("/login", async (req, res) => {
           });
           return fail(
             res,
-            401,
+            400,
             "RECAPTCHA_ACTION_MISMATCH",
-            "reCAPTCHA action mismatch"
+            "reCAPTCHA action mismatch",
+            recaptchaMeta
           );
         }
 
@@ -147,9 +149,10 @@ authRouter.post("/login", async (req, res) => {
           });
           return fail(
             res,
-            401,
+            400,
             "RECAPTCHA_TOKEN_INVALID",
-            "reCAPTCHA verification failed"
+            "reCAPTCHA verification failed",
+            recaptchaMeta
           );
         }
 

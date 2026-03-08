@@ -1,3 +1,14 @@
+function stripWrappingQuotes(raw: string) {
+  const trimmed = raw.trim();
+  if (
+    (trimmed.startsWith("\"") && trimmed.endsWith("\"")) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed.slice(1, -1).trim();
+  }
+  return trimmed;
+}
+
 export type GrecaptchaClient = {
   ready(cb: () => void): void;
   execute(siteKey: string, options: { action: string }): Promise<string>;
@@ -10,7 +21,7 @@ declare global {
 }
 
 export function resolveRecaptchaSiteKey(rawSiteKey: string | undefined) {
-  const key = (rawSiteKey ?? "").trim();
+  const key = stripWrappingQuotes(rawSiteKey ?? "");
   if (!key) {
     return null;
   }

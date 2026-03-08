@@ -19,7 +19,10 @@ export function LoginForm() {
   const [recaptchaScriptFailed, setRecaptchaScriptFailed] = useState(false);
   const router = useRouter();
   const setUser = useAuthStore((s) => s.setUser);
-  const rawRecaptchaSiteKey = process.env.NEXT_PUBLIC_RECAPTCHA_SITE_KEY;
+  const rawRecaptchaSiteKey =
+    process.env.NEXT_PUBLIC_RECAPTCHA_SITE_KEY ??
+    process.env.NEXT_PUBLIC_GOOGLE_RECAPTCHA_SITE_KEY ??
+    process.env.NEXT_PUBLIC_RECAPTCHA_SITEKEY;
   const recaptchaSiteKey = resolveRecaptchaSiteKey(rawRecaptchaSiteKey);
   const recaptchaConfigInvalid = Boolean(rawRecaptchaSiteKey?.trim()) && !recaptchaSiteKey;
   const {
@@ -74,7 +77,18 @@ export function LoginForm() {
         return null;
       }
 
-      if (typeof window === "undefined" || !window.grecaptcha) {
+      if (typeof window === "undefined") {
+        return null;
+      }
+
+      for (let attempt = 0; attempt < 15; attempt += 1) {
+        if (window.grecaptcha) {
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+
+      if (!window.grecaptcha) {
         console.error("RECAPTCHA_CONFIG_ERROR", {
           reason: "GRECAPTCHA_NOT_READY",
           target: "ADMIN_LOGIN"
@@ -111,11 +125,20 @@ export function LoginForm() {
       setUser(resp.data.data.user);
       router.push("/dashboard");
     } catch (error) {
-      if (axios.isAxiosError(error) && error.code === "ERR_NETWORK") {
-        console.error("AUTH_LOGIN_ERROR", {
-          reason: "NETWORK_OR_CORS",
-          apiBaseUrl: process.env.NEXT_PUBLIC_API_BASE_URL ?? null
-        });
+      if (axios.isAxiosError(error)) {
+        if (error.code === "ERR_NETWORK") {
+          console.error("AUTH_LOGIN_ERROR", {
+            reason: "NETWORK_OR_CORS",
+            apiBaseUrl: process.env.NEXT_PUBLIC_API_BASE_URL ?? null
+          });
+        } else {
+          console.error("AUTH_LOGIN_ERROR", {
+            reason: "LOGIN_REQUEST_FAILED",
+            status: error.response?.status ?? null,
+            code: error.response?.data?.error?.code ?? null,
+            message: error.response?.data?.message ?? null
+          });
+        }
       }
       setError(getApiErrorMessage(error, "Login failed"));
     }

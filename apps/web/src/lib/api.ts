@@ -40,7 +40,11 @@ export function getApiErrorMessage(error: unknown, fallbackMessage: string) {
   }
 
   const apiMessage = error.response?.data?.message;
+  const apiCode = error.response?.data?.error?.code;
   if (typeof apiMessage === "string" && apiMessage.trim().length > 0) {
+    if (typeof apiCode === "string" && apiCode.trim().length > 0) {
+      return `${apiMessage} [${apiCode}]`;
+    }
     return apiMessage;
   }
 
