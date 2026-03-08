@@ -2,8 +2,8 @@ import bcrypt from "bcryptjs";
 import crypto from "node:crypto";
 import { randomUUID } from "node:crypto";
 import jwt from "jsonwebtoken";
-import { UserRole, UserStatus } from "@prisma/client";
-import { prisma } from "../lib/prisma.js";
+import { PrismaClient, UserRole, UserStatus } from "@prisma/client";
+import { prisma, prismaAuthFallback } from "../lib/prisma.js";
 import { env } from "../config/env.js";
 
 const ACCESS_TOKEN_TTL_SECONDS = 15 * 60;
@@ -52,6 +52,7 @@ type SessionUser = {
 };
 
 type LooseDbRow = Record<string, unknown>;
+type AuthDbClient = PrismaClient;
 
 function toNonEmptyString(value: unknown): string | null {
   if (typeof value !== "string") {
@@ -128,9 +129,9 @@ function pickColumn(columns: string[], candidates: string[]) {
   return null;
 }
 
-async function discoverUserTables() {
+async function discoverUserTables(db: AuthDbClient) {
   try {
-    const rows = await prisma.$queryRaw<Array<UserTableLocation>>`
+    const rows = await db.$queryRaw<Array<UserTableLocation>>`
       SELECT
         table_schema AS "tableSchema",
         table_name AS "tableName"
@@ -154,11 +155,11 @@ async function discoverUserTables() {
   }
 }
 
-async function discoverUserRowByEmail(email: string): Promise<LooseDbRow | null> {
-  const tables = await discoverUserTables();
+async function discoverUserRowByEmail(db: AuthDbClient, email: string): Promise<LooseDbRow | null> {
+  const tables = await discoverUserTables(db);
   for (const table of tables) {
     try {
-      const columnsRows = await prisma.$queryRaw<Array<{ columnName: string }>>`
+      const columnsRows = await db.$queryRaw<Array<{ columnName: string }>>`
         SELECT column_name AS "columnName"
         FROM information_schema.columns
         WHERE table_schema = ${table.tableSchema}
@@ -208,7 +209,7 @@ async function discoverUserRowByEmail(email: string): Promise<LooseDbRow | null>
         LIMIT 1
       `;
 
-      const rows = await prisma.$queryRawUnsafe<Array<LooseDbRow>>(sql, email);
+      const rows = await db.$queryRawUnsafe<Array<LooseDbRow>>(sql, email);
       if (rows[0]) {
         console.info("AUTH_LOGIN_DB_FALLBACK_DISCOVERED_TABLE", {
           stage: "LOGIN_USER_DISCOVERY_MATCH",
@@ -229,11 +230,11 @@ async function discoverUserRowByEmail(email: string): Promise<LooseDbRow | null>
   return null;
 }
 
-async function discoverUserRowById(userId: string): Promise<LooseDbRow | null> {
-  const tables = await discoverUserTables();
+async function discoverUserRowById(db: AuthDbClient, userId: string): Promise<LooseDbRow | null> {
+  const tables = await discoverUserTables(db);
   for (const table of tables) {
     try {
-      const columnsRows = await prisma.$queryRaw<Array<{ columnName: string }>>`
+      const columnsRows = await db.$queryRaw<Array<{ columnName: string }>>`
         SELECT column_name AS "columnName"
         FROM information_schema.columns
         WHERE table_schema = ${table.tableSchema}
@@ -275,7 +276,7 @@ async function discoverUserRowById(userId: string): Promise<LooseDbRow | null> {
         LIMIT 1
       `;
 
-      const rows = await prisma.$queryRawUnsafe<Array<LooseDbRow>>(sql, userId);
+      const rows = await db.$queryRawUnsafe<Array<LooseDbRow>>(sql, userId);
       if (rows[0]) {
         console.info("AUTH_LOGIN_DB_FALLBACK_DISCOVERED_TABLE", {
           stage: "SESSION_USER_DISCOVERY_MATCH",
@@ -296,12 +297,12 @@ async function discoverUserRowById(userId: string): Promise<LooseDbRow | null> {
   return null;
 }
 
-async function queryFallbackUserRowByEmail(email: string): Promise<LooseDbRow | null> {
+async function queryFallbackUserRowByEmail(db: AuthDbClient, email: string): Promise<LooseDbRow | null> {
   const variants: Array<{ name: string; run: () => Promise<Array<LooseDbRow>> }> = [
     {
       name: "users_table",
       run: () =>
-        prisma.$queryRaw<Array<LooseDbRow>>`
+        db.$queryRaw<Array<LooseDbRow>>`
           SELECT *
           FROM public.users
           WHERE lower(email) = lower(${email})
@@ -311,7 +312,7 @@ async function queryFallbackUserRowByEmail(email: string): Promise<LooseDbRow | 
     {
       name: "User_table",
       run: () =>
-        prisma.$queryRaw<Array<LooseDbRow>>`
+        db.$queryRaw<Array<LooseDbRow>>`
           SELECT *
           FROM public."User"
           WHERE lower("email") = lower(${email})
@@ -341,25 +342,25 @@ async function queryFallbackUserRowByEmail(email: string): Promise<LooseDbRow | 
   }
 
   if (lastError && !hadSuccessfulQuery) {
-    const discovered = await discoverUserRowByEmail(email);
+    const discovered = await discoverUserRowByEmail(db, email);
     if (discovered) {
       return discovered;
     }
     throw lastError;
   }
-  const discovered = await discoverUserRowByEmail(email);
+  const discovered = await discoverUserRowByEmail(db, email);
   if (discovered) {
     return discovered;
   }
   return null;
 }
 
-async function queryFallbackUserRowById(userId: string): Promise<LooseDbRow | null> {
+async function queryFallbackUserRowById(db: AuthDbClient, userId: string): Promise<LooseDbRow | null> {
   const variants: Array<{ name: string; run: () => Promise<Array<LooseDbRow>> }> = [
     {
       name: "users_table",
       run: () =>
-        prisma.$queryRaw<Array<LooseDbRow>>`
+        db.$queryRaw<Array<LooseDbRow>>`
           SELECT *
           FROM public.users
           WHERE id::text = ${userId}
@@ -369,7 +370,7 @@ async function queryFallbackUserRowById(userId: string): Promise<LooseDbRow | nu
     {
       name: "User_table",
       run: () =>
-        prisma.$queryRaw<Array<LooseDbRow>>`
+        db.$queryRaw<Array<LooseDbRow>>`
           SELECT *
           FROM public."User"
           WHERE "id"::text = ${userId}
@@ -398,21 +399,104 @@ async function queryFallbackUserRowById(userId: string): Promise<LooseDbRow | nu
     }
   }
   if (lastError && !hadSuccessfulQuery) {
-    const discovered = await discoverUserRowById(userId);
+    const discovered = await discoverUserRowById(db, userId);
     if (discovered) {
       return discovered;
     }
     throw lastError;
   }
-  const discovered = await discoverUserRowById(userId);
+  const discovered = await discoverUserRowById(db, userId);
   if (discovered) {
     return discovered;
   }
   return null;
 }
 
+function mapLooseRowToLoginUser(email: string, row: LooseDbRow): LoginUser | null {
+  const id = readFirstString(row, ["id", "ID", "user_id", "userId"]);
+  const resolvedEmail = readFirstString(row, ["email", "Email", "EMAIL"]);
+  const fullName =
+    readFirstString(row, ["full_name", "fullName", "fullname", "name"]) ?? resolvedEmail;
+  const passwordHash = readFirstString(row, ["password_hash", "passwordHash", "password", "pwd_hash"]);
+  const rawRole = readFirstString(row, ["role", "user_role", "userRole"]);
+  const rawStatus = readFirstString(row, ["status", "user_status", "userStatus"]);
+
+  if (!id || !resolvedEmail || !fullName || !passwordHash || !rawRole || !rawStatus) {
+    console.error("login_user_row_missing_required_fields", {
+      email,
+      hasId: Boolean(id),
+      hasEmail: Boolean(resolvedEmail),
+      hasFullName: Boolean(fullName),
+      hasPasswordHash: Boolean(passwordHash),
+      hasRole: Boolean(rawRole),
+      hasStatus: Boolean(rawStatus)
+    });
+    return null;
+  }
+
+  const role = normalizeRole(rawRole);
+  const status = normalizeStatus(rawStatus);
+  if (!role || !status) {
+    console.error("login_user_enum_mismatch", {
+      email: resolvedEmail,
+      role: rawRole,
+      status: rawStatus
+    });
+    return null;
+  }
+
+  return {
+    id,
+    email: resolvedEmail,
+    fullName,
+    role,
+    status,
+    passwordHash
+  };
+}
+
+function mapLooseRowToSessionUser(userId: string, row: LooseDbRow): SessionUser | null {
+  const id = readFirstString(row, ["id", "ID", "user_id", "userId"]);
+  const email = readFirstString(row, ["email", "Email", "EMAIL"]);
+  const fullName = readFirstString(row, ["full_name", "fullName", "fullname", "name"]) ?? email;
+  const rawRole = readFirstString(row, ["role", "user_role", "userRole"]);
+  const rawStatus = readFirstString(row, ["status", "user_status", "userStatus"]);
+
+  if (!id || !email || !fullName || !rawRole || !rawStatus) {
+    console.error("session_user_row_missing_required_fields", {
+      userId,
+      hasId: Boolean(id),
+      hasEmail: Boolean(email),
+      hasFullName: Boolean(fullName),
+      hasRole: Boolean(rawRole),
+      hasStatus: Boolean(rawStatus)
+    });
+    return null;
+  }
+
+  const role = normalizeRole(rawRole);
+  const status = normalizeStatus(rawStatus);
+  if (!role || !status) {
+    console.error("session_user_enum_mismatch", {
+      userId: id,
+      role: rawRole,
+      status: rawStatus
+    });
+    return null;
+  }
+
+  return {
+    id,
+    email,
+    fullName,
+    role,
+    status
+  };
+}
+
 async function findLoginUserByEmail(email: string): Promise<LoginUser | null> {
   let primaryLookupFailed = false;
+  const hasAlternateDatasource = prismaAuthFallback !== prisma;
 
   try {
     return await prisma.user.findUnique({
@@ -435,69 +519,65 @@ async function findLoginUserByEmail(email: string): Promise<LoginUser | null> {
     });
   }
 
-  try {
-    const row = await queryFallbackUserRowByEmail(email);
-    if (!row) return null;
-
-    const id = readFirstString(row, ["id", "ID", "user_id", "userId"]);
-    const resolvedEmail = readFirstString(row, ["email", "Email", "EMAIL"]);
-    const fullName =
-      readFirstString(row, ["full_name", "fullName", "fullname", "name"]) ?? resolvedEmail;
-    const passwordHash = readFirstString(row, [
-      "password_hash",
-      "passwordHash",
-      "password",
-      "pwd_hash"
-    ]);
-    const rawRole = readFirstString(row, ["role", "user_role", "userRole"]);
-    const rawStatus = readFirstString(row, ["status", "user_status", "userStatus"]);
-
-    if (!id || !resolvedEmail || !fullName || !passwordHash || !rawRole || !rawStatus) {
-      console.error("login_user_row_missing_required_fields", {
+  if (hasAlternateDatasource) {
+    try {
+      return await prismaAuthFallback.user.findUnique({
+        where: { email },
+        select: {
+          id: true,
+          email: true,
+          fullName: true,
+          role: true,
+          status: true,
+          passwordHash: true
+        }
+      });
+    } catch (error) {
+      console.error("AUTH_LOGIN_DB_ERROR", {
+        stage: "LOGIN_USER_PRISMA_LOOKUP_ALTERNATE",
         email,
-        hasId: Boolean(id),
-        hasEmail: Boolean(resolvedEmail),
-        hasFullName: Boolean(fullName),
-        hasPasswordHash: Boolean(passwordHash),
-        hasRole: Boolean(rawRole),
-        hasStatus: Boolean(rawStatus)
+        error
       });
-      return null;
     }
+  }
 
-    const role = normalizeRole(rawRole);
-    const status = normalizeStatus(rawStatus);
-    if (!role || !status) {
-      console.error("login_user_enum_mismatch", {
-        email: resolvedEmail,
-        role: rawRole,
-        status: rawStatus
-      });
-      return null;
+  try {
+    const primaryRow = await queryFallbackUserRowByEmail(prisma, email);
+    if (primaryRow) {
+      return mapLooseRowToLoginUser(email, primaryRow);
     }
-
-    return {
-      id,
-      email: resolvedEmail,
-      fullName,
-      role,
-      status,
-      passwordHash
-    };
   } catch (error) {
     console.error("AUTH_LOGIN_DB_ERROR", {
       stage: "LOGIN_USER_FALLBACK_LOOKUP",
       email,
       error
     });
-    if (primaryLookupFailed) {
-      throw error;
-    }
-    return null;
   }
+
+  if (hasAlternateDatasource) {
+    try {
+      const alternateRow = await queryFallbackUserRowByEmail(prismaAuthFallback, email);
+      if (alternateRow) {
+        return mapLooseRowToLoginUser(email, alternateRow);
+      }
+    } catch (error) {
+      console.error("AUTH_LOGIN_DB_ERROR", {
+        stage: "LOGIN_USER_FALLBACK_LOOKUP_ALTERNATE",
+        email,
+        error
+      });
+      if (primaryLookupFailed) {
+        throw error;
+      }
+    }
+  }
+
+  return null;
 }
 
 export async function findSessionUserById(userId: string): Promise<SessionUser | null> {
+  const hasAlternateDatasource = prismaAuthFallback !== prisma;
+
   try {
     return await prisma.user.findUnique({
       where: { id: userId },
@@ -511,54 +591,50 @@ export async function findSessionUserById(userId: string): Promise<SessionUser |
     });
   }
 
-  try {
-    const row = await queryFallbackUserRowById(userId);
-    if (!row) return null;
-
-    const id = readFirstString(row, ["id", "ID", "user_id", "userId"]);
-    const email = readFirstString(row, ["email", "Email", "EMAIL"]);
-    const fullName = readFirstString(row, ["full_name", "fullName", "fullname", "name"]) ?? email;
-    const rawRole = readFirstString(row, ["role", "user_role", "userRole"]);
-    const rawStatus = readFirstString(row, ["status", "user_status", "userStatus"]);
-
-    if (!id || !email || !fullName || !rawRole || !rawStatus) {
-      console.error("session_user_row_missing_required_fields", {
+  if (hasAlternateDatasource) {
+    try {
+      return await prismaAuthFallback.user.findUnique({
+        where: { id: userId },
+        select: { id: true, email: true, fullName: true, role: true, status: true }
+      });
+    } catch (error) {
+      console.error("AUTH_LOGIN_DB_ERROR", {
+        stage: "SESSION_USER_PRISMA_LOOKUP_ALTERNATE",
         userId,
-        hasId: Boolean(id),
-        hasEmail: Boolean(email),
-        hasFullName: Boolean(fullName),
-        hasRole: Boolean(rawRole),
-        hasStatus: Boolean(rawStatus)
+        error
       });
-      return null;
     }
+  }
 
-    const role = normalizeRole(rawRole);
-    const status = normalizeStatus(rawStatus);
-    if (!role || !status) {
-      console.error("session_user_enum_mismatch", {
-        userId: id,
-        role: rawRole,
-        status: rawStatus
-      });
-      return null;
+  try {
+    const row = await queryFallbackUserRowById(prisma, userId);
+    if (row) {
+      return mapLooseRowToSessionUser(userId, row);
     }
-
-    return {
-      id,
-      email,
-      fullName,
-      role,
-      status
-    };
   } catch (error) {
     console.error("AUTH_LOGIN_DB_ERROR", {
       stage: "SESSION_USER_FALLBACK_LOOKUP",
       userId,
       error
     });
-    return null;
   }
+
+  if (hasAlternateDatasource) {
+    try {
+      const row = await queryFallbackUserRowById(prismaAuthFallback, userId);
+      if (row) {
+        return mapLooseRowToSessionUser(userId, row);
+      }
+    } catch (error) {
+      console.error("AUTH_LOGIN_DB_ERROR", {
+        stage: "SESSION_USER_FALLBACK_LOOKUP_ALTERNATE",
+        userId,
+        error
+      });
+    }
+  }
+
+  return null;
 }
 
 export type LoginFailureReason =

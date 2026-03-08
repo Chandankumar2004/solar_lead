@@ -74,6 +74,13 @@ const runtimeDatabaseUrl = (env.DATABASE_URL ?? process.env.DATABASE_URL ?? "").
 const runtimeDirectUrl = (process.env.DIRECT_URL ?? "").trim();
 const rawPrismaUrl = runtimeDatabaseUrl || runtimeDirectUrl;
 const prismaDatasourceUrl = normalizePrismaDatasourceUrl(rawPrismaUrl);
+const alternateRawPrismaUrl =
+  runtimeDatabaseUrl && runtimeDirectUrl
+    ? rawPrismaUrl === runtimeDatabaseUrl
+      ? runtimeDirectUrl
+      : runtimeDatabaseUrl
+    : "";
+const prismaAlternateDatasourceUrl = normalizePrismaDatasourceUrl(alternateRawPrismaUrl);
 
 if (runtimeDatabaseUrl) {
   console.info("DB_SCHEMA_CONTEXT", {
@@ -94,6 +101,23 @@ export const prisma = prismaDatasourceUrl
       }
     })
   : new PrismaClient();
+
+export const prismaAuthFallback =
+  prismaAlternateDatasourceUrl && prismaAlternateDatasourceUrl !== prismaDatasourceUrl
+    ? new PrismaClient({
+        datasources: {
+          db: {
+            url: prismaAlternateDatasourceUrl
+          }
+        }
+      })
+    : prisma;
+
+if (prismaAuthFallback !== prisma) {
+  console.info("DB_SCHEMA_CONTEXT", {
+    reason: "ALTERNATE_RUNTIME_DATASOURCE_AVAILABLE_FOR_AUTH"
+  });
+}
 
 type BoolCell = { exists: boolean | null };
 
