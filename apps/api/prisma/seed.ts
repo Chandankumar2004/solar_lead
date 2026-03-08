@@ -1,5 +1,6 @@
 import bcrypt from "bcryptjs";
 import dotenv from "dotenv";
+import fs from "node:fs/promises";
 import { PrismaClient } from "@prisma/client";
 
 dotenv.config();
@@ -131,6 +132,63 @@ const DEFAULT_TRANSITIONS: Array<[string, string]> = [
   ["Site Visit Completed", "Lost"]
 ];
 
+type DistrictMappingFile = {
+  districts?: Array<{
+    id: string;
+    name: string;
+    state: string;
+  }>;
+};
+
+async function loadDistrictsFromMappingFile() {
+  const mappingUrl = new URL("../../web/public/districts.mapping.json", import.meta.url);
+  try {
+    const raw = await fs.readFile(mappingUrl, "utf8");
+    const parsed = JSON.parse(raw) as DistrictMappingFile;
+    const districts = Array.isArray(parsed.districts) ? parsed.districts : [];
+    return districts.filter(
+      (district) =>
+        typeof district.id === "string" &&
+        typeof district.name === "string" &&
+        district.name.trim().length > 0 &&
+        typeof district.state === "string" &&
+        district.state.trim().length > 0
+    );
+  } catch (error) {
+    console.warn("district_mapping_file_read_failed", error);
+    return [];
+  }
+}
+
+async function seedDistrictsFromMapping() {
+  const districts = await loadDistrictsFromMappingFile();
+  if (!districts.length) {
+    return 0;
+  }
+
+  for (const district of districts) {
+    await prisma.district.upsert({
+      where: {
+        name_state: {
+          name: district.name,
+          state: district.state
+        }
+      },
+      update: {
+        isActive: true
+      },
+      create: {
+        id: district.id,
+        name: district.name,
+        state: district.state,
+        isActive: true
+      }
+    });
+  }
+
+  return districts.length;
+}
+
 async function seedStatusesAndTransitions() {
   for (const status of DEFAULT_LEAD_STATUSES) {
     await prisma.leadStatus.upsert({
@@ -234,12 +292,14 @@ async function seedSuperAdmin() {
 }
 
 async function main() {
+  const districtsSeeded = await seedDistrictsFromMapping();
   await seedStatusesAndTransitions();
   const superAdmin = await seedSuperAdmin();
 
   console.log("Seed complete");
   console.log({
     superAdminEmail: superAdmin.email,
+    districtsSeeded,
     statusesSeeded: DEFAULT_LEAD_STATUSES.length,
     transitionsSeeded: DEFAULT_TRANSITIONS.length
   });
