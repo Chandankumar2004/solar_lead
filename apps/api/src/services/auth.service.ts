@@ -102,6 +102,200 @@ function normalizeStatus(rawStatus: string): UserStatus | null {
   return null;
 }
 
+type UserTableLocation = {
+  tableSchema: string;
+  tableName: string;
+};
+
+function quoteIdentifier(identifier: string) {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(identifier)) {
+    return null;
+  }
+  return `"${identifier.replace(/"/g, "\"\"")}"`;
+}
+
+function pickColumn(columns: string[], candidates: string[]) {
+  const byLower = new Map<string, string>();
+  for (const column of columns) {
+    byLower.set(column.toLowerCase(), column);
+  }
+  for (const candidate of candidates) {
+    const match = byLower.get(candidate.toLowerCase());
+    if (match) {
+      return match;
+    }
+  }
+  return null;
+}
+
+async function discoverUserTables() {
+  try {
+    const rows = await prisma.$queryRaw<Array<UserTableLocation>>`
+      SELECT
+        table_schema AS "tableSchema",
+        table_name AS "tableName"
+      FROM information_schema.tables
+      WHERE table_type = 'BASE TABLE'
+        AND table_schema NOT IN ('pg_catalog', 'information_schema')
+        AND lower(table_name) IN ('users', 'user')
+      ORDER BY
+        CASE WHEN table_schema = 'public' THEN 0 ELSE 1 END,
+        table_schema,
+        table_name
+      LIMIT 20
+    `;
+    return rows;
+  } catch (error) {
+    console.error("AUTH_LOGIN_DB_ERROR", {
+      stage: "DISCOVER_USER_TABLES_FAILED",
+      error
+    });
+    return [] as UserTableLocation[];
+  }
+}
+
+async function discoverUserRowByEmail(email: string): Promise<LooseDbRow | null> {
+  const tables = await discoverUserTables();
+  for (const table of tables) {
+    try {
+      const columnsRows = await prisma.$queryRaw<Array<{ columnName: string }>>`
+        SELECT column_name AS "columnName"
+        FROM information_schema.columns
+        WHERE table_schema = ${table.tableSchema}
+          AND table_name = ${table.tableName}
+      `;
+      const columns = columnsRows
+        .map((entry) => entry.columnName)
+        .filter((value): value is string => typeof value === "string");
+      const idColumn = pickColumn(columns, ["id", "user_id", "userId"]);
+      const emailColumn = pickColumn(columns, ["email"]);
+      if (!idColumn || !emailColumn) {
+        continue;
+      }
+
+      const fullNameColumn = pickColumn(columns, ["full_name", "fullName", "fullname", "name"]);
+      const roleColumn = pickColumn(columns, ["role", "user_role", "userRole"]);
+      const statusColumn = pickColumn(columns, ["status", "user_status", "userStatus"]);
+      const passwordColumn = pickColumn(columns, [
+        "password_hash",
+        "passwordHash",
+        "password",
+        "pwd_hash"
+      ]);
+
+      const schemaQ = quoteIdentifier(table.tableSchema);
+      const tableQ = quoteIdentifier(table.tableName);
+      const idQ = quoteIdentifier(idColumn);
+      const emailQ = quoteIdentifier(emailColumn);
+      const fullNameQ = fullNameColumn ? quoteIdentifier(fullNameColumn) : null;
+      const roleQ = roleColumn ? quoteIdentifier(roleColumn) : null;
+      const statusQ = statusColumn ? quoteIdentifier(statusColumn) : null;
+      const passwordQ = passwordColumn ? quoteIdentifier(passwordColumn) : null;
+      if (!schemaQ || !tableQ || !idQ || !emailQ) {
+        continue;
+      }
+
+      const sql = `
+        SELECT
+          ${idQ}::text AS "id",
+          ${emailQ}::text AS "email",
+          ${(fullNameQ ?? emailQ)}::text AS "fullName",
+          ${roleQ ? `${roleQ}::text` : "NULL::text"} AS "role",
+          ${statusQ ? `${statusQ}::text` : "NULL::text"} AS "status",
+          ${passwordQ ? `${passwordQ}::text` : "NULL::text"} AS "passwordHash"
+        FROM ${schemaQ}.${tableQ}
+        WHERE lower(${emailQ}::text) = lower($1)
+        LIMIT 1
+      `;
+
+      const rows = await prisma.$queryRawUnsafe<Array<LooseDbRow>>(sql, email);
+      if (rows[0]) {
+        console.info("AUTH_LOGIN_DB_FALLBACK_DISCOVERED_TABLE", {
+          stage: "LOGIN_USER_DISCOVERY_MATCH",
+          tableSchema: table.tableSchema,
+          tableName: table.tableName
+        });
+        return rows[0];
+      }
+    } catch (error) {
+      console.error("AUTH_LOGIN_DB_ERROR", {
+        stage: "LOGIN_USER_DISCOVERY_QUERY_FAILED",
+        tableSchema: table.tableSchema,
+        tableName: table.tableName,
+        error
+      });
+    }
+  }
+  return null;
+}
+
+async function discoverUserRowById(userId: string): Promise<LooseDbRow | null> {
+  const tables = await discoverUserTables();
+  for (const table of tables) {
+    try {
+      const columnsRows = await prisma.$queryRaw<Array<{ columnName: string }>>`
+        SELECT column_name AS "columnName"
+        FROM information_schema.columns
+        WHERE table_schema = ${table.tableSchema}
+          AND table_name = ${table.tableName}
+      `;
+      const columns = columnsRows
+        .map((entry) => entry.columnName)
+        .filter((value): value is string => typeof value === "string");
+      const idColumn = pickColumn(columns, ["id", "user_id", "userId"]);
+      const emailColumn = pickColumn(columns, ["email"]);
+      if (!idColumn || !emailColumn) {
+        continue;
+      }
+
+      const fullNameColumn = pickColumn(columns, ["full_name", "fullName", "fullname", "name"]);
+      const roleColumn = pickColumn(columns, ["role", "user_role", "userRole"]);
+      const statusColumn = pickColumn(columns, ["status", "user_status", "userStatus"]);
+
+      const schemaQ = quoteIdentifier(table.tableSchema);
+      const tableQ = quoteIdentifier(table.tableName);
+      const idQ = quoteIdentifier(idColumn);
+      const emailQ = quoteIdentifier(emailColumn);
+      const fullNameQ = fullNameColumn ? quoteIdentifier(fullNameColumn) : null;
+      const roleQ = roleColumn ? quoteIdentifier(roleColumn) : null;
+      const statusQ = statusColumn ? quoteIdentifier(statusColumn) : null;
+      if (!schemaQ || !tableQ || !idQ || !emailQ) {
+        continue;
+      }
+
+      const sql = `
+        SELECT
+          ${idQ}::text AS "id",
+          ${emailQ}::text AS "email",
+          ${(fullNameQ ?? emailQ)}::text AS "fullName",
+          ${roleQ ? `${roleQ}::text` : "NULL::text"} AS "role",
+          ${statusQ ? `${statusQ}::text` : "NULL::text"} AS "status"
+        FROM ${schemaQ}.${tableQ}
+        WHERE ${idQ}::text = $1
+        LIMIT 1
+      `;
+
+      const rows = await prisma.$queryRawUnsafe<Array<LooseDbRow>>(sql, userId);
+      if (rows[0]) {
+        console.info("AUTH_LOGIN_DB_FALLBACK_DISCOVERED_TABLE", {
+          stage: "SESSION_USER_DISCOVERY_MATCH",
+          tableSchema: table.tableSchema,
+          tableName: table.tableName
+        });
+        return rows[0];
+      }
+    } catch (error) {
+      console.error("AUTH_LOGIN_DB_ERROR", {
+        stage: "SESSION_USER_DISCOVERY_QUERY_FAILED",
+        tableSchema: table.tableSchema,
+        tableName: table.tableName,
+        error
+      });
+    }
+  }
+  return null;
+}
+
 async function queryFallbackUserRowByEmail(email: string): Promise<LooseDbRow | null> {
   const variants: Array<{ name: string; run: () => Promise<Array<LooseDbRow>> }> = [
     {
@@ -147,7 +341,15 @@ async function queryFallbackUserRowByEmail(email: string): Promise<LooseDbRow | 
   }
 
   if (lastError && !hadSuccessfulQuery) {
+    const discovered = await discoverUserRowByEmail(email);
+    if (discovered) {
+      return discovered;
+    }
     throw lastError;
+  }
+  const discovered = await discoverUserRowByEmail(email);
+  if (discovered) {
+    return discovered;
   }
   return null;
 }
@@ -196,7 +398,15 @@ async function queryFallbackUserRowById(userId: string): Promise<LooseDbRow | nu
     }
   }
   if (lastError && !hadSuccessfulQuery) {
+    const discovered = await discoverUserRowById(userId);
+    if (discovered) {
+      return discovered;
+    }
     throw lastError;
+  }
+  const discovered = await discoverUserRowById(userId);
+  if (discovered) {
+    return discovered;
   }
   return null;
 }
@@ -287,7 +497,7 @@ async function findLoginUserByEmail(email: string): Promise<LoginUser | null> {
   }
 }
 
-async function findSessionUserById(userId: string): Promise<SessionUser | null> {
+export async function findSessionUserById(userId: string): Promise<SessionUser | null> {
   try {
     return await prisma.user.findUnique({
       where: { id: userId },
