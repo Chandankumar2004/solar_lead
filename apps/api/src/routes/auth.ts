@@ -8,6 +8,7 @@ import {
   revokeRefreshToken,
   rotateRefreshToken
 } from "../services/auth.service.js";
+import { verifyRecaptchaToken } from "../services/recaptcha.service.js";
 import { requireAuth } from "../middleware/auth.js";
 import { env } from "../config/env.js";
 import { createAuditLog, requestIp } from "../services/audit-log.service.js";
@@ -24,6 +25,7 @@ const isSecureCookieEnv =
   process.env.RENDER === "true" ||
   Boolean(process.env.RENDER_EXTERNAL_URL);
 const cookieSameSite = isSecureCookieEnv ? ("none" as const) : ("lax" as const);
+const enforceRecaptchaOnLogin = isSecureCookieEnv;
 
 function hasJwtSecrets() {
   const accessSecret = (env.JWT_ACCESS_SECRET ?? process.env.JWT_ACCESS_SECRET ?? "").trim();
@@ -66,6 +68,12 @@ authRouter.post("/login", async (req, res) => {
   try {
     const rawEmail = typeof req.body?.email === "string" ? req.body.email.trim() : "";
     const rawPassword = typeof req.body?.password === "string" ? req.body.password : "";
+    const rawRecaptchaToken =
+      typeof req.body?.recaptchaToken === "string"
+        ? req.body.recaptchaToken.trim()
+        : typeof req.body?.recaptcha_token === "string"
+          ? req.body.recaptcha_token.trim()
+          : "";
 
     if (!rawEmail || !rawPassword) {
       await createAuditLog({
@@ -78,6 +86,84 @@ authRouter.post("/login", async (req, res) => {
         ipAddress: requestIp(req)
       });
       return fail(res, 400, "VALIDATION_ERROR", "Email and password are required");
+    }
+
+    if (enforceRecaptchaOnLogin) {
+      const recaptchaResult = await verifyRecaptchaToken({
+        token: rawRecaptchaToken,
+        expectedAction: "admin_login",
+        remoteIp: requestIp(req)
+      });
+
+      if (!recaptchaResult.ok) {
+        const recaptchaMeta = {
+          reason: recaptchaResult.reason,
+          errorCodes: recaptchaResult.errorCodes,
+          score: recaptchaResult.score,
+          action: recaptchaResult.action,
+          requestId: req.requestId ?? null
+        };
+
+        if (recaptchaResult.reason === "SECRET_MISSING") {
+          console.error("RECAPTCHA_CONFIG_ERROR", recaptchaMeta);
+          return fail(
+            res,
+            500,
+            "RECAPTCHA_CONFIG_ERROR",
+            "reCAPTCHA is not configured on server"
+          );
+        }
+
+        if (recaptchaResult.reason === "TOKEN_MISSING") {
+          console.error("AUTH_LOGIN_ERROR", {
+            ...recaptchaMeta,
+            reason: "RECAPTCHA_TOKEN_MISSING"
+          });
+          return fail(
+            res,
+            400,
+            "RECAPTCHA_TOKEN_MISSING",
+            "reCAPTCHA token is required"
+          );
+        }
+
+        if (recaptchaResult.reason === "ACTION_MISMATCH") {
+          console.error("AUTH_LOGIN_ERROR", {
+            ...recaptchaMeta,
+            reason: "RECAPTCHA_ACTION_MISMATCH"
+          });
+          return fail(
+            res,
+            401,
+            "RECAPTCHA_ACTION_MISMATCH",
+            "reCAPTCHA action mismatch"
+          );
+        }
+
+        if (recaptchaResult.reason === "TOKEN_INVALID") {
+          console.error("AUTH_LOGIN_ERROR", {
+            ...recaptchaMeta,
+            reason: "RECAPTCHA_TOKEN_INVALID"
+          });
+          return fail(
+            res,
+            401,
+            "RECAPTCHA_TOKEN_INVALID",
+            "reCAPTCHA verification failed"
+          );
+        }
+
+        console.error("AUTH_LOGIN_ERROR", {
+          ...recaptchaMeta,
+          reason: "RECAPTCHA_VERIFY_FAILED"
+        });
+        return fail(
+          res,
+          502,
+          "RECAPTCHA_VERIFY_FAILED",
+          "Unable to verify reCAPTCHA token"
+        );
+      }
     }
 
     const parsed = loginSchema.safeParse({ email: rawEmail, password: rawPassword });
@@ -112,6 +198,8 @@ authRouter.post("/login", async (req, res) => {
             ? "Your account is suspended"
             : result.reason === "AUTH_CONFIG_ERROR"
               ? "Authentication is not configured"
+              : result.reason === "AUTH_BACKEND_ERROR"
+                ? "Authentication service temporarily unavailable"
               : "Invalid email/password";
 
       await createAuditLog({
@@ -128,13 +216,16 @@ authRouter.post("/login", async (req, res) => {
       const statusCode =
         result.reason === "INVALID_CREDENTIALS"
           ? 401
-          : result.reason === "AUTH_CONFIG_ERROR"
+          : result.reason === "AUTH_CONFIG_ERROR" || result.reason === "AUTH_BACKEND_ERROR"
             ? 500
             : 403;
 
-      if (result.reason === "AUTH_CONFIG_ERROR") {
+      if (result.reason === "AUTH_CONFIG_ERROR" || result.reason === "AUTH_BACKEND_ERROR") {
         console.error("AUTH_LOGIN_ERROR", {
-          reason: "TOKEN_GENERATION_FAILED",
+          reason:
+            result.reason === "AUTH_CONFIG_ERROR"
+              ? "TOKEN_GENERATION_FAILED"
+              : "USER_LOOKUP_FAILED",
           userId: result.userId ?? null,
           requestId: req.requestId ?? null
         });

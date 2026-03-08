@@ -6,6 +6,7 @@ import { useSearchParams } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { api, getApiErrorMessage } from "@/lib/api";
+import { resolveRecaptchaSiteKey } from "@/lib/recaptcha";
 import {
   type DistrictMappingPayload,
   type PublicLeadFormValues,
@@ -26,37 +27,6 @@ type DuplicateCheckData = {
 type PublicLeadFormProps = {
   districtMapping: DistrictMappingPayload;
 };
-
-type GrecaptchaClient = {
-  ready(cb: () => void): void;
-  execute(siteKey: string, options: { action: string }): Promise<string>;
-};
-
-declare global {
-  interface Window {
-    grecaptcha?: GrecaptchaClient;
-  }
-}
-
-function resolveRecaptchaSiteKey(rawSiteKey: string | undefined) {
-  const key = (rawSiteKey ?? "").trim();
-  if (!key) {
-    return null;
-  }
-
-  const normalized = key.toLowerCase();
-  const isPlaceholder =
-    normalized === "recaptcha_site_key" ||
-    normalized.includes("replace_with") ||
-    normalized.includes("your_recaptcha") ||
-    normalized.includes("site_key");
-
-  if (isPlaceholder) {
-    return null;
-  }
-
-  return key;
-}
 
 export function PublicLeadForm({ districtMapping }: PublicLeadFormProps) {
   const searchParams = useSearchParams();

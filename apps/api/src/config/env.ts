@@ -10,6 +10,8 @@ const envSchema = z.object({
   DATABASE_URL: z.string().url(),
   JWT_ACCESS_SECRET: z.string().optional(),
   JWT_REFRESH_SECRET: z.string().optional(),
+  RECAPTCHA_SECRET_KEY: z.string().optional(),
+  GOOGLE_RECAPTCHA_SECRET_KEY: z.string().optional(),
   WEB_ORIGIN: z.string().default(""),
   CORS_ORIGIN: z.string().optional(),
   FRONTEND_URL: z.string().optional(),

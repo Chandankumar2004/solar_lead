@@ -79,6 +79,8 @@ function normalizeStatus(rawStatus: string): UserStatus | null {
 }
 
 async function findLoginUserByEmail(email: string): Promise<LoginUser | null> {
+  let primaryLookupFailed = false;
+
   try {
     return await prisma.user.findUnique({
       where: { email },
@@ -92,6 +94,7 @@ async function findLoginUserByEmail(email: string): Promise<LoginUser | null> {
       }
     });
   } catch (error) {
+    primaryLookupFailed = true;
     console.error("login_find_user_failed", { email, error });
   }
 
@@ -142,6 +145,9 @@ async function findLoginUserByEmail(email: string): Promise<LoginUser | null> {
     };
   } catch (error) {
     console.error("login_fallback_query_failed", { email, error });
+    if (primaryLookupFailed) {
+      throw error;
+    }
     return null;
   }
 }
@@ -208,7 +214,8 @@ export type LoginFailureReason =
   | "INVALID_CREDENTIALS"
   | "ACCOUNT_PENDING"
   | "ACCOUNT_SUSPENDED"
-  | "AUTH_CONFIG_ERROR";
+  | "AUTH_CONFIG_ERROR"
+  | "AUTH_BACKEND_ERROR";
 
 export type LoginResult =
   | {
@@ -350,7 +357,17 @@ export async function login(email: string, password: string): Promise<LoginResul
     return { ok: false, reason: "INVALID_CREDENTIALS" };
   }
 
-  const user = await findLoginUserByEmail(normalizedEmail);
+  let user: LoginUser | null = null;
+  try {
+    user = await findLoginUserByEmail(normalizedEmail);
+  } catch (error) {
+    console.error("AUTH_LOGIN_ERROR", {
+      reason: "USER_LOOKUP_FAILED",
+      email: normalizedEmail,
+      error
+    });
+    return { ok: false, reason: "AUTH_BACKEND_ERROR" };
+  }
 
   if (!user || !user.passwordHash) {
     return { ok: false, reason: "INVALID_CREDENTIALS" };
