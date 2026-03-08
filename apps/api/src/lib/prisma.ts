@@ -3,6 +3,21 @@ import { env } from "../config/env.js";
 
 const DEFAULT_APP_DB_SCHEMA = "public";
 
+function normalizeOptionsParam(rawOptions: string) {
+  const options = rawOptions.trim();
+  if (!options) {
+    return options;
+  }
+
+  // Normalize common search_path flags if present in connection options.
+  const searchPathPattern = /search_path\s*=\s*([^\s,]+)/gi;
+  if (searchPathPattern.test(options)) {
+    return options.replace(searchPathPattern, `search_path=${DEFAULT_APP_DB_SCHEMA}`);
+  }
+
+  return options;
+}
+
 function normalizePrismaDatasourceUrl(rawUrl: string) {
   if (!rawUrl.trim()) {
     return rawUrl;
@@ -18,28 +33,53 @@ function normalizePrismaDatasourceUrl(rawUrl: string) {
     const configuredSchema = (parsed.searchParams.get("schema") ?? "").trim();
     if (!configuredSchema) {
       parsed.searchParams.set("schema", DEFAULT_APP_DB_SCHEMA);
-      return parsed.toString();
-    }
-
-    if (configuredSchema.toLowerCase() !== DEFAULT_APP_DB_SCHEMA) {
+    } else if (configuredSchema.toLowerCase() !== DEFAULT_APP_DB_SCHEMA) {
       console.error("DB_METADATA_CHECK_ERROR", {
         reason: "DATABASE_URL_SCHEMA_OVERRIDE",
         fromSchema: configuredSchema,
         toSchema: DEFAULT_APP_DB_SCHEMA
       });
       parsed.searchParams.set("schema", DEFAULT_APP_DB_SCHEMA);
-      return parsed.toString();
     }
 
-    return rawUrl;
+    const configuredCurrentSchema = (parsed.searchParams.get("currentSchema") ?? "").trim();
+    if (configuredCurrentSchema && configuredCurrentSchema.toLowerCase() !== DEFAULT_APP_DB_SCHEMA) {
+      console.error("DB_METADATA_CHECK_ERROR", {
+        reason: "DATABASE_URL_CURRENT_SCHEMA_OVERRIDE",
+        fromSchema: configuredCurrentSchema,
+        toSchema: DEFAULT_APP_DB_SCHEMA
+      });
+      parsed.searchParams.set("currentSchema", DEFAULT_APP_DB_SCHEMA);
+    }
+
+    const rawOptions = parsed.searchParams.get("options");
+    if (rawOptions) {
+      const normalizedOptions = normalizeOptionsParam(rawOptions);
+      if (normalizedOptions !== rawOptions) {
+        console.error("DB_METADATA_CHECK_ERROR", {
+          reason: "DATABASE_URL_SEARCH_PATH_OVERRIDE",
+          toSchema: DEFAULT_APP_DB_SCHEMA
+        });
+        parsed.searchParams.set("options", normalizedOptions);
+      }
+    }
+
+    return parsed.toString();
   } catch {
     return rawUrl;
   }
 }
 
-const prismaDatasourceUrl = normalizePrismaDatasourceUrl(
-  env.DATABASE_URL ?? process.env.DATABASE_URL ?? ""
-);
+const runtimeDirectUrl = (process.env.DIRECT_URL ?? "").trim();
+const runtimeDatabaseUrl = (env.DATABASE_URL ?? process.env.DATABASE_URL ?? "").trim();
+const rawPrismaUrl = runtimeDirectUrl || runtimeDatabaseUrl;
+const prismaDatasourceUrl = normalizePrismaDatasourceUrl(rawPrismaUrl);
+
+if (runtimeDirectUrl) {
+  console.info("DB_SCHEMA_CONTEXT", {
+    reason: "USING_DIRECT_URL_FOR_RUNTIME"
+  });
+}
 
 export const prisma = prismaDatasourceUrl
   ? new PrismaClient({
