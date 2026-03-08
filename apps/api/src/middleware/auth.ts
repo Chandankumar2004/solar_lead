@@ -109,24 +109,26 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
   if (!user) {
     try {
       const fallbackCandidates = [
-        prisma.$queryRaw<Array<LooseDbRow>>`
-          SELECT *
-          FROM public.users
-          WHERE id::text = ${payload.sub}
-          LIMIT 1
-        `,
-        prisma.$queryRaw<Array<LooseDbRow>>`
-          SELECT *
-          FROM public."User"
-          WHERE "id"::text = ${payload.sub}
-          LIMIT 1
-        `
+        () =>
+          prisma.$queryRaw<Array<LooseDbRow>>`
+            SELECT *
+            FROM public.users
+            WHERE id::text = ${payload.sub}
+            LIMIT 1
+          `,
+        () =>
+          prisma.$queryRaw<Array<LooseDbRow>>`
+            SELECT *
+            FROM public."User"
+            WHERE "id"::text = ${payload.sub}
+            LIMIT 1
+          `
       ];
 
       let row: LooseDbRow | null = null;
       for (const candidate of fallbackCandidates) {
         try {
-          const rows = await candidate;
+          const rows = await candidate();
           if (rows[0]) {
             row = rows[0];
             break;

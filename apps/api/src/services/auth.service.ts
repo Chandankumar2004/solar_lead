@@ -127,9 +127,11 @@ async function queryFallbackUserRowByEmail(email: string): Promise<LooseDbRow | 
   ];
 
   let lastError: unknown = null;
+  let hadSuccessfulQuery = false;
   for (const variant of variants) {
     try {
       const rows = await variant.run();
+      hadSuccessfulQuery = true;
       if (rows[0]) {
         return rows[0];
       }
@@ -144,7 +146,7 @@ async function queryFallbackUserRowByEmail(email: string): Promise<LooseDbRow | 
     }
   }
 
-  if (lastError) {
+  if (lastError && !hadSuccessfulQuery) {
     throw lastError;
   }
   return null;
@@ -174,13 +176,17 @@ async function queryFallbackUserRowById(userId: string): Promise<LooseDbRow | nu
     }
   ];
 
+  let lastError: unknown = null;
+  let hadSuccessfulQuery = false;
   for (const variant of variants) {
     try {
       const rows = await variant.run();
+      hadSuccessfulQuery = true;
       if (rows[0]) {
         return rows[0];
       }
     } catch (error) {
+      lastError = error;
       console.error("AUTH_LOGIN_DB_ERROR", {
         stage: "SESSION_USER_FALLBACK_ID_LOOKUP",
         variant: variant.name,
@@ -188,6 +194,9 @@ async function queryFallbackUserRowById(userId: string): Promise<LooseDbRow | nu
         error
       });
     }
+  }
+  if (lastError && !hadSuccessfulQuery) {
+    throw lastError;
   }
   return null;
 }
