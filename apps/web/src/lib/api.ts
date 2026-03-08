@@ -1,14 +1,59 @@
 import axios, { AxiosRequestConfig } from "axios";
 
+function normalizeBaseUrl(raw: string | undefined) {
+  return (raw ?? "").trim().replace(/\/+$/, "");
+}
+
+const configuredApiBaseUrl = normalizeBaseUrl(
+  process.env.NEXT_PUBLIC_API_BASE_URL ?? process.env.NEXT_PUBLIC_API_URL
+);
+const fallbackApiBaseUrl =
+  process.env.NODE_ENV === "production"
+    ? "https://solar-lead.onrender.com"
+    : "http://localhost:4000";
+
+const apiBaseUrl = configuredApiBaseUrl || fallbackApiBaseUrl;
+
+if (!configuredApiBaseUrl) {
+  console.error("API_CONFIG_ERROR", {
+    reason: "MISSING_NEXT_PUBLIC_API_BASE_URL",
+    fallbackApiBaseUrl
+  });
+}
+
 export const api = axios.create({
-  baseURL: process.env.NEXT_PUBLIC_API_BASE_URL,
-  withCredentials: true
+  baseURL: apiBaseUrl,
+  withCredentials: true,
+  headers: {
+    "Content-Type": "application/json"
+  }
 });
 
 type RetriableConfig = {
   _retry?: boolean;
   url?: string;
 };
+
+export function getApiErrorMessage(error: unknown, fallbackMessage: string) {
+  if (!axios.isAxiosError(error)) {
+    return fallbackMessage;
+  }
+
+  const apiMessage = error.response?.data?.message;
+  if (typeof apiMessage === "string" && apiMessage.trim().length > 0) {
+    return apiMessage;
+  }
+
+  if (typeof error.response?.status === "number") {
+    return `${fallbackMessage} (${error.response.status})`;
+  }
+
+  if (error.code === "ERR_NETWORK") {
+    return "Network/CORS error: backend is unreachable or blocked by CORS";
+  }
+
+  return fallbackMessage;
+}
 
 api.interceptors.response.use(
   (resp) => resp,

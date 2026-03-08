@@ -11,6 +11,8 @@ const envSchema = z.object({
   JWT_ACCESS_SECRET: z.string().optional(),
   JWT_REFRESH_SECRET: z.string().optional(),
   WEB_ORIGIN: z.string().default(""),
+  CORS_ORIGIN: z.string().optional(),
+  FRONTEND_URL: z.string().optional(),
   ACCESS_COOKIE_NAME: z.string().optional(),
   REFRESH_COOKIE_NAME: z.string().optional(),
   AWS_REGION: z.string().min(2),

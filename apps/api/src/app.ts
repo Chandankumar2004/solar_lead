@@ -1,6 +1,6 @@
 import "express-async-errors";
 import express from "express";
-import cors from "cors";
+import cors, { CorsOptions } from "cors";
 import morgan from "morgan";
 import cookieParser from "cookie-parser";
 import { env } from "./config/env.js";
@@ -10,7 +10,6 @@ import { leadsRouter } from "./routes/leads.js";
 import { uploadsRouter } from "./routes/uploads.js";
 import { notificationsRouter } from "./routes/notifications.js";
 import { errorHandler } from "./middleware/error.js";
-import { ok } from "./lib/http.js";
 import { requestLogger } from "./middleware/request-logger.js";
 import { requireAuth } from "./middleware/auth.js";
 import { publicRouter } from "./routes/public.js";
@@ -21,10 +20,11 @@ import { usersRouter } from "./routes/users.js";
 import { paymentsRouter } from "./routes/payments.js";
 import { leadDocumentsRouter } from "./routes/lead-documents.js";
 import { documentsRouter } from "./routes/documents.js";
+import { fail, ok } from "./lib/http.js";
 
 export const app = express();
 
-if (process.env.RENDER === "true" || process.env.RENDER_EXTERNAL_URL) {
+if (env.NODE_ENV === "production" || process.env.RENDER === "true" || process.env.RENDER_EXTERNAL_URL) {
   app.set("trust proxy", 1);
 }
 
@@ -32,9 +32,32 @@ function normalizeOrigin(origin: string) {
   return origin.trim().replace(/\/+$/, "");
 }
 
-const configuredOrigins = env.WEB_ORIGIN.split(",")
-  .map((origin) => normalizeOrigin(origin))
-  .filter((origin) => origin.length > 0);
+function parseOriginList(raw: string | undefined) {
+  if (!raw) {
+    return [] as string[];
+  }
+  return raw
+    .split(",")
+    .map((origin) => normalizeOrigin(origin))
+    .filter((origin) => origin.length > 0);
+}
+
+const configuredOrigins = [
+  ...parseOriginList(env.WEB_ORIGIN),
+  ...parseOriginList(env.CORS_ORIGIN),
+  ...parseOriginList(env.FRONTEND_URL),
+  ...parseOriginList(process.env.WEB_ORIGIN),
+  ...parseOriginList(process.env.CORS_ORIGIN),
+  ...parseOriginList(process.env.FRONTEND_URL)
+];
+
+const defaultProductionOrigins = ["https://solar-lead-1.onrender.com"];
+const productionOrigins =
+  configuredOrigins.length > 0
+    ? configuredOrigins
+    : env.NODE_ENV === "production"
+      ? defaultProductionOrigins
+      : [];
 
 const devOrigins =
   env.NODE_ENV === "production"
@@ -46,39 +69,68 @@ const devOrigins =
         "http://127.0.0.1:3200"
       ];
 
-const allowedOrigins = new Set([...configuredOrigins, ...devOrigins]);
+const allowedOrigins = new Set([...productionOrigins, ...devOrigins]);
 
-const corsOptions = {
+function isAllowedOrigin(origin: string | undefined) {
+  if (!origin) {
+    return true;
+  }
+  return allowedOrigins.has(normalizeOrigin(origin));
+}
+
+const corsOptions: CorsOptions = {
   origin: (
     origin: string | undefined,
     callback: (err: Error | null, allow?: boolean) => void
   ) => {
-    if (!origin) {
+    if (isAllowedOrigin(origin)) {
       callback(null, true);
       return;
     }
-
-    const normalizedOrigin = normalizeOrigin(origin);
-    if (allowedOrigins.has(normalizedOrigin)) {
-      callback(null, true);
-      return;
-    }
-
-    console.error("CORS_ORIGIN_BLOCKED", {
+    console.error("CORS_ERROR", {
+      reason: "ORIGIN_NOT_ALLOWED",
       origin,
-      requestId: null
+      allowedOrigins: [...allowedOrigins]
     });
     callback(null, false);
   },
-  credentials: true
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+  optionsSuccessStatus: 204
 };
 
+console.info("CORS_CONFIG", {
+  allowedOrigins: [...allowedOrigins]
+});
+
+app.use(requestLogger);
 app.use(cors(corsOptions));
 app.options("*", cors(corsOptions));
+app.use((req, res, next) => {
+  const requestOrigin = req.headers.origin;
+  if (!requestOrigin) {
+    return next();
+  }
+
+  if (!isAllowedOrigin(requestOrigin)) {
+    console.error("CORS_ERROR", {
+      reason: "ORIGIN_REJECTED",
+      origin: requestOrigin,
+      requestId: req.requestId ?? null
+    });
+    return fail(res, 403, "CORS_ERROR", "Origin is not allowed");
+  }
+
+  res.header("Access-Control-Allow-Origin", normalizeOrigin(requestOrigin));
+  res.header("Access-Control-Allow-Credentials", "true");
+  res.header("Vary", "Origin");
+  return next();
+});
+
 app.use(express.json({ limit: "2mb" }));
 app.use(cookieParser());
 app.use(morgan("dev"));
-app.use(requestLogger);
 
 app.get("/", (_req, res) => {
   return ok(res, { service: "Solar Lead API" });

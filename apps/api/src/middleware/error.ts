@@ -29,6 +29,16 @@ export function errorHandler(
     });
   }
 
+  if (err instanceof Error && err.message.toLowerCase().includes("cors")) {
+    console.error("CORS_ERROR", {
+      requestId: req.requestId ?? null,
+      message: err.message
+    });
+    return fail(res, 403, "CORS_ERROR", "Origin is not allowed", {
+      requestId: req.requestId ?? null
+    });
+  }
+
   console.error("unhandled_error", err);
   return fail(res, 500, "INTERNAL_ERROR", "Unexpected server error", {
     requestId: req.requestId ?? null

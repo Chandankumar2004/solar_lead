@@ -3,10 +3,9 @@
 import { useEffect, useMemo, useState } from "react";
 import Script from "next/script";
 import { useSearchParams } from "next/navigation";
-import axios from "axios";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { api } from "@/lib/api";
+import { api, getApiErrorMessage } from "@/lib/api";
 import {
   type DistrictMappingPayload,
   type PublicLeadFormValues,
@@ -39,13 +38,36 @@ declare global {
   }
 }
 
+function resolveRecaptchaSiteKey(rawSiteKey: string | undefined) {
+  const key = (rawSiteKey ?? "").trim();
+  if (!key) {
+    return null;
+  }
+
+  const normalized = key.toLowerCase();
+  const isPlaceholder =
+    normalized === "recaptcha_site_key" ||
+    normalized.includes("replace_with") ||
+    normalized.includes("your_recaptcha") ||
+    normalized.includes("site_key");
+
+  if (isPlaceholder) {
+    return null;
+  }
+
+  return key;
+}
+
 export function PublicLeadForm({ districtMapping }: PublicLeadFormProps) {
   const searchParams = useSearchParams();
-  const recaptchaSiteKey = process.env.NEXT_PUBLIC_RECAPTCHA_SITE_KEY;
+  const rawRecaptchaSiteKey = process.env.NEXT_PUBLIC_RECAPTCHA_SITE_KEY;
+  const recaptchaSiteKey = resolveRecaptchaSiteKey(rawRecaptchaSiteKey);
+  const recaptchaConfigInvalid = Boolean(rawRecaptchaSiteKey?.trim()) && !recaptchaSiteKey;
   const [districtSearch, setDistrictSearch] = useState("");
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [duplicateWarning, setDuplicateWarning] = useState<string | null>(null);
   const [submitSuccess, setSubmitSuccess] = useState<SubmitSuccess | null>(null);
+  const [recaptchaScriptFailed, setRecaptchaScriptFailed] = useState(false);
 
   const {
     register,
@@ -113,7 +135,14 @@ export function PublicLeadForm({ districtMapping }: PublicLeadFormProps) {
             `This phone already exists in ${data.count} lead${data.count > 1 ? "s" : ""}. You can still submit.`
           );
         }
-      } catch {
+      } catch (error: unknown) {
+        const message = getApiErrorMessage(error, "Duplicate check unavailable");
+        if (message.startsWith("Network/CORS error")) {
+          setDuplicateWarning(
+            "Duplicate check is temporarily unavailable due to network/CORS. You can still submit."
+          );
+          return;
+        }
         setDuplicateWarning(null);
       }
     }, 450);
@@ -124,22 +153,62 @@ export function PublicLeadForm({ districtMapping }: PublicLeadFormProps) {
     };
   }, [phone]);
 
+  useEffect(() => {
+    const rawKey = rawRecaptchaSiteKey?.trim() ?? "";
+    if (!rawKey) {
+      if (process.env.NODE_ENV === "production") {
+        console.error("RECAPTCHA_CONFIG_ERROR", {
+          reason: "SITE_KEY_MISSING"
+        });
+      }
+      return;
+    }
+
+    if (!recaptchaSiteKey) {
+      console.error("RECAPTCHA_CONFIG_ERROR", {
+        reason: "SITE_KEY_INVALID_OR_PLACEHOLDER"
+      });
+    }
+  }, [rawRecaptchaSiteKey, recaptchaSiteKey]);
+
   const getRecaptchaToken = async () => {
-    if (!recaptchaSiteKey || typeof window === "undefined" || !window.grecaptcha) {
+    if (!recaptchaSiteKey) {
       return null;
     }
 
-    await new Promise<void>((resolve) => {
-      window.grecaptcha?.ready(() => resolve());
-    });
-    return window.grecaptcha.execute(recaptchaSiteKey, { action: "public_lead_submit" });
+    if (recaptchaScriptFailed) {
+      console.error("RECAPTCHA_CONFIG_ERROR", {
+        reason: "SCRIPT_LOAD_FAILED"
+      });
+      return null;
+    }
+
+    if (typeof window === "undefined" || !window.grecaptcha) {
+      console.error("RECAPTCHA_CONFIG_ERROR", {
+        reason: "GRECAPTCHA_NOT_READY"
+      });
+      return null;
+    }
+
+    try {
+      await new Promise<void>((resolve) => {
+        window.grecaptcha?.ready(() => resolve());
+      });
+      return window.grecaptcha.execute(recaptchaSiteKey, { action: "public_lead_submit" });
+    } catch (error) {
+      console.error("RECAPTCHA_CONFIG_ERROR", {
+        reason: "EXECUTE_FAILED",
+        error
+      });
+      return null;
+    }
   };
 
   const onSubmit = handleSubmit(async (values) => {
     setSubmitError(null);
     const recaptchaToken = await getRecaptchaToken();
     if (recaptchaSiteKey && !recaptchaToken) {
-      setSubmitError("reCAPTCHA verification failed. Please wait a moment and try again.");
+      setSubmitError("reCAPTCHA verification failed. Please refresh and try again.");
       return;
     }
     const utmPayload = {
@@ -174,11 +243,7 @@ export function PublicLeadForm({ districtMapping }: PublicLeadFormProps) {
       setSubmitSuccess(payload);
       reset();
     } catch (error: unknown) {
-      if (axios.isAxiosError(error)) {
-        setSubmitError(error.response?.data?.message ?? "Lead submission failed. Please try again.");
-      } else {
-        setSubmitError("Lead submission failed. Please try again.");
-      }
+      setSubmitError(getApiErrorMessage(error, "Lead submission failed. Please try again."));
     }
   });
 
@@ -214,6 +279,12 @@ export function PublicLeadForm({ districtMapping }: PublicLeadFormProps) {
           id="recaptcha-v3"
           src={`https://www.google.com/recaptcha/api.js?render=${recaptchaSiteKey}`}
           strategy="afterInteractive"
+          onError={() => {
+            setRecaptchaScriptFailed(true);
+            console.error("RECAPTCHA_CONFIG_ERROR", {
+              reason: "SCRIPT_LOAD_ERROR"
+            });
+          }}
         />
       ) : null}
       <form onSubmit={onSubmit} className="space-y-4 rounded-2xl bg-white p-6 shadow-lg">
@@ -353,6 +424,11 @@ export function PublicLeadForm({ districtMapping }: PublicLeadFormProps) {
         ) : null}
 
         {submitError ? <p className="text-sm text-red-700">{submitError}</p> : null}
+        {recaptchaConfigInvalid ? (
+          <p className="text-xs text-amber-700">
+            reCAPTCHA site key is invalid. Set a valid `NEXT_PUBLIC_RECAPTCHA_SITE_KEY`.
+          </p>
+        ) : null}
 
         <button
           type="submit"

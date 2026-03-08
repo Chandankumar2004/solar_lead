@@ -6,7 +6,7 @@ import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
 import axios from "axios";
 import { loginSchema } from "@solar/shared";
-import { api } from "@/lib/api";
+import { api, getApiErrorMessage } from "@/lib/api";
 import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/lib/auth-store";
 
@@ -31,23 +31,13 @@ export function LoginForm() {
       setUser(resp.data.data.user);
       router.push("/dashboard");
     } catch (error) {
-      if (axios.isAxiosError(error)) {
-        const apiMessage = error.response?.data?.message;
-        if (typeof apiMessage === "string" && apiMessage.trim().length > 0) {
-          setError(apiMessage);
-          return;
-        }
-
-        if (error.response?.status) {
-          setError(`Login failed (${error.response.status})`);
-          return;
-        }
-
-        setError("Unable to reach API server");
-        return;
+      if (axios.isAxiosError(error) && error.code === "ERR_NETWORK") {
+        console.error("AUTH_LOGIN_ERROR", {
+          reason: "NETWORK_OR_CORS",
+          apiBaseUrl: process.env.NEXT_PUBLIC_API_BASE_URL ?? null
+        });
       }
-
-      setError("Login failed");
+      setError(getApiErrorMessage(error, "Login failed"));
     }
   });
 
