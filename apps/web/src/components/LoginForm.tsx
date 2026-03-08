@@ -118,18 +118,47 @@ export function LoginForm() {
     }
 
     try {
-      const resp = await api.post("/api/auth/login", {
+      const buildPayload = (token: string | null) => ({
         ...values,
-        recaptchaToken: recaptchaToken ?? undefined,
-        recaptcha_token: recaptchaToken ?? undefined,
-        recaptchaAction: "admin_login",
-        recaptcha_action: "admin_login"
+        recaptchaToken: token ?? undefined,
+        recaptchaAction: "admin_login"
       });
+
+      const resp = await api.post("/api/auth/login", buildPayload(recaptchaToken));
       setUser(resp.data.data.user);
       router.push("/dashboard");
     } catch (error) {
-      if (axios.isAxiosError(error)) {
-        if (error.code === "ERR_NETWORK") {
+      let handledError: unknown = error;
+
+      if (axios.isAxiosError(handledError) && recaptchaSiteKey) {
+        const errorCode = handledError.response?.data?.error?.code;
+        const errorCodes = handledError.response?.data?.error?.details?.errorCodes;
+        const isTimeoutOrDuplicate =
+          errorCode === "RECAPTCHA_TOKEN_INVALID" &&
+          Array.isArray(errorCodes) &&
+          errorCodes.includes("timeout-or-duplicate");
+
+        if (isTimeoutOrDuplicate) {
+          try {
+            const retryToken = await getRecaptchaToken();
+            if (retryToken) {
+              const retryResp = await api.post("/api/auth/login", {
+                ...values,
+                recaptchaToken: retryToken,
+                recaptchaAction: "admin_login"
+              });
+              setUser(retryResp.data.data.user);
+              router.push("/dashboard");
+              return;
+            }
+          } catch (retryError) {
+            handledError = retryError;
+          }
+        }
+      }
+
+      if (axios.isAxiosError(handledError)) {
+        if (handledError.code === "ERR_NETWORK") {
           console.error("AUTH_LOGIN_ERROR", {
             reason: "NETWORK_OR_CORS",
             apiBaseUrl: process.env.NEXT_PUBLIC_API_BASE_URL ?? null
@@ -137,13 +166,13 @@ export function LoginForm() {
         } else {
           console.error("AUTH_LOGIN_ERROR", {
             reason: "LOGIN_REQUEST_FAILED",
-            status: error.response?.status ?? null,
-            code: error.response?.data?.error?.code ?? null,
-            message: error.response?.data?.message ?? null
+            status: handledError.response?.status ?? null,
+            code: handledError.response?.data?.error?.code ?? null,
+            message: handledError.response?.data?.message ?? null
           });
         }
       }
-      setError(getApiErrorMessage(error, "Login failed"));
+      setError(getApiErrorMessage(handledError, "Login failed"));
     }
   });
 
