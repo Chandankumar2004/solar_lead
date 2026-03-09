@@ -119,33 +119,6 @@ if (prismaAuthFallback !== prisma) {
   });
 }
 
-type BoolCell = { exists: boolean | null };
-
-async function checkSupabaseMetadataTable() {
-  try {
-    const rows = await prisma.$queryRaw<Array<BoolCell>>`
-      SELECT EXISTS (
-        SELECT 1
-        FROM information_schema.tables
-        WHERE table_schema = 'supabase_migrations'
-          AND table_name = 'schema_migrations'
-      ) AS "exists"
-    `;
-
-    const exists = rows[0]?.exists === true;
-    if (!exists) {
-      console.error("DB_METADATA_CHECK_ERROR", {
-        reason: "SUPABASE_SCHEMA_MIGRATIONS_NOT_FOUND"
-      });
-    }
-  } catch (error) {
-    console.error("DB_METADATA_CHECK_ERROR", {
-      reason: "SUPABASE_METADATA_CHECK_FAILED",
-      error
-    });
-  }
-}
-
 async function checkAppUserTable() {
   try {
     const rows = await prisma.$queryRaw<Array<{ users: string | null; user: string | null }>>`
@@ -203,6 +176,5 @@ export async function runPrismaStartupChecks() {
     });
   }
 
-  await checkSupabaseMetadataTable();
   await checkAppUserTable();
 }
