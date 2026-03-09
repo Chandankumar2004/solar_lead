@@ -11,6 +11,7 @@
     "token:access": "node src/scripts/create-access-token.js",
     "token:secret": "node src/scripts/generate-jwt-secret.js 64",
     "auth:reset-super-admin": "tsx src/scripts/reset-super-admin-password.ts",
+    "auth:backfill-supabase": "tsx src/scripts/backfill-supabase-auth-users.ts",
     "districts:export:web": "tsx src/scripts/export-districts-mapping.ts",
     "prisma:generate": "prisma generate --schema=./prisma/schema.prisma",
     "prisma:migrate": "prisma migrate dev",
@@ -19,9 +20,8 @@
     "lint": "eslint \"src/**/*.{ts,js}\" \"prisma/**/*.ts\""
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.662.0",
-    "@aws-sdk/s3-request-presigner": "^3.662.0",
     "@prisma/client": "^5.20.0",
+    "@supabase/supabase-js": "^2.49.1",
     "@solar/shared": "workspace:*",
     "bcryptjs": "^2.4.3",
     "cookie-parser": "^1.4.6",

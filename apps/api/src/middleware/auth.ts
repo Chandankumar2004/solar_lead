@@ -1,63 +1,58 @@
 import { NextFunction, Request, Response } from "express";
-import jwt from "jsonwebtoken";
 import { fail } from "../lib/http.js";
 import { env } from "../config/env.js";
-import { AuthUser } from "../types.js";
-import { findSessionUserById } from "../services/auth.service.js";
+import { resolveSessionUserFromAccessToken } from "../services/supabase-auth.service.js";
 
-interface AccessPayload {
-  sub: string;
-  email: string;
-  role: AuthUser["role"];
-  typ: "access";
+function bearerAccessToken(req: Request) {
+  const rawHeader = req.header("authorization");
+  if (!rawHeader) {
+    return null;
+  }
+
+  const [scheme, token] = rawHeader.split(" ");
+  if (!scheme || !token || scheme.toLowerCase() !== "bearer") {
+    return null;
+  }
+
+  const trimmedToken = token.trim();
+  return trimmedToken.length > 0 ? trimmedToken : null;
 }
 
 export async function requireAuth(req: Request, res: Response, next: NextFunction) {
+  const fromBearer = bearerAccessToken(req);
   const accessCookieName = (env.ACCESS_COOKIE_NAME ?? "accessToken").trim() || "accessToken";
-  const token = req.cookies?.[accessCookieName] as string | undefined;
+  const fromCookie = req.cookies?.[accessCookieName] as string | undefined;
+  const token = fromBearer ?? fromCookie;
   if (!token) {
-    return fail(res, 401, "UNAUTHORIZED", "Missing access token");
+    return fail(res, 401, "UNAUTHORIZED", "Missing session");
   }
 
-  const accessSecret = (env.JWT_ACCESS_SECRET ?? process.env.JWT_ACCESS_SECRET ?? "").trim();
-  if (accessSecret.length < 16) {
-    console.error("AUTH_ME_ERROR", {
-      reason: "JWT_ACCESS_SECRET_MISSING_OR_INVALID",
-      requestId: req.requestId ?? null
-    });
-    return fail(res, 500, "AUTH_CONFIG_ERROR", "Authentication is not configured");
+  const resolved = await resolveSessionUserFromAccessToken(token);
+  if (!resolved.ok) {
+    if (resolved.reason === "MISSING_SESSION") {
+      return fail(res, 401, "UNAUTHORIZED", "Missing session");
+    }
+    if (resolved.reason === "INVALID_SESSION") {
+      return fail(res, 401, "UNAUTHORIZED", "Invalid or expired session");
+    }
+    if (resolved.reason === "APP_PROFILE_NOT_FOUND") {
+      return fail(
+        res,
+        403,
+        "APP_PROFILE_NOT_FOUND",
+        "No app profile mapped to this authenticated account"
+      );
+    }
+    if (resolved.reason === "AUTH_CONFIG_ERROR") {
+      return fail(res, 500, "AUTH_CONFIG_ERROR", "Authentication is not configured");
+    }
+    return fail(res, 500, "AUTH_BACKEND_ERROR", "Authentication service temporarily unavailable");
   }
 
-  let payload: AccessPayload;
-  try {
-    payload = jwt.verify(token, accessSecret) as AccessPayload;
-  } catch {
-    return fail(res, 401, "UNAUTHORIZED", "Invalid or expired access token");
-  }
-
-  if (payload.typ !== "access" || !payload.sub) {
-    return fail(res, 401, "UNAUTHORIZED", "Invalid token payload");
-  }
-
-  let user: Awaited<ReturnType<typeof findSessionUserById>> = null;
-  try {
-    user = await findSessionUserById(payload.sub);
-  } catch (error) {
-    console.error("AUTH_ME_ERROR", {
-      reason: "USER_LOOKUP_FAILED",
-      userId: payload.sub,
-      requestId: req.requestId ?? null
-    });
-    console.error("auth_user_find_failed", {
-      userId: payload.sub,
-      error
-    });
-  }
-
-  if (!user || user.status !== "ACTIVE") {
+  if (resolved.user.status !== "ACTIVE") {
     return fail(res, 401, "UNAUTHORIZED", "User is not active");
   }
 
-  req.user = user;
+  req.user = resolved.user;
   return next();
 }

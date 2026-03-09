@@ -4,7 +4,7 @@ Production-style monorepo for a Solar Panel Installation Lead Management System.
 
 ## Tech Stack
 - Web Admin + Landing: Next.js, Tailwind CSS, React Hook Form + Zod, Axios/SWR, Recharts, Firebase client
-- Backend API: Node.js 20+, Express, Prisma ORM, PostgreSQL, Redis, BullMQ, jsonwebtoken, S3 pre-signed URL flow
+- Backend API: Node.js 20+, Express, Prisma ORM, PostgreSQL, Redis, BullMQ, jsonwebtoken, Supabase Storage signed URL flow
 - Mobile App: Expo (React Native), React Navigation, Zustand, React Hook Form, AsyncStorage offline queue, document/image picker, maps, biometric unlock
 - Shared package: `@solar/shared` (types, constants, schemas)
 
@@ -38,7 +38,7 @@ Production-style monorepo for a Solar Panel Installation Lead Management System.
 - Auto-assignment engine:
   - assign to active executive with lowest active non-terminal leads
   - fallback to district manager + admin alert when no executive available
-- S3 document upload via pre-signed URLs (no AWS credentials in mobile)
+- Supabase Storage document upload via signed URLs
 - Offline queue in mobile for lead/doc submission and retry on reconnect
 - Audit logging for auth and user actions
 
@@ -68,7 +68,7 @@ Required keys to verify in `apps/api/.env`:
 - `JWT_ACCESS_SECRET`
 - `JWT_REFRESH_SECRET`
 - `WEB_ORIGIN` (must include your web origin, e.g. `http://localhost:3200`)
-- S3 keys (`AWS_REGION`, `AWS_S3_BUCKET`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`)
+- Supabase keys (`SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`)
 - Firebase admin keys (`FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`, `FIREBASE_PRIVATE_KEY`)
 - Seed admin keys (`SEED_SUPER_ADMIN_*`)
 
@@ -110,6 +110,27 @@ Notes:
   - users, districts, user_district_assignments, lead_statuses, lead_status_transitions, leads,
     lead_status_history, customer_details, documents, payments, notification_templates,
     notification_logs, loan_details, audit_logs, user_device_tokens
+
+## Storage
+Storage:
+Supabase Storage
+
+Files uploaded to:
+`documents` bucket
+
+Setup instructions:
+1. Open Supabase dashboard
+2. Go to Storage
+3. Create bucket named `documents`
+4. Set public access if needed
+
+Manual setup path:
+Supabase Dashboard -> Storage -> Create bucket -> `documents`
+
+Required storage environment variables:
+- `SUPABASE_URL`
+- `SUPABASE_ANON_KEY`
+- `SUPABASE_SERVICE_ROLE_KEY`
 
 ## 4) Run the Project (Local)
 Use 3 terminals:
@@ -187,7 +208,7 @@ pnpm --filter @solar/mobile typecheck
 
 ## Document Upload Flow
 1. Request pre-signed URL from API
-2. Upload file directly to S3 from client
+2. Upload file directly to Supabase Storage from client
 3. Call complete endpoint to persist metadata
 4. Review/verify/reject from admin queue
 
@@ -201,7 +222,7 @@ See `DEVOPS.md` for target deployment architecture:
 - API: AWS ECS/EC2
 - DB: RDS PostgreSQL
 - Cache/Queue: ElastiCache Redis
-- Files: S3 + CloudFront
+- Files: Supabase Storage (`documents` bucket)
 - Monitoring: CloudWatch + Sentry
 
 ## Render Deployment Checklist (Web + API)
@@ -246,6 +267,6 @@ See `DEVOPS.md` for target deployment architecture:
 
 ## Security Checklist
 - Never commit real secrets in env files
-- Rotate JWT/Firebase/AWS keys if exposed
-- Keep `AWS_*` credentials only on backend
-- Mobile must use backend pre-signed URLs only
+- Rotate JWT/Firebase/Supabase keys if exposed
+- Keep `SUPABASE_SERVICE_ROLE_KEY` only on backend
+- Mobile must use backend-generated signed URLs only

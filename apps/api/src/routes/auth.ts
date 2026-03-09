@@ -7,7 +7,7 @@ import {
   login,
   revokeRefreshToken,
   rotateRefreshToken
-} from "../services/auth.service.js";
+} from "../services/supabase-auth.service.js";
 import { verifyRecaptchaToken } from "../services/recaptcha.service.js";
 import { requireAuth } from "../middleware/auth.js";
 import { env } from "../config/env.js";
@@ -26,12 +26,6 @@ const isSecureCookieEnv =
   Boolean(process.env.RENDER_EXTERNAL_URL);
 const cookieSameSite = isSecureCookieEnv ? ("none" as const) : ("lax" as const);
 const enforceRecaptchaOnLogin = isSecureCookieEnv;
-
-function hasJwtSecrets() {
-  const accessSecret = (env.JWT_ACCESS_SECRET ?? process.env.JWT_ACCESS_SECRET ?? "").trim();
-  const refreshSecret = (env.JWT_REFRESH_SECRET ?? process.env.JWT_REFRESH_SECRET ?? "").trim();
-  return accessSecret.length >= 16 && refreshSecret.length >= 16;
-}
 
 const refreshCookieConfig = {
   httpOnly: true,
@@ -227,18 +221,6 @@ authRouter.post("/login", async (req, res) => {
       return fail(res, 400, "VALIDATION_ERROR", "Invalid login payload", parsed.error);
     }
 
-    if (!hasJwtSecrets()) {
-      console.error("AUTH_ENV_ERROR", {
-        reason: "JWT_SECRETS_MISSING_OR_INVALID",
-        requestId: req.requestId ?? null
-      });
-      console.error("AUTH_LOGIN_ERROR", {
-        reason: "JWT_SECRETS_MISSING_OR_INVALID",
-        requestId: req.requestId ?? null
-      });
-      return fail(res, 500, "AUTH_CONFIG_ERROR", "Authentication is not configured");
-    }
-
     const body = parsed.data;
     const result = await login(body.email, body.password);
     if (!result.ok) {
@@ -247,10 +229,12 @@ authRouter.post("/login", async (req, res) => {
           ? "Your account is pending approval"
           : result.reason === "ACCOUNT_SUSPENDED"
             ? "Your account is suspended"
-            : result.reason === "AUTH_CONFIG_ERROR"
+          : result.reason === "AUTH_CONFIG_ERROR"
               ? "Authentication is not configured"
               : result.reason === "AUTH_BACKEND_ERROR"
                 ? "Authentication service temporarily unavailable"
+                : result.reason === "APP_PROFILE_NOT_FOUND"
+                  ? "No app profile is mapped for this account"
               : "Invalid email/password";
 
       await createAuditLog({
@@ -267,6 +251,8 @@ authRouter.post("/login", async (req, res) => {
       const statusCode =
         result.reason === "INVALID_CREDENTIALS"
           ? 401
+          : result.reason === "APP_PROFILE_NOT_FOUND"
+            ? 403
           : result.reason === "AUTH_CONFIG_ERROR" || result.reason === "AUTH_BACKEND_ERROR"
             ? 500
             : 403;
@@ -291,9 +277,11 @@ authRouter.post("/login", async (req, res) => {
 
       const details =
         result.reason === "AUTH_CONFIG_ERROR"
-          ? { reason: "AUTH_LOGIN_JWT_CONFIG_ERROR", requestId: req.requestId ?? null }
+          ? { reason: "AUTH_LOGIN_SUPABASE_CONFIG_ERROR", requestId: req.requestId ?? null }
           : result.reason === "AUTH_BACKEND_ERROR"
-            ? { reason: "AUTH_LOGIN_DB_ERROR", requestId: req.requestId ?? null }
+            ? { reason: "AUTH_LOGIN_SUPABASE_BACKEND_ERROR", requestId: req.requestId ?? null }
+            : result.reason === "APP_PROFILE_NOT_FOUND"
+              ? { reason: "AUTH_LOGIN_APP_PROFILE_NOT_FOUND", requestId: req.requestId ?? null }
             : undefined;
 
       return fail(res, statusCode, result.reason, reasonMessage, details);
@@ -355,18 +343,6 @@ authRouter.post("/login", async (req, res) => {
 
 authRouter.post("/refresh", async (req, res) => {
   try {
-    if (!hasJwtSecrets()) {
-      console.error("AUTH_ENV_ERROR", {
-        reason: "JWT_SECRETS_MISSING_OR_INVALID",
-        requestId: req.requestId ?? null
-      });
-      console.error("AUTH_REFRESH_ERROR", {
-        reason: "JWT_SECRETS_MISSING_OR_INVALID",
-        requestId: req.requestId ?? null
-      });
-      return fail(res, 500, "AUTH_CONFIG_ERROR", "Authentication is not configured");
-    }
-
     const refreshToken = req.cookies?.[refreshCookieName] as string | undefined;
     if (!refreshToken) {
       await createAuditLog({
@@ -375,7 +351,7 @@ authRouter.post("/refresh", async (req, res) => {
         detailsJson: { reason: "MISSING_REFRESH_COOKIE" },
         ipAddress: requestIp(req)
       });
-      return fail(res, 401, "UNAUTHORIZED", "Missing refresh token");
+      return fail(res, 401, "UNAUTHORIZED", "Missing session");
     }
 
     const rotated = await rotateRefreshToken(refreshToken);
@@ -386,7 +362,7 @@ authRouter.post("/refresh", async (req, res) => {
         detailsJson: { reason: "INVALID_REFRESH_TOKEN" },
         ipAddress: requestIp(req)
       });
-      return fail(res, 401, "UNAUTHORIZED", "Invalid refresh token");
+      return fail(res, 401, "UNAUTHORIZED", "Invalid or expired session");
     }
 
     res.cookie(accessCookieName, rotated.accessToken, accessCookieConfig);

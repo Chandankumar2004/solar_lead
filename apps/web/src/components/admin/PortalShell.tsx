@@ -6,6 +6,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth-store";
 import { ADMIN_NAV_ITEMS, hasRouteAccess, pageTitle } from "@/lib/rbac";
+import { getSupabaseBrowserClient } from "@/lib/supabase";
 
 type PortalShellProps = {
   children: React.ReactNode;
@@ -62,8 +63,14 @@ export function PortalShell({ children }: PortalShellProps) {
   }, [user]);
 
   const onLogout = async () => {
+    const supabase = getSupabaseBrowserClient();
     try {
       await api.post("/api/auth/logout");
+    } catch {
+      // Ignore backend failures and clear browser auth state.
+    }
+    try {
+      await supabase?.auth.signOut();
     } finally {
       setUser(null);
       router.replace("/login");

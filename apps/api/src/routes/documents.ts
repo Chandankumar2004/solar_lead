@@ -1,17 +1,14 @@
 import { DocumentReviewStatus, Prisma } from "@prisma/client";
-import { GetObjectCommand } from "@aws-sdk/client-s3";
-import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { Router } from "express";
 import { z } from "zod";
 import { ok } from "../lib/http.js";
 import { AppError } from "../lib/errors.js";
-import { env } from "../config/env.js";
 import { prisma } from "../lib/prisma.js";
-import { s3 } from "../lib/s3.js";
 import { allowRoles } from "../middleware/rbac.js";
 import { validateBody, validateParams, validateQuery } from "../middleware/validate.js";
 import { createAuditLog, requestIp } from "../services/audit-log.service.js";
 import { notifyUsers } from "../services/notification.service.js";
+import { createDocumentDownloadUrl } from "../services/storage/supabaseStorage.js";
 
 export const documentsRouter = Router();
 
@@ -325,11 +322,10 @@ documentsRouter.get(
       throw new AppError(404, "NOT_FOUND", "Document not found");
     }
 
-    const command = new GetObjectCommand({
-      Bucket: env.AWS_S3_BUCKET,
-      Key: document.s3Key
-    });
-    const downloadUrl = await getSignedUrl(s3, command, { expiresIn: PRESIGNED_URL_TTL_SECONDS });
+    const downloadUrl = await createDocumentDownloadUrl(
+      document.s3Key,
+      PRESIGNED_URL_TTL_SECONDS
+    );
 
     return ok(
       res,

@@ -66,7 +66,7 @@ class SesEmailProvider implements EmailProvider {
     console.info("[email:ses-placeholder]", {
       messageId: `ses-${Date.now()}`,
       from: env.EMAIL_FROM,
-      region: env.AWS_SES_REGION ?? env.AWS_REGION,
+      region: env.SES_REGION ?? "not-configured",
       to: message.to,
       subject: message.subject
     });

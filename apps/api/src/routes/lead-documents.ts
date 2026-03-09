@@ -1,18 +1,18 @@
 import { Prisma } from "@prisma/client";
 import { randomUUID } from "node:crypto";
-import { PutObjectCommand } from "@aws-sdk/client-s3";
-import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { Router } from "express";
 import { z } from "zod";
 import { created, ok } from "../lib/http.js";
 import { AppError } from "../lib/errors.js";
 import { prisma } from "../lib/prisma.js";
-import { s3 } from "../lib/s3.js";
-import { env } from "../config/env.js";
 import { allowRoles } from "../middleware/rbac.js";
 import { validateBody, validateParams, validateQuery } from "../middleware/validate.js";
 import { createAuditLog, requestIp } from "../services/audit-log.service.js";
 import { triggerDocumentPendingNotification } from "../services/notification.service.js";
+import {
+  createDocumentUploadUrl,
+  STORAGE_BUCKET_NAME
+} from "../services/storage/supabaseStorage.js";
 
 export const leadDocumentsRouter = Router({ mergeParams: true });
 
@@ -166,14 +166,7 @@ leadDocumentsRouter.post(
     const safeCategory = body.category.toLowerCase().replace(/[^a-z0-9_-]/g, "_");
     const safeFileName = sanitizeFileName(body.fileName);
     const s3Key = `leads/${leadId}/documents/${safeCategory}/${randomUUID()}-${safeFileName}`;
-
-    const command = new PutObjectCommand({
-      Bucket: env.AWS_S3_BUCKET,
-      Key: s3Key,
-      ContentType: body.fileType,
-      ContentLength: body.fileSize
-    });
-    const uploadUrl = await getSignedUrl(s3, command, { expiresIn: PRESIGNED_URL_TTL_SECONDS });
+    const uploadUrl = await createDocumentUploadUrl(s3Key);
 
     return ok(
       res,
@@ -181,7 +174,7 @@ leadDocumentsRouter.post(
         uploadUrl,
         s3Key,
         expiresInSeconds: PRESIGNED_URL_TTL_SECONDS,
-        bucket: env.AWS_S3_BUCKET
+        bucket: STORAGE_BUCKET_NAME
       },
       "Document upload URL generated"
     );

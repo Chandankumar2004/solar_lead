@@ -4,21 +4,37 @@ import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
-import axios from "axios";
 import Script from "next/script";
 import { loginSchema } from "@solar/shared";
 import { api, getApiErrorMessage } from "@/lib/api";
 import { resolveRecaptchaSiteKey } from "@/lib/recaptcha";
 import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/lib/auth-store";
+import { getSupabaseBrowserClient, getSupabaseConfigError } from "@/lib/supabase";
 
 type LoginValues = z.infer<typeof loginSchema>;
+
+function supabaseLoginErrorMessage(rawMessage: string | undefined) {
+  const message = (rawMessage ?? "").trim();
+  const normalized = message.toLowerCase();
+  if (
+    normalized.includes("invalid login credentials") ||
+    normalized.includes("invalid credentials")
+  ) {
+    return "Invalid email/password";
+  }
+  if (normalized.includes("email not confirmed")) {
+    return "Email is not confirmed";
+  }
+  return message || "Login failed";
+}
 
 export function LoginForm() {
   const [error, setError] = useState<string | null>(null);
   const [recaptchaScriptFailed, setRecaptchaScriptFailed] = useState(false);
   const router = useRouter();
   const setUser = useAuthStore((s) => s.setUser);
+  const supabaseConfigError = getSupabaseConfigError();
   const rawRecaptchaSiteKey =
     process.env.NEXT_PUBLIC_RECAPTCHA_SITE_KEY ??
     process.env.NEXT_PUBLIC_GOOGLE_RECAPTCHA_SITE_KEY ??
@@ -60,8 +76,6 @@ export function LoginForm() {
         reason: "SITE_KEY_MISSING_OR_INVALID",
         target: "ADMIN_LOGIN"
       });
-      setError("reCAPTCHA is not configured. Please contact support.");
-      return;
     }
 
     const getRecaptchaToken = async () => {
@@ -113,66 +127,51 @@ export function LoginForm() {
 
     const recaptchaToken = await getRecaptchaToken();
     if (recaptchaSiteKey && !recaptchaToken) {
-      setError("reCAPTCHA verification failed. Please refresh and try again.");
-      return;
+      console.warn("RECAPTCHA_EXECUTION_SKIPPED", {
+        reason: "TOKEN_NOT_AVAILABLE",
+        target: "ADMIN_LOGIN"
+      });
     }
 
     try {
-      const buildPayload = (token: string | null) => ({
-        ...values,
-        recaptchaToken: token ?? undefined,
-        recaptchaAction: "admin_login"
+      if (supabaseConfigError) {
+        setError(supabaseConfigError);
+        return;
+      }
+
+      const supabase = getSupabaseBrowserClient();
+      if (!supabase) {
+        setError("Supabase Auth is not configured");
+        return;
+      }
+
+      const signedIn = await supabase.auth.signInWithPassword({
+        email: values.email.trim().toLowerCase(),
+        password: values.password
       });
 
-      const resp = await api.post("/api/auth/login", buildPayload(recaptchaToken));
-      setUser(resp.data.data.user);
+      if (signedIn.error || !signedIn.data.session?.access_token) {
+        setError(supabaseLoginErrorMessage(signedIn.error?.message));
+        return;
+      }
+
+      const meResponse = await api.get("/api/auth/me", {
+        headers: {
+          Authorization: `Bearer ${signedIn.data.session.access_token}`
+        }
+      });
+
+      const user = meResponse.data?.data?.user ?? null;
+      if (!user) {
+        await supabase.auth.signOut();
+        setError("No app profile is mapped for this account");
+        return;
+      }
+
+      setUser(user);
       router.push("/dashboard");
     } catch (error) {
-      let handledError: unknown = error;
-
-      if (axios.isAxiosError(handledError) && recaptchaSiteKey) {
-        const errorCode = handledError.response?.data?.error?.code;
-        const errorCodes = handledError.response?.data?.error?.details?.errorCodes;
-        const isTimeoutOrDuplicate =
-          errorCode === "RECAPTCHA_TOKEN_INVALID" &&
-          Array.isArray(errorCodes) &&
-          errorCodes.includes("timeout-or-duplicate");
-
-        if (isTimeoutOrDuplicate) {
-          try {
-            const retryToken = await getRecaptchaToken();
-            if (retryToken) {
-              const retryResp = await api.post("/api/auth/login", {
-                ...values,
-                recaptchaToken: retryToken,
-                recaptchaAction: "admin_login"
-              });
-              setUser(retryResp.data.data.user);
-              router.push("/dashboard");
-              return;
-            }
-          } catch (retryError) {
-            handledError = retryError;
-          }
-        }
-      }
-
-      if (axios.isAxiosError(handledError)) {
-        if (handledError.code === "ERR_NETWORK") {
-          console.error("AUTH_LOGIN_ERROR", {
-            reason: "NETWORK_OR_CORS",
-            apiBaseUrl: process.env.NEXT_PUBLIC_API_BASE_URL ?? null
-          });
-        } else {
-          console.error("AUTH_LOGIN_ERROR", {
-            reason: "LOGIN_REQUEST_FAILED",
-            status: handledError.response?.status ?? null,
-            code: handledError.response?.data?.error?.code ?? null,
-            message: handledError.response?.data?.message ?? null
-          });
-        }
-      }
-      setError(getApiErrorMessage(handledError, "Login failed"));
+      setError(getApiErrorMessage(error, "Login failed"));
     }
   });
 

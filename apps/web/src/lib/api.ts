@@ -1,4 +1,5 @@
-import axios, { AxiosRequestConfig } from "axios";
+import axios, { AxiosRequestConfig, AxiosRequestHeaders } from "axios";
+import { getSupabaseBrowserClient } from "./supabase";
 
 function normalizeBaseUrl(raw: string | undefined) {
   return (raw ?? "").trim().replace(/\/+$/, "");
@@ -9,7 +10,7 @@ const configuredApiBaseUrl = normalizeBaseUrl(
 );
 const fallbackApiBaseUrl =
   process.env.NODE_ENV === "production"
-    ? "https://solar-lead.onrender.com"
+    ? "https://solar-lead-1.onrender.com"
     : "http://localhost:4000";
 
 const apiBaseUrl = configuredApiBaseUrl || fallbackApiBaseUrl;
@@ -75,6 +76,29 @@ export function getApiErrorMessage(error: unknown, fallbackMessage: string) {
   return fallbackMessage;
 }
 
+api.interceptors.request.use(async (config) => {
+  if (typeof window === "undefined") {
+    return config;
+  }
+
+  const supabase = getSupabaseBrowserClient();
+  if (!supabase) {
+    return config;
+  }
+
+  const { data, error } = await supabase.auth.getSession();
+  if (error || !data.session?.access_token) {
+    return config;
+  }
+
+  const headers = (config.headers ?? {}) as AxiosRequestHeaders;
+  if (!headers.Authorization && !headers.authorization) {
+    headers.Authorization = `Bearer ${data.session.access_token}`;
+  }
+  config.headers = headers;
+  return config;
+});
+
 api.interceptors.response.use(
   (resp) => resp,
   async (err) => {
@@ -83,11 +107,23 @@ api.interceptors.response.use(
     const requestUrl = String(config.url ?? "");
     const isRefreshCall = requestUrl.includes("/auth/refresh");
     const isLoginCall = requestUrl.includes("/auth/login");
-
     if (status === 401 && !config._retry && !isRefreshCall && !isLoginCall) {
       config._retry = true;
       try {
-        await api.post("/api/auth/refresh");
+        const supabase = getSupabaseBrowserClient();
+        if (!supabase) {
+          return Promise.reject(err);
+        }
+
+        const refreshed = await supabase.auth.refreshSession();
+        const nextAccessToken = refreshed.data.session?.access_token;
+        if (!nextAccessToken) {
+          return Promise.reject(err);
+        }
+
+        const headers = (config.headers ?? {}) as AxiosRequestHeaders;
+        headers.Authorization = `Bearer ${nextAccessToken}`;
+        config.headers = headers;
         return api.request(config);
       } catch {
         return Promise.reject(err);

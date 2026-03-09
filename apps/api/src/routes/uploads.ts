@@ -1,16 +1,17 @@
 import { Router } from "express";
 import { randomUUID } from "node:crypto";
-import { GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
-import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { z } from "zod";
-import { env } from "../config/env.js";
-import { s3 } from "../lib/s3.js";
 import { ok } from "../lib/http.js";
 import { requireAuth } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
 import { validateBody, validateParams } from "../middleware/validate.js";
 import { AppError } from "../lib/errors.js";
 import { triggerDocumentPendingNotification } from "../services/notification.service.js";
+import {
+  createDocumentDownloadUrl,
+  createDocumentUploadUrl,
+  STORAGE_BUCKET_NAME
+} from "../services/storage/supabaseStorage.js";
 
 export const uploadsRouter = Router();
 
@@ -29,13 +30,7 @@ uploadsRouter.post("/presign", requireAuth, validateBody(createUploadSchema), as
   const parsed = req.body as z.infer<typeof createUploadSchema>;
 
   const fileKey = `leads/${parsed.leadId}/${randomUUID()}-${parsed.fileName}`;
-  const command = new PutObjectCommand({
-    Bucket: env.AWS_S3_BUCKET,
-    Key: fileKey,
-    ContentType: parsed.mimeType
-  });
-
-  const uploadUrl = await getSignedUrl(s3, command, { expiresIn: 300 });
+  const uploadUrl = await createDocumentUploadUrl(fileKey);
 
   const document = await prisma.document.create({
     data: {
@@ -59,7 +54,7 @@ uploadsRouter.post("/presign", requireAuth, validateBody(createUploadSchema), as
   return ok(res, {
     uploadUrl,
     fileKey,
-    bucket: env.AWS_S3_BUCKET
+    bucket: STORAGE_BUCKET_NAME
   });
 });
 
@@ -83,11 +78,7 @@ uploadsRouter.get(
       throw new AppError(404, "NOT_FOUND", "Document not found");
     }
 
-    const command = new GetObjectCommand({
-      Bucket: env.AWS_S3_BUCKET,
-      Key: document.s3Key
-    });
-    const downloadUrl = await getSignedUrl(s3, command, { expiresIn: 300 });
+    const downloadUrl = await createDocumentDownloadUrl(document.s3Key, 300);
 
     return ok(res, {
       documentId: document.id,

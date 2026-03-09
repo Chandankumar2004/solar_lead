@@ -1,4 +1,5 @@
 import bcrypt from "bcryptjs";
+import { randomUUID } from "node:crypto";
 import { Prisma, UserRole, UserStatus } from "@prisma/client";
 import { Router } from "express";
 import { z } from "zod";
@@ -13,7 +14,11 @@ import {
   sendUserRoleChangedEmail,
   sendUserStatusChangedEmail
 } from "../services/email.service.js";
-import { revokeAllUserRefreshSessions } from "../services/auth.service.js";
+import {
+  ensureSupabaseAuthUserForAppUser,
+  removeSupabaseAuthUser,
+  revokeAllUserRefreshSessions
+} from "../services/supabase-auth.service.js";
 
 export const usersRouter = Router();
 
@@ -386,12 +391,34 @@ usersRouter.post("/", validateBody(createUserSchema), async (req, res) => {
     );
   }
 
+  const appUserId = randomUUID();
   const passwordHash = await bcrypt.hash(body.password, BCRYPT_WORK_FACTOR);
+  const supabaseProvision = await ensureSupabaseAuthUserForAppUser({
+    appUserId,
+    email: body.email,
+    fullName: body.fullName,
+    password: body.password,
+    createIfMissing: true
+  });
+
+  if (!supabaseProvision.ok) {
+    if (supabaseProvision.reason === "CONFLICT") {
+      throw new AppError(409, "CONFLICT", "User with same email already exists in auth");
+    }
+    if (supabaseProvision.reason === "AUTH_CONFIG_ERROR") {
+      throw new AppError(500, "AUTH_CONFIG_ERROR", "Authentication is not configured");
+    }
+    if (supabaseProvision.reason === "MISSING_PASSWORD") {
+      throw new AppError(400, "PASSWORD_REQUIRED", "password is required");
+    }
+    throw new AppError(502, "AUTH_BACKEND_ERROR", supabaseProvision.message);
+  }
 
   try {
     const createdUser = await prisma.$transaction(async (tx) => {
       const user = await tx.user.create({
         data: {
+          id: appUserId,
           email: body.email,
           passwordHash,
           fullName: body.fullName,
@@ -448,6 +475,9 @@ usersRouter.post("/", validateBody(createUserSchema), async (req, res) => {
       "User created in pending status"
     );
   } catch (error) {
+    if (supabaseProvision.created) {
+      await removeSupabaseAuthUser(supabaseProvision.supabaseUserId);
+    }
     if (
       error instanceof Prisma.PrismaClientKnownRequestError &&
       error.code === "P2002"
@@ -550,6 +580,24 @@ usersRouter.patch(
           include: userInclude
         });
       });
+
+      const supabaseSync = await ensureSupabaseAuthUserForAppUser({
+        appUserId: updated.id,
+        email: updated.email,
+        fullName: updated.fullName,
+        createIfMissing: false
+      });
+      if (!supabaseSync.ok) {
+        warnings.push(
+          "Supabase auth profile sync failed. User login details may require manual sync."
+        );
+        console.error("SUPABASE_USER_SYNC_ERROR", {
+          appUserId: updated.id,
+          email: updated.email,
+          reason: supabaseSync.reason,
+          message: supabaseSync.message
+        });
+      }
 
       if (existing.role !== nextRole) {
         await createAuditLog({
