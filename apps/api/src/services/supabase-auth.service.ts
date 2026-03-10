@@ -1,3 +1,4 @@
+import bcrypt from "bcryptjs";
 import { UserRole, UserStatus } from "@prisma/client";
 import type { User as SupabaseAuthUser } from "@supabase/supabase-js";
 import { prisma, prismaAuthFallback } from "../lib/prisma.js";
@@ -10,6 +11,7 @@ import {
 
 const SUPABASE_USERS_PAGE_SIZE = 200;
 const MAX_SUPABASE_USER_SCAN_PAGES = 200;
+const BCRYPT_WORK_FACTOR = 12;
 
 type PublicUser = {
   id: string;
@@ -98,6 +100,89 @@ function toPublicUser(user: SessionUser): PublicUser {
     role: user.role,
     status: user.status
   };
+}
+
+function stripWrappingQuotes(raw: string | undefined | null) {
+  const trimmed = (raw ?? "").trim();
+  if (
+    (trimmed.startsWith("\"") && trimmed.endsWith("\"")) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed.slice(1, -1).trim();
+  }
+  return trimmed;
+}
+
+async function ensureSeedSuperAdminAppProfile(email: string): Promise<SessionUser | null> {
+  const seedEmail = normalizeEmail(
+    stripWrappingQuotes(process.env.SEED_SUPER_ADMIN_EMAIL) || "chandan32005c@gmail.com"
+  );
+  const normalizedEmail = normalizeEmail(email);
+  if (!seedEmail || normalizedEmail !== seedEmail) {
+    return null;
+  }
+
+  const seedPassword =
+    stripWrappingQuotes(process.env.SEED_SUPER_ADMIN_PASSWORD) || "__SUPABASE_ONLY_AUTH__";
+
+  const fullName = stripWrappingQuotes(process.env.SEED_SUPER_ADMIN_NAME) || "Super Admin";
+  const phoneRaw = stripWrappingQuotes(process.env.SEED_SUPER_ADMIN_PHONE);
+  const phone = phoneRaw.length > 0 ? phoneRaw : null;
+  const employeeId = stripWrappingQuotes(process.env.SEED_SUPER_ADMIN_EMPLOYEE_ID) || "SA-001";
+
+  try {
+    const passwordHash = await bcrypt.hash(seedPassword, BCRYPT_WORK_FACTOR);
+
+    const existingByEmployeeId = await prisma.user.findUnique({
+      where: { employeeId },
+      select: { id: true }
+    });
+
+    const user = existingByEmployeeId
+      ? await prisma.user.update({
+          where: { id: existingByEmployeeId.id },
+          data: {
+            email: normalizedEmail,
+            fullName,
+            phone,
+            employeeId,
+            role: "SUPER_ADMIN",
+            status: "ACTIVE",
+            passwordHash
+          },
+          select: { id: true, email: true, fullName: true, role: true, status: true }
+        })
+      : await prisma.user.upsert({
+          where: { email: normalizedEmail },
+          update: {
+            fullName,
+            phone,
+            employeeId,
+            role: "SUPER_ADMIN",
+            status: "ACTIVE",
+            passwordHash
+          },
+          create: {
+            email: normalizedEmail,
+            fullName,
+            phone,
+            employeeId,
+            role: "SUPER_ADMIN",
+            status: "ACTIVE",
+            passwordHash
+          },
+          select: { id: true, email: true, fullName: true, role: true, status: true }
+        });
+
+    return user;
+  } catch (error) {
+    console.error("AUTH_LOGIN_DB_ERROR", {
+      stage: "SEED_SUPER_ADMIN_AUTOCREATE",
+      email: normalizedEmail,
+      error
+    });
+    return null;
+  }
 }
 
 function readAppUserIdFromSupabaseUser(supabaseUser: SupabaseAuthUser): string | null {
@@ -292,6 +377,10 @@ async function mapSupabaseUserToAppUser(
 
   if (!appUser && normalizedSupabaseEmail) {
     appUser = await findSessionUserByEmail(normalizedSupabaseEmail);
+  }
+
+  if (!appUser && normalizedSupabaseEmail) {
+    appUser = await ensureSeedSuperAdminAppProfile(normalizedSupabaseEmail);
   }
 
   if (!appUser) {

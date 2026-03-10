@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { LoginForm } from "@/components/LoginForm";
 import { api } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth-store";
+import { getSupabaseBrowserClient } from "@/lib/supabase";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -12,17 +13,35 @@ export default function LoginPage() {
 
   useEffect(() => {
     let active = true;
-    api
-      .get("/api/auth/me")
-      .then((response) => {
+    const run = async () => {
+      const supabase = getSupabaseBrowserClient();
+      if (!supabase) {
+        return;
+      }
+
+      const { data } = await supabase.auth.getSession();
+      const accessToken = data.session?.access_token;
+      if (!accessToken) {
+        return;
+      }
+
+      try {
+        const response = await api.get("/api/auth/me", {
+          headers: {
+            Authorization: `Bearer ${accessToken}`
+          }
+        });
         if (!active) return;
         const user = response.data?.data?.user ?? null;
         if (user) {
           setUser(user);
           router.replace("/dashboard");
         }
-      })
-      .catch(() => undefined);
+      } catch {
+        await supabase.auth.signOut();
+      }
+    };
+    void run();
     return () => {
       active = false;
     };
