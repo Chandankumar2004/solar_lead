@@ -94,21 +94,75 @@ function normalizePrismaDatasourceUrl(rawUrl: string) {
 
 const runtimeDatabaseUrl = (env.DATABASE_URL ?? process.env.DATABASE_URL ?? "").trim();
 const runtimeDirectUrl = (process.env.DIRECT_URL ?? "").trim();
-const rawPrismaUrl = runtimeDatabaseUrl || runtimeDirectUrl;
+
+type RuntimeCandidate = {
+  source: "DATABASE_URL" | "DIRECT_URL";
+  rawUrl: string;
+  score: number;
+};
+
+function scoreRuntimeUrl(rawUrl: string) {
+  try {
+    const parsed = new URL(rawUrl);
+    const host = parsed.hostname.toLowerCase();
+    // Prefer Supabase pooler endpoints in hosted environments.
+    if (host.endsWith(".pooler.supabase.com")) {
+      return 2;
+    }
+    return 1;
+  } catch {
+    return 0;
+  }
+}
+
+function pickRuntimeCandidates(databaseUrl: string, directUrl: string) {
+  const candidates: RuntimeCandidate[] = [];
+  if (databaseUrl) {
+    candidates.push({
+      source: "DATABASE_URL",
+      rawUrl: databaseUrl,
+      score: scoreRuntimeUrl(databaseUrl)
+    });
+  }
+  if (directUrl) {
+    candidates.push({
+      source: "DIRECT_URL",
+      rawUrl: directUrl,
+      score: scoreRuntimeUrl(directUrl)
+    });
+  }
+  if (candidates.length === 0) {
+    return { primary: null, alternate: null };
+  }
+
+  candidates.sort((a, b) => {
+    if (b.score !== a.score) {
+      return b.score - a.score;
+    }
+    // Stable preference: DATABASE_URL before DIRECT_URL when equal.
+    if (a.source === b.source) {
+      return 0;
+    }
+    return a.source === "DATABASE_URL" ? -1 : 1;
+  });
+
+  return {
+    primary: candidates[0] ?? null,
+    alternate: candidates[1] ?? null
+  };
+}
+
+const runtimeChoice = pickRuntimeCandidates(runtimeDatabaseUrl, runtimeDirectUrl);
+const rawPrismaUrl = runtimeChoice.primary?.rawUrl ?? "";
 const prismaDatasourceUrl = normalizePrismaDatasourceUrl(rawPrismaUrl);
-const alternateRawPrismaUrl =
-  runtimeDatabaseUrl && runtimeDirectUrl
-    ? rawPrismaUrl === runtimeDatabaseUrl
-      ? runtimeDirectUrl
-      : runtimeDatabaseUrl
-    : "";
+const alternateRawPrismaUrl = runtimeChoice.alternate?.rawUrl ?? "";
 const prismaAlternateDatasourceUrl = normalizePrismaDatasourceUrl(alternateRawPrismaUrl);
 
-if (runtimeDatabaseUrl) {
+if (runtimeChoice.primary?.source === "DATABASE_URL") {
   console.info("DB_SCHEMA_CONTEXT", {
     reason: "USING_DATABASE_URL_FOR_RUNTIME"
   });
-} else if (runtimeDirectUrl) {
+} else if (runtimeChoice.primary?.source === "DIRECT_URL") {
   console.info("DB_SCHEMA_CONTEXT", {
     reason: "USING_DIRECT_URL_FALLBACK_FOR_RUNTIME"
   });
