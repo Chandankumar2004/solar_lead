@@ -30,6 +30,28 @@ function normalizePrismaDatasourceUrl(rawUrl: string) {
       return rawUrl;
     }
 
+    const isSupabasePooler = parsed.hostname.toLowerCase().endsWith(".pooler.supabase.com");
+    if (isSupabasePooler) {
+      const rawPort = (parsed.port ?? "").trim();
+      if (!rawPort || rawPort === "5432") {
+        parsed.port = "6543";
+        console.info("DB_SCHEMA_CONTEXT", {
+          reason: "SUPABASE_POOLER_PORT_NORMALIZED",
+          fromPort: rawPort || "5432",
+          toPort: "6543"
+        });
+      }
+      if (!parsed.searchParams.get("pgbouncer")) {
+        parsed.searchParams.set("pgbouncer", "true");
+      }
+      if (!parsed.searchParams.get("connection_limit")) {
+        parsed.searchParams.set("connection_limit", "1");
+      }
+      if (!parsed.searchParams.get("sslmode")) {
+        parsed.searchParams.set("sslmode", "require");
+      }
+    }
+
     const configuredSchema = (parsed.searchParams.get("schema") ?? "").trim();
     if (!configuredSchema) {
       parsed.searchParams.set("schema", DEFAULT_APP_DB_SCHEMA);
@@ -72,24 +94,23 @@ function normalizePrismaDatasourceUrl(rawUrl: string) {
 
 const runtimeDatabaseUrl = (env.DATABASE_URL ?? process.env.DATABASE_URL ?? "").trim();
 const runtimeDirectUrl = (process.env.DIRECT_URL ?? "").trim();
-// Prefer DIRECT_URL for runtime if present; some hosted pooler endpoints are unreachable from PaaS networks.
-const rawPrismaUrl = runtimeDirectUrl || runtimeDatabaseUrl;
+const rawPrismaUrl = runtimeDatabaseUrl || runtimeDirectUrl;
 const prismaDatasourceUrl = normalizePrismaDatasourceUrl(rawPrismaUrl);
 const alternateRawPrismaUrl =
   runtimeDatabaseUrl && runtimeDirectUrl
-    ? rawPrismaUrl === runtimeDirectUrl
-      ? runtimeDatabaseUrl
-      : runtimeDirectUrl
+    ? rawPrismaUrl === runtimeDatabaseUrl
+      ? runtimeDirectUrl
+      : runtimeDatabaseUrl
     : "";
 const prismaAlternateDatasourceUrl = normalizePrismaDatasourceUrl(alternateRawPrismaUrl);
 
-if (rawPrismaUrl === runtimeDirectUrl && runtimeDirectUrl) {
-  console.info("DB_SCHEMA_CONTEXT", {
-    reason: "USING_DIRECT_URL_FOR_RUNTIME"
-  });
-} else if (runtimeDatabaseUrl) {
+if (runtimeDatabaseUrl) {
   console.info("DB_SCHEMA_CONTEXT", {
     reason: "USING_DATABASE_URL_FOR_RUNTIME"
+  });
+} else if (runtimeDirectUrl) {
+  console.info("DB_SCHEMA_CONTEXT", {
+    reason: "USING_DIRECT_URL_FALLBACK_FOR_RUNTIME"
   });
 }
 
