@@ -7,7 +7,8 @@
     "dev:web": "pnpm --filter @solar/web dev",
     "dev:api": "pnpm --filter @solar/api dev",
     "dev:mobile": "pnpm --filter @solar/mobile dev",
-    "build:web": "pnpm --filter @solar/api districts:export:web && pnpm --filter @solar/web build",
+    "build:web": "pnpm --filter @solar/web build",
+    "build:web:with-mapping": "pnpm --filter @solar/api districts:export:web && pnpm --filter @solar/web build",
     "build:web:mapping": "pnpm --filter @solar/api districts:export:web",
     "lint": "pnpm -r --if-present lint",
     "typecheck": "pnpm -r --if-present typecheck"
