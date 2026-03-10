@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
+    "postinstall": "pnpm run prisma:generate",
     "build": "pnpm --dir ../../packages/shared build && pnpm run prisma:generate && node scripts/guard-no-supabase-runtime.mjs && tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "start": "node dist/index.js",
