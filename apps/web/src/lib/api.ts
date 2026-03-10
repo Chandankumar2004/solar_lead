@@ -10,7 +10,7 @@ const configuredApiBaseUrl = normalizeBaseUrl(
 );
 const fallbackApiBaseUrl =
   process.env.NODE_ENV === "production"
-    ? "https://solar-lead-1.onrender.com"
+    ? "https://solar-lead.onrender.com"
     : "http://localhost:4000";
 
 const apiBaseUrl = configuredApiBaseUrl || fallbackApiBaseUrl;
