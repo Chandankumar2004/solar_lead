@@ -4,7 +4,7 @@ Production-style monorepo for a Solar Panel Installation Lead Management System.
 
 ## Tech Stack
 - Web Admin + Landing: Next.js, Tailwind CSS, React Hook Form + Zod, Axios/SWR, Recharts, Firebase client
-- Backend API: Node.js 20+, Express, Prisma ORM, PostgreSQL, Redis, BullMQ, jsonwebtoken, Supabase Storage signed URL flow
+- Backend API: Node.js 20+, Express, Supabase Auth, PostgreSQL (Supabase), Redis, BullMQ, Supabase Storage signed URL flow
 - Mobile App: Expo (React Native), React Navigation, Zustand, React Hook Form, AsyncStorage offline queue, document/image picker, maps, biometric unlock
 - Shared package: `@solar/shared` (types, constants, schemas)
 
@@ -12,7 +12,7 @@ Production-style monorepo for a Solar Panel Installation Lead Management System.
 ```txt
 .
 ├─ apps/
-│  ├─ api/        # Express + Prisma backend
+│  ├─ api/        # Express backend (Supabase Auth + data services)
 │  ├─ web/        # Next.js admin + public landing
 │  └─ mobile/     # Expo mobile app
 ├─ packages/
@@ -96,17 +96,14 @@ Required keys:
   - `EXPO_PUBLIC_COMPANY_UPI_ID`
   - `EXPO_PUBLIC_COMPANY_UPI_NAME`
 
-## 3) Prisma + Database
+## 3) Database (Supabase Postgres)
 Run from repo root:
 ```bash
-pnpm --filter @solar/api prisma:generate
-cd apps/api
-npx prisma db push
-pnpm prisma:seed
+pnpm --filter @solar/api build
 ```
 
 Notes:
-- `schema.prisma` includes all core tables:
+- Existing application tables include:
   - users, districts, user_district_assignments, lead_statuses, lead_status_transitions, leads,
     lead_status_history, customer_details, documents, payments, notification_templates,
     notification_logs, loan_details, audit_logs, user_device_tokens
@@ -232,15 +229,11 @@ See `DEVOPS.md` for target deployment architecture:
 - API required env:
   - `NODE_ENV=production`
   - `PORT=10000` (or use Render default)
-  - `DATABASE_URL` (pooled URL)
-  - `DIRECT_URL` (direct DB URL for Prisma migrate/seed)
-  - `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET`
-  - `WEB_ORIGIN` (comma-separated frontend origins)
+  - `SUPABASE_URL`
+  - `SUPABASE_ANON_KEY`
+  - `SUPABASE_SERVICE_ROLE_KEY`
+  - `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET` (if still used by legacy modules)
   - `SEED_SUPER_ADMIN_PASSWORD` (+ optional `SEED_SUPER_ADMIN_*`)
-- After deploy (or as one-off job), run:
-  - `pnpm prisma:generate`
-  - `pnpm prisma:migrate:deploy`
-  - `pnpm prisma:seed`
 - Web service root directory: `apps/web`
 - Web build command: `pnpm install --frozen-lockfile && pnpm build`
 - Web start command: `pnpm start`
@@ -253,11 +246,11 @@ See `DEVOPS.md` for target deployment architecture:
 
 ## Troubleshooting
 - CORS blocked from web:
-  - ensure `WEB_ORIGIN` contains exact web origin (`http://localhost:3200`)
+  - ensure frontend calls the correct API URL in `NEXT_PUBLIC_API_BASE_URL`
 - Web login `ERR_CONNECTION_REFUSED`:
   - API is not running on `:4000`
-- Prisma connection errors:
-  - verify URL encoding for special chars in DB password
+- Auth profile not found (`APP_PROFILE_NOT_FOUND`):
+  - run `pnpm --filter @solar/api auth:reset-super-admin` or use SQL in `apps/api/sql/001_supabase_auth_backfill.sql`
 - Expo cannot connect to Metro:
   - ensure Metro running, same Wi-Fi, and correct `EXPO_PUBLIC_API_BASE_URL`
 - Android SDK/adb not found:

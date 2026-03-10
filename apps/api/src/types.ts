@@ -1,4 +1,5 @@
-import { UserRole, UserStatus } from "@prisma/client";
+export type UserRole = "SUPER_ADMIN" | "ADMIN" | "MANAGER" | "EXECUTIVE";
+export type UserStatus = "ACTIVE" | "PENDING" | "SUSPENDED";
 
 export interface AuthUser {
   id: string;
@@ -7,4 +8,3 @@ export interface AuthUser {
   role: UserRole;
   status: UserStatus;
 }
-

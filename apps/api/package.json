@@ -5,8 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "postinstall": "pnpm run prisma:generate",
-    "build": "pnpm --dir ../../packages/shared build && pnpm run prisma:generate && node scripts/guard-no-supabase-runtime.mjs && tsc -p tsconfig.json",
+    "build": "pnpm --dir ../../packages/shared build && node scripts/guard-no-supabase-runtime.mjs && tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "start": "node dist/index.js",
     "token:access": "node src/scripts/create-access-token.js",
@@ -14,11 +13,7 @@
     "auth:reset-super-admin": "tsx src/scripts/reset-super-admin-password.ts",
     "auth:backfill-supabase": "tsx src/scripts/backfill-supabase-auth-users.ts",
     "districts:export:web": "tsx src/scripts/export-districts-mapping.ts",
-    "prisma:generate": "prisma generate --schema=./prisma/schema.prisma",
-    "prisma:migrate": "prisma migrate dev",
-    "prisma:migrate:deploy": "prisma migrate deploy --schema=./prisma/schema.prisma",
-    "prisma:seed": "tsx prisma/seed.ts",
-    "lint": "eslint \"src/**/*.{ts,js}\" \"prisma/**/*.ts\""
+    "lint": "eslint \"src/**/*.{ts,js}\""
   },
   "dependencies": {
     "@prisma/client": "^5.20.0",

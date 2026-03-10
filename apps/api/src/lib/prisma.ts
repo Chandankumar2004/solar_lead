@@ -35,11 +35,6 @@ function normalizePrismaDatasourceUrl(rawUrl: string) {
       const rawPort = (parsed.port ?? "").trim();
       if (!rawPort || rawPort === "5432") {
         parsed.port = "6543";
-        console.info("DB_SCHEMA_CONTEXT", {
-          reason: "SUPABASE_POOLER_PORT_NORMALIZED",
-          fromPort: rawPort || "5432",
-          toPort: "6543"
-        });
       }
       if (!parsed.searchParams.get("pgbouncer")) {
         parsed.searchParams.set("pgbouncer", "true");
@@ -56,21 +51,11 @@ function normalizePrismaDatasourceUrl(rawUrl: string) {
     if (!configuredSchema) {
       parsed.searchParams.set("schema", DEFAULT_APP_DB_SCHEMA);
     } else if (configuredSchema.toLowerCase() !== DEFAULT_APP_DB_SCHEMA) {
-      console.error("DB_METADATA_CHECK_ERROR", {
-        reason: "DATABASE_URL_SCHEMA_OVERRIDE",
-        fromSchema: configuredSchema,
-        toSchema: DEFAULT_APP_DB_SCHEMA
-      });
       parsed.searchParams.set("schema", DEFAULT_APP_DB_SCHEMA);
     }
 
     const configuredCurrentSchema = (parsed.searchParams.get("currentSchema") ?? "").trim();
     if (configuredCurrentSchema && configuredCurrentSchema.toLowerCase() !== DEFAULT_APP_DB_SCHEMA) {
-      console.error("DB_METADATA_CHECK_ERROR", {
-        reason: "DATABASE_URL_CURRENT_SCHEMA_OVERRIDE",
-        fromSchema: configuredCurrentSchema,
-        toSchema: DEFAULT_APP_DB_SCHEMA
-      });
       parsed.searchParams.set("currentSchema", DEFAULT_APP_DB_SCHEMA);
     }
 
@@ -78,10 +63,6 @@ function normalizePrismaDatasourceUrl(rawUrl: string) {
     if (rawOptions) {
       const normalizedOptions = normalizeOptionsParam(rawOptions);
       if (normalizedOptions !== rawOptions) {
-        console.error("DB_METADATA_CHECK_ERROR", {
-          reason: "DATABASE_URL_SEARCH_PATH_OVERRIDE",
-          toSchema: DEFAULT_APP_DB_SCHEMA
-        });
         parsed.searchParams.set("options", normalizedOptions);
       }
     }
@@ -158,16 +139,6 @@ const prismaDatasourceUrl = normalizePrismaDatasourceUrl(rawPrismaUrl);
 const alternateRawPrismaUrl = runtimeChoice.alternate?.rawUrl ?? "";
 const prismaAlternateDatasourceUrl = normalizePrismaDatasourceUrl(alternateRawPrismaUrl);
 
-if (runtimeChoice.primary?.source === "DATABASE_URL") {
-  console.info("DB_SCHEMA_CONTEXT", {
-    reason: "USING_DATABASE_URL_FOR_RUNTIME"
-  });
-} else if (runtimeChoice.primary?.source === "DIRECT_URL") {
-  console.info("DB_SCHEMA_CONTEXT", {
-    reason: "USING_DIRECT_URL_FALLBACK_FOR_RUNTIME"
-  });
-}
-
 export const prisma = prismaDatasourceUrl
   ? new PrismaClient({
       datasources: {
@@ -188,12 +159,6 @@ export const prismaAuthFallback =
         }
       })
     : prisma;
-
-if (prismaAuthFallback !== prisma) {
-  console.info("DB_SCHEMA_CONTEXT", {
-    reason: "ALTERNATE_RUNTIME_DATASOURCE_AVAILABLE_FOR_AUTH"
-  });
-}
 
 async function checkAppUserTable() {
   try {

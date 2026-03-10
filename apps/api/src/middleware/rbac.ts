@@ -1,6 +1,6 @@
-import { UserRole } from "@prisma/client";
 import { NextFunction, Request, Response } from "express";
 import { fail } from "../lib/http.js";
+import { UserRole } from "../types.js";
 
 export type RbacRole = "SUPER_ADMIN" | "ADMIN" | "DISTRICT_MANAGER" | "FIELD_EXECUTIVE";
 
@@ -37,4 +37,3 @@ export function allowRoles(...roles: RbacRole[]) {
     return next();
   };
 }
-

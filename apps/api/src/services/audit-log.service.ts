@@ -1,6 +1,5 @@
-import { Prisma } from "@prisma/client";
 import { Request } from "express";
-import { prisma } from "../lib/prisma.js";
+import { getSupabaseAdminClient } from "../lib/supabase.js";
 
 export async function createAuditLog(input: {
   actorUserId?: string | null;
@@ -10,22 +9,36 @@ export async function createAuditLog(input: {
   detailsJson?: unknown;
   ipAddress?: string | null;
 }) {
+  const adminClient = getSupabaseAdminClient();
+  if (!adminClient) {
+    return null;
+  }
+
   const details =
     input.detailsJson === undefined
-      ? Prisma.JsonNull
-      : (JSON.parse(JSON.stringify(input.detailsJson)) as Prisma.InputJsonValue);
+      ? null
+      : (JSON.parse(JSON.stringify(input.detailsJson)) as Record<string, unknown> | null);
 
   try {
-    return await prisma.auditLog.create({
-      data: {
-        actorUserId: input.actorUserId ?? null,
+    const { data, error } = await adminClient
+      .from("audit_logs")
+      .insert({
+        actor_user_id: input.actorUserId ?? null,
         action: input.action,
-        entityType: input.entityType,
-        entityId: input.entityId ?? null,
-        detailsJson: details,
-        ipAddress: input.ipAddress ?? null
-      }
-    });
+        entity_type: input.entityType,
+        entity_id: input.entityId ?? null,
+        details_json: details,
+        ip_address: input.ipAddress ?? null
+      })
+      .select("id")
+      .single();
+
+    if (error) {
+      console.error("audit_log_write_failed", error);
+      return null;
+    }
+
+    return data;
   } catch (error) {
     console.error("audit_log_write_failed", error);
     return null;

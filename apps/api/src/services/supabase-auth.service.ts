@@ -1,7 +1,5 @@
-import bcrypt from "bcryptjs";
-import { UserRole, UserStatus } from "@prisma/client";
 import type { User as SupabaseAuthUser } from "@supabase/supabase-js";
-import { prisma, prismaAuthFallback } from "../lib/prisma.js";
+import { UserRole, UserStatus } from "../types.js";
 import {
   getMissingSupabaseEnvKeys,
   getSupabaseAdminClient,
@@ -11,7 +9,6 @@ import {
 
 const SUPABASE_USERS_PAGE_SIZE = 200;
 const MAX_SUPABASE_USER_SCAN_PAGES = 200;
-const BCRYPT_WORK_FACTOR = 12;
 
 type PublicUser = {
   id: string;
@@ -27,6 +24,14 @@ type SessionUser = {
   fullName: string;
   role: UserRole;
   status: UserStatus;
+};
+
+type AppUserRow = {
+  id: string;
+  email: string;
+  full_name: string | null;
+  role: string | null;
+  status: string | null;
 };
 
 export type LoginFailureReason =
@@ -92,6 +97,58 @@ function nonEmpty(value: string | null | undefined) {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+function mapRole(value: string | null | undefined): UserRole {
+  const normalized = (value ?? "").trim().toLowerCase();
+  if (normalized === "super_admin") return "SUPER_ADMIN";
+  if (normalized === "admin") return "ADMIN";
+  if (normalized === "manager") return "MANAGER";
+  return "EXECUTIVE";
+}
+
+function mapStatus(value: string | null | undefined): UserStatus {
+  const normalized = (value ?? "").trim().toLowerCase();
+  if (normalized === "active") return "ACTIVE";
+  if (normalized === "pending") return "PENDING";
+  return "SUSPENDED";
+}
+
+function dbRoleValue(role: UserRole) {
+  if (role === "SUPER_ADMIN") return "super_admin";
+  if (role === "ADMIN") return "admin";
+  if (role === "MANAGER") return "manager";
+  return "executive";
+}
+
+function dbStatusValue(status: UserStatus) {
+  if (status === "ACTIVE") return "active";
+  if (status === "PENDING") return "pending";
+  return "suspended";
+}
+
+function fallbackNameFromEmail(email: string) {
+  const normalized = normalizeEmail(email);
+  const localPart = normalized.split("@")[0] ?? "";
+  const cleaned = localPart.replace(/[._-]+/g, " ").trim();
+  if (!cleaned) {
+    return "User";
+  }
+  return cleaned
+    .split(" ")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function mapAppUserRow(row: AppUserRow): SessionUser {
+  return {
+    id: String(row.id),
+    email: normalizeEmail(row.email),
+    fullName: String(row.full_name ?? ""),
+    role: mapRole(row.role),
+    status: mapStatus(row.status)
+  };
+}
+
 function toPublicUser(user: SessionUser): PublicUser {
   return {
     id: user.id,
@@ -122,59 +179,63 @@ async function ensureSeedSuperAdminAppProfile(email: string): Promise<SessionUse
     return null;
   }
 
-  const seedPassword =
-    stripWrappingQuotes(process.env.SEED_SUPER_ADMIN_PASSWORD) || "__SUPABASE_ONLY_AUTH__";
-
   const fullName = stripWrappingQuotes(process.env.SEED_SUPER_ADMIN_NAME) || "Super Admin";
   const phoneRaw = stripWrappingQuotes(process.env.SEED_SUPER_ADMIN_PHONE);
   const phone = phoneRaw.length > 0 ? phoneRaw : null;
   const employeeId = stripWrappingQuotes(process.env.SEED_SUPER_ADMIN_EMPLOYEE_ID) || "SA-001";
+  const adminClient = getSupabaseAdminClient();
+  if (!adminClient) {
+    return null;
+  }
 
   try {
-    const passwordHash = await bcrypt.hash(seedPassword, BCRYPT_WORK_FACTOR);
+    const { data: existingByEmployee } = await adminClient
+      .from("users")
+      .select("id")
+      .eq("employee_id", employeeId)
+      .maybeSingle();
 
-    const existingByEmployeeId = await prisma.user.findUnique({
-      where: { employeeId },
-      select: { id: true }
-    });
+    const payload = {
+      email: normalizedEmail,
+      full_name: fullName,
+      phone,
+      employee_id: employeeId,
+      role: "super_admin",
+      status: "active",
+      // legacy field is NOT NULL in current schema, keep deterministic placeholder value
+      password_hash: "__supabase_auth_managed__"
+    };
 
-    const user = existingByEmployeeId
-      ? await prisma.user.update({
-          where: { id: existingByEmployeeId.id },
-          data: {
-            email: normalizedEmail,
-            fullName,
-            phone,
-            employeeId,
-            role: "SUPER_ADMIN",
-            status: "ACTIVE",
-            passwordHash
-          },
-          select: { id: true, email: true, fullName: true, role: true, status: true }
-        })
-      : await prisma.user.upsert({
-          where: { email: normalizedEmail },
-          update: {
-            fullName,
-            phone,
-            employeeId,
-            role: "SUPER_ADMIN",
-            status: "ACTIVE",
-            passwordHash
-          },
-          create: {
-            email: normalizedEmail,
-            fullName,
-            phone,
-            employeeId,
-            role: "SUPER_ADMIN",
-            status: "ACTIVE",
-            passwordHash
-          },
-          select: { id: true, email: true, fullName: true, role: true, status: true }
-        });
+    const userQuery = existingByEmployee?.id
+      ? adminClient
+          .from("users")
+          .update(payload)
+          .eq("id", existingByEmployee.id)
+          .select("id, email, full_name, role, status")
+          .single()
+      : adminClient
+          .from("users")
+          .upsert(payload, { onConflict: "email" })
+          .select("id, email, full_name, role, status")
+          .single();
 
-    return user;
+    const { data, error } = await userQuery;
+    if (error || !data) {
+      console.error("AUTH_LOGIN_DB_ERROR", {
+        stage: "SEED_SUPER_ADMIN_AUTOCREATE",
+        email: normalizedEmail,
+        error: error?.message ?? "insert/update failed"
+      });
+      return null;
+    }
+
+    return {
+      id: String(data.id),
+      email: normalizeEmail(data.email),
+      fullName: String(data.full_name ?? fullName),
+      role: "SUPER_ADMIN",
+      status: "ACTIVE"
+    };
   } catch (error) {
     console.error("AUTH_LOGIN_DB_ERROR", {
       stage: "SEED_SUPER_ADMIN_AUTOCREATE",
@@ -260,38 +321,31 @@ async function findSessionUserByEmail(email: string): Promise<SessionUser | null
     return null;
   }
 
+  const adminClient = getSupabaseAdminClient();
+  if (!adminClient) {
+    return null;
+  }
+
   try {
-    const user = await prisma.user.findUnique({
-      where: { email: normalizedEmail },
-      select: { id: true, email: true, fullName: true, role: true, status: true }
-    });
-    if (user) {
-      return user;
+    const { data, error } = await adminClient
+      .from("users")
+      .select("id, email, full_name, role, status")
+      .eq("email", normalizedEmail)
+      .maybeSingle();
+
+    if (error || !data) {
+      return null;
     }
+
+    return mapAppUserRow(data as AppUserRow);
   } catch (error) {
     console.error("AUTH_LOGIN_DB_ERROR", {
       stage: "SESSION_USER_EMAIL_LOOKUP",
       email: normalizedEmail,
       error
     });
+    return null;
   }
-
-  if (prismaAuthFallback !== prisma) {
-    try {
-      return await prismaAuthFallback.user.findUnique({
-        where: { email: normalizedEmail },
-        select: { id: true, email: true, fullName: true, role: true, status: true }
-      });
-    } catch (error) {
-      console.error("AUTH_LOGIN_DB_ERROR", {
-        stage: "SESSION_USER_EMAIL_LOOKUP_ALTERNATE",
-        email: normalizedEmail,
-        error
-      });
-    }
-  }
-
-  return null;
 }
 
 export async function findSessionUserById(userId: string): Promise<SessionUser | null> {
@@ -299,38 +353,110 @@ export async function findSessionUserById(userId: string): Promise<SessionUser |
     return null;
   }
 
+  const adminClient = getSupabaseAdminClient();
+  if (!adminClient) {
+    return null;
+  }
+
   try {
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-      select: { id: true, email: true, fullName: true, role: true, status: true }
-    });
-    if (user) {
-      return user;
+    const { data, error } = await adminClient
+      .from("users")
+      .select("id, email, full_name, role, status")
+      .eq("id", userId)
+      .maybeSingle();
+
+    if (error || !data) {
+      return null;
     }
+
+    return mapAppUserRow(data as AppUserRow);
   } catch (error) {
     console.error("AUTH_LOGIN_DB_ERROR", {
       stage: "SESSION_USER_ID_LOOKUP",
       userId,
       error
     });
+    return null;
+  }
+}
+
+async function provisionAppProfileFromSupabaseUser(
+  supabaseUser: SupabaseAuthUser
+): Promise<SessionUser | null> {
+  const adminClient = getSupabaseAdminClient();
+  if (!adminClient) {
+    return null;
   }
 
-  if (prismaAuthFallback !== prisma) {
-    try {
-      return await prismaAuthFallback.user.findUnique({
-        where: { id: userId },
-        select: { id: true, email: true, fullName: true, role: true, status: true }
-      });
-    } catch (error) {
+  const email = normalizeEmail(supabaseUser.email);
+  if (!email) {
+    return null;
+  }
+
+  const metadata =
+    (supabaseUser.user_metadata as Record<string, unknown> | null | undefined) ?? {};
+  const seedEmail = normalizeEmail(
+    stripWrappingQuotes(process.env.SEED_SUPER_ADMIN_EMAIL) || "chandan32005c@gmail.com"
+  );
+  const isSeedAdmin = seedEmail.length > 0 && email === seedEmail;
+
+  const fullName =
+    nonEmpty(metadata.full_name as string | undefined) ??
+    nonEmpty(metadata.fullName as string | undefined) ??
+    (isSeedAdmin
+      ? stripWrappingQuotes(process.env.SEED_SUPER_ADMIN_NAME) || "Super Admin"
+      : fallbackNameFromEmail(email));
+  const phone =
+    nonEmpty(metadata.phone as string | undefined) ??
+    (isSeedAdmin ? nonEmpty(stripWrappingQuotes(process.env.SEED_SUPER_ADMIN_PHONE)) : null);
+  const employeeId = isSeedAdmin
+    ? nonEmpty(stripWrappingQuotes(process.env.SEED_SUPER_ADMIN_EMPLOYEE_ID)) ?? "SA-001"
+    : null;
+  const role = isSeedAdmin
+    ? "SUPER_ADMIN"
+    : mapRole(nonEmpty(metadata.role as string | undefined));
+  const status = isSeedAdmin
+    ? "ACTIVE"
+    : mapStatus(nonEmpty(metadata.status as string | undefined));
+
+  const payload: Record<string, unknown> = {
+    email,
+    full_name: fullName,
+    phone,
+    role: dbRoleValue(role),
+    status: dbStatusValue(status),
+    password_hash: "__supabase_auth_managed__"
+  };
+  if (employeeId) {
+    payload.employee_id = employeeId;
+  }
+
+  try {
+    const { data, error } = await adminClient
+      .from("users")
+      .upsert(payload, { onConflict: "email" })
+      .select("id, email, full_name, role, status")
+      .single();
+    if (error || !data) {
       console.error("AUTH_LOGIN_DB_ERROR", {
-        stage: "SESSION_USER_ID_LOOKUP_ALTERNATE",
-        userId,
-        error
+        stage: "APP_PROFILE_AUTOPROVISION",
+        email,
+        supabaseUserId: supabaseUser.id,
+        error: error?.message ?? "upsert failed"
       });
+      return null;
     }
-  }
 
-  return null;
+    return mapAppUserRow(data as AppUserRow);
+  } catch (error) {
+    console.error("AUTH_LOGIN_DB_ERROR", {
+      stage: "APP_PROFILE_AUTOPROVISION",
+      email,
+      supabaseUserId: supabaseUser.id,
+      error
+    });
+    return null;
+  }
 }
 
 async function syncSupabaseMetadata(
@@ -381,6 +507,10 @@ async function mapSupabaseUserToAppUser(
 
   if (!appUser && normalizedSupabaseEmail) {
     appUser = await ensureSeedSuperAdminAppProfile(normalizedSupabaseEmail);
+  }
+
+  if (!appUser) {
+    appUser = await provisionAppProfileFromSupabaseUser(supabaseUser);
   }
 
   if (!appUser) {
@@ -812,10 +942,13 @@ export async function login(email: string, password: string): Promise<LoginResul
   }
 
   try {
-    await prisma.user.update({
-      where: { id: appUser.id },
-      data: { lastLoginAt: new Date() }
-    });
+    const adminClient = getSupabaseAdminClient();
+    if (adminClient) {
+      await adminClient
+        .from("users")
+        .update({ last_login_at: new Date().toISOString() })
+        .eq("id", appUser.id);
+    }
   } catch (updateError) {
     console.error("login_last_login_update_failed", {
       userId: appUser.id,
@@ -882,11 +1015,13 @@ export async function rotateRefreshToken(refreshToken: string) {
   };
 }
 
-export async function revokeRefreshToken(_refreshToken: string | undefined) {
+export async function revokeRefreshToken(refreshToken: string | undefined) {
+  void refreshToken;
   return;
 }
 
-export async function revokeAllUserRefreshSessions(_userId: string) {
+export async function revokeAllUserRefreshSessions(userId: string) {
+  void userId;
   return;
 }
 

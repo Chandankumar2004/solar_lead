@@ -1,5 +1,5 @@
-import { UserRole } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
+import { UserRole } from "../types.js";
 
 type PublicDistrict = {
   id: string;
@@ -163,4 +163,3 @@ export async function getActiveUsersByRole(role: UserRole) {
     orderBy: { fullName: "asc" }
   });
 }
-

@@ -118,6 +118,7 @@ api.interceptors.response.use(
         const refreshed = await supabase.auth.refreshSession();
         const nextAccessToken = refreshed.data.session?.access_token;
         if (!nextAccessToken) {
+          await supabase.auth.signOut();
           return Promise.reject(err);
         }
 
@@ -126,6 +127,10 @@ api.interceptors.response.use(
         config.headers = headers;
         return api.request(config);
       } catch {
+        const supabase = getSupabaseBrowserClient();
+        if (supabase) {
+          await supabase.auth.signOut();
+        }
         return Promise.reject(err);
       }
     }

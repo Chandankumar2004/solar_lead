@@ -1,5 +1,4 @@
 import { NextFunction, Request, Response } from "express";
-import { Prisma } from "@prisma/client";
 import { ZodError } from "zod";
 import { fail } from "../lib/http.js";
 import { AppError } from "../lib/errors.js";
@@ -46,11 +45,8 @@ export function errorHandler(
   }
 
   if (
-    err instanceof Prisma.PrismaClientInitializationError ||
-    err instanceof Prisma.PrismaClientKnownRequestError ||
-    err instanceof Prisma.PrismaClientUnknownRequestError ||
-    err instanceof Prisma.PrismaClientRustPanicError ||
-    err instanceof Prisma.PrismaClientValidationError
+    err instanceof Error &&
+    (err.name.startsWith("PrismaClient") || err.message.toLowerCase().includes("prisma"))
   ) {
     console.error("DB_ERROR", {
       requestId: req.requestId ?? null,

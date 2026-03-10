@@ -8,6 +8,7 @@ import { resolveLeadAutoAssignment } from "../services/lead-assignment.service.j
 import { createAuditLog, requestIp } from "../services/audit-log.service.js";
 import { AppError } from "../lib/errors.js";
 import { getPublicDistrictsPayload } from "../services/districts.service.js";
+import { resolveRecaptchaSecret, verifyRecaptchaToken } from "../services/recaptcha.service.js";
 import {
   assertValidTransition,
   getAssignedLeadStatus,
@@ -114,6 +115,54 @@ publicRouter.get(
 
 async function createPublicLead(req: Request, res: Response) {
   const payload = req.body as z.infer<typeof publicLeadSubmissionSchema>;
+
+  const shouldVerifyRecaptcha = Boolean(resolveRecaptchaSecret());
+  const rawRecaptchaToken = payload.recaptchaToken?.trim() ?? "";
+  if (shouldVerifyRecaptcha) {
+    if (!rawRecaptchaToken) {
+      throw new AppError(
+        400,
+        "RECAPTCHA_TOKEN_REQUIRED",
+        "Lead submission failed. Please refresh and try again."
+      );
+    }
+
+    const recaptchaResult = await verifyRecaptchaToken({
+      token: rawRecaptchaToken,
+      expectedAction: "public_lead_submit",
+      remoteIp: requestIp(req)
+    });
+
+    if (!recaptchaResult.ok) {
+      if (recaptchaResult.reason === "SECRET_MISSING") {
+        console.error("RECAPTCHA_CONFIG_ERROR", {
+          reason: recaptchaResult.reason,
+          requestId: req.requestId ?? null
+        });
+        throw new AppError(
+          500,
+          "RECAPTCHA_CONFIG_ERROR",
+          "Lead submission failed. Please try again later."
+        );
+      }
+
+      if (recaptchaResult.reason === "VERIFY_REQUEST_FAILED") {
+        throw new AppError(
+          502,
+          "RECAPTCHA_VERIFY_FAILED",
+          "Lead submission failed. Please try again."
+        );
+      }
+
+      throw new AppError(
+        400,
+        "RECAPTCHA_VERIFICATION_FAILED",
+        "Lead submission failed. Please refresh and try again."
+      );
+    }
+
+    payload.recaptchaScore = recaptchaResult.score ?? undefined;
+  }
 
   const newStatus = await getNewLeadStatus();
   if (!newStatus) {

@@ -1,5 +1,5 @@
-import { UserRole, UserStatus } from "@prisma/client";
 import { env } from "../config/env.js";
+import { UserRole, UserStatus } from "../types.js";
 
 type EmailProviderKind = "console" | "sendgrid" | "ses";
 

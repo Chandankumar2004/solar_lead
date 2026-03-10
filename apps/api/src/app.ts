@@ -6,23 +6,46 @@ import cookieParser from "cookie-parser";
 import { env } from "./config/env.js";
 import { healthRouter } from "./routes/health.js";
 import { authRouter } from "./routes/auth.js";
-import { leadsRouter } from "./routes/leads.js";
-import { uploadsRouter } from "./routes/uploads.js";
-import { notificationsRouter } from "./routes/notifications.js";
 import { errorHandler } from "./middleware/error.js";
 import { requestLogger } from "./middleware/request-logger.js";
 import { requireAuth } from "./middleware/auth.js";
-import { publicRouter } from "./routes/public.js";
-import { districtsRouter } from "./routes/districts.js";
-import { leadStatusesRouter } from "./routes/lead-statuses.js";
-import { dashboardRouter } from "./routes/dashboard.js";
-import { usersRouter } from "./routes/users.js";
-import { paymentsRouter } from "./routes/payments.js";
-import { leadDocumentsRouter } from "./routes/lead-documents.js";
-import { documentsRouter } from "./routes/documents.js";
 import { ok } from "./lib/http.js";
 
 export const app = express();
+
+type RouterModule = Record<string, unknown>;
+type RouterHandler = (req: express.Request, res: express.Response, next: express.NextFunction) => void;
+
+function lazyRouter(loader: () => Promise<RouterModule>, exportName: string) {
+  let cached: RouterHandler | null = null;
+  let pending: Promise<RouterHandler> | null = null;
+
+  async function resolveRouter() {
+    if (cached) {
+      return cached;
+    }
+    if (!pending) {
+      pending = loader().then((mod) => {
+        const router = mod[exportName];
+        if (typeof router !== "function") {
+          throw new Error(`Lazy router export not found: ${exportName}`);
+        }
+        cached = router as RouterHandler;
+        return cached;
+      });
+    }
+    return pending;
+  }
+
+  return async (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    try {
+      const router = await resolveRouter();
+      return router(req, res, next);
+    } catch (error) {
+      return next(error);
+    }
+  };
+}
 
 if (
   env.NODE_ENV === "production" ||
@@ -62,24 +85,88 @@ app.get("/health", (_req, res) => {
 });
 app.use("/health", healthRouter);
 app.use("/api/health", healthRouter);
-app.use("/public", publicRouter);
-app.use("/api/public", publicRouter);
+app.use("/public", lazyRouter(() => import("./routes/public.js"), "publicRouter"));
+app.use("/api/public", lazyRouter(() => import("./routes/public.js"), "publicRouter"));
 app.use("/auth", authRouter);
 app.use("/api/auth", authRouter);
-app.use("/api/districts", requireAuth, districtsRouter);
-app.use("/users", requireAuth, usersRouter);
-app.use("/api/users", requireAuth, usersRouter);
-app.use("/dashboard", requireAuth, dashboardRouter);
-app.use("/api/dashboard", requireAuth, dashboardRouter);
-app.use("/lead-statuses", requireAuth, leadStatusesRouter);
-app.use("/api/lead-statuses", requireAuth, leadStatusesRouter);
-app.use("/leads/:leadId/documents", requireAuth, leadDocumentsRouter);
-app.use("/api/leads/:leadId/documents", requireAuth, leadDocumentsRouter);
-app.use("/leads", requireAuth, leadsRouter);
-app.use("/api/leads", requireAuth, leadsRouter);
-app.use("/documents", requireAuth, documentsRouter);
-app.use("/api/documents", requireAuth, documentsRouter);
-app.use("/api/payments", requireAuth, paymentsRouter);
-app.use("/api/uploads", requireAuth, uploadsRouter);
-app.use("/api/notifications", requireAuth, notificationsRouter);
+app.use(
+  "/api/districts",
+  requireAuth,
+  lazyRouter(() => import("./routes/districts.js"), "districtsRouter")
+);
+app.use(
+  "/users",
+  requireAuth,
+  lazyRouter(() => import("./routes/users.js"), "usersRouter")
+);
+app.use(
+  "/api/users",
+  requireAuth,
+  lazyRouter(() => import("./routes/users.js"), "usersRouter")
+);
+app.use(
+  "/dashboard",
+  requireAuth,
+  lazyRouter(() => import("./routes/dashboard.js"), "dashboardRouter")
+);
+app.use(
+  "/api/dashboard",
+  requireAuth,
+  lazyRouter(() => import("./routes/dashboard.js"), "dashboardRouter")
+);
+app.use(
+  "/lead-statuses",
+  requireAuth,
+  lazyRouter(() => import("./routes/lead-statuses.js"), "leadStatusesRouter")
+);
+app.use(
+  "/api/lead-statuses",
+  requireAuth,
+  lazyRouter(() => import("./routes/lead-statuses.js"), "leadStatusesRouter")
+);
+app.use(
+  "/leads/:leadId/documents",
+  requireAuth,
+  lazyRouter(() => import("./routes/lead-documents.js"), "leadDocumentsRouter")
+);
+app.use(
+  "/api/leads/:leadId/documents",
+  requireAuth,
+  lazyRouter(() => import("./routes/lead-documents.js"), "leadDocumentsRouter")
+);
+app.use(
+  "/leads",
+  requireAuth,
+  lazyRouter(() => import("./routes/leads.js"), "leadsRouter")
+);
+app.use(
+  "/api/leads",
+  requireAuth,
+  lazyRouter(() => import("./routes/leads.js"), "leadsRouter")
+);
+app.use(
+  "/documents",
+  requireAuth,
+  lazyRouter(() => import("./routes/documents.js"), "documentsRouter")
+);
+app.use(
+  "/api/documents",
+  requireAuth,
+  lazyRouter(() => import("./routes/documents.js"), "documentsRouter")
+);
+app.use(
+  "/api/payments",
+  requireAuth,
+  lazyRouter(() => import("./routes/payments.js"), "paymentsRouter")
+);
+app.use(
+  "/api/uploads",
+  requireAuth,
+  lazyRouter(() => import("./routes/uploads.js"), "uploadsRouter")
+);
+app.use(
+  "/api/notifications",
+  requireAuth,
+  lazyRouter(() => import("./routes/notifications.js"), "notificationsRouter")
+);
 app.use(errorHandler);
