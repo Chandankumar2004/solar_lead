@@ -72,23 +72,24 @@ function normalizePrismaDatasourceUrl(rawUrl: string) {
 
 const runtimeDatabaseUrl = (env.DATABASE_URL ?? process.env.DATABASE_URL ?? "").trim();
 const runtimeDirectUrl = (process.env.DIRECT_URL ?? "").trim();
-const rawPrismaUrl = runtimeDatabaseUrl || runtimeDirectUrl;
+// Prefer DIRECT_URL for runtime if present; some hosted pooler endpoints are unreachable from PaaS networks.
+const rawPrismaUrl = runtimeDirectUrl || runtimeDatabaseUrl;
 const prismaDatasourceUrl = normalizePrismaDatasourceUrl(rawPrismaUrl);
 const alternateRawPrismaUrl =
   runtimeDatabaseUrl && runtimeDirectUrl
-    ? rawPrismaUrl === runtimeDatabaseUrl
-      ? runtimeDirectUrl
-      : runtimeDatabaseUrl
+    ? rawPrismaUrl === runtimeDirectUrl
+      ? runtimeDatabaseUrl
+      : runtimeDirectUrl
     : "";
 const prismaAlternateDatasourceUrl = normalizePrismaDatasourceUrl(alternateRawPrismaUrl);
 
-if (runtimeDatabaseUrl) {
+if (rawPrismaUrl === runtimeDirectUrl && runtimeDirectUrl) {
+  console.info("DB_SCHEMA_CONTEXT", {
+    reason: "USING_DIRECT_URL_FOR_RUNTIME"
+  });
+} else if (runtimeDatabaseUrl) {
   console.info("DB_SCHEMA_CONTEXT", {
     reason: "USING_DATABASE_URL_FOR_RUNTIME"
-  });
-} else if (runtimeDirectUrl) {
-  console.info("DB_SCHEMA_CONTEXT", {
-    reason: "USING_DIRECT_URL_FALLBACK_FOR_RUNTIME"
   });
 }
 
