@@ -32,10 +32,6 @@ function normalizePrismaDatasourceUrl(rawUrl: string) {
 
     const isSupabasePooler = parsed.hostname.toLowerCase().endsWith(".pooler.supabase.com");
     if (isSupabasePooler) {
-      const rawPort = (parsed.port ?? "").trim();
-      if (!rawPort || rawPort === "5432") {
-        parsed.port = "6543";
-      }
       if (!parsed.searchParams.get("pgbouncer")) {
         parsed.searchParams.set("pgbouncer", "true");
       }
