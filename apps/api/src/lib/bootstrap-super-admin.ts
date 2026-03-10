@@ -33,28 +33,46 @@ export async function bootstrapSeedSuperAdmin() {
 
   try {
     const passwordHash = await bcrypt.hash(password, BCRYPT_WORK_FACTOR);
-
-    const appUser = await prisma.user.upsert({
-      where: { email },
-      update: {
-        fullName,
-        phone,
-        employeeId,
-        role: "SUPER_ADMIN",
-        status: "ACTIVE",
-        passwordHash
-      },
-      create: {
-        email,
-        fullName,
-        phone,
-        employeeId,
-        role: "SUPER_ADMIN",
-        status: "ACTIVE",
-        passwordHash
-      },
-      select: { id: true, email: true, fullName: true }
+    const existingByEmployeeId = await prisma.user.findUnique({
+      where: { employeeId },
+      select: { id: true }
     });
+
+    const appUser = existingByEmployeeId
+      ? await prisma.user.update({
+          where: { id: existingByEmployeeId.id },
+          data: {
+            email,
+            fullName,
+            phone,
+            employeeId,
+            role: "SUPER_ADMIN",
+            status: "ACTIVE",
+            passwordHash
+          },
+          select: { id: true, email: true, fullName: true }
+        })
+      : await prisma.user.upsert({
+          where: { email },
+          update: {
+            fullName,
+            phone,
+            employeeId,
+            role: "SUPER_ADMIN",
+            status: "ACTIVE",
+            passwordHash
+          },
+          create: {
+            email,
+            fullName,
+            phone,
+            employeeId,
+            role: "SUPER_ADMIN",
+            status: "ACTIVE",
+            passwordHash
+          },
+          select: { id: true, email: true, fullName: true }
+        });
 
     const synced = await ensureSupabaseAuthUserForAppUser({
       appUserId: appUser.id,
