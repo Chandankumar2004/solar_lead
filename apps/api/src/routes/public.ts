@@ -3,12 +3,12 @@ import { z } from "zod";
 import { created, ok } from "../lib/http.js";
 import { validateBody, validateQuery } from "../middleware/validate.js";
 import { publicLeadSubmissionRateLimit } from "../middleware/rate-limit.js";
-import { prisma } from "../lib/prisma.js";
 import { createAuditLog, requestIp } from "../services/audit-log.service.js";
 import { AppError } from "../lib/errors.js";
 import { getPublicDistrictsPayload } from "../services/districts.service.js";
 import { resolveRecaptchaSecret, verifyRecaptchaToken } from "../services/recaptcha.service.js";
 import {
+  countLeadsByPhone,
   countPublicSubmissionsByPhone,
   submitPublicLeadWithSms
 } from "../services/public-lead-submission.service.js";
@@ -91,7 +91,7 @@ publicRouter.get(
   validateQuery(duplicatePhoneQuerySchema),
   async (req, res) => {
     const query = req.query as z.infer<typeof duplicatePhoneQuerySchema>;
-    const leadCount = await prisma.lead.count({ where: { phone: query.phone } });
+    const leadCount = await countLeadsByPhone(query.phone);
     let publicSubmissionCount = 0;
     try {
       publicSubmissionCount = await countPublicSubmissionsByPhone(query.phone);

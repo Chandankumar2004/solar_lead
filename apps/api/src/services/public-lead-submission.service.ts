@@ -1,5 +1,4 @@
 import { randomUUID } from "crypto";
-import { prisma } from "../lib/prisma.js";
 import { AppError } from "../lib/errors.js";
 import { getSupabaseAdminClient } from "../lib/supabase.js";
 import { sendCustomerNotification } from "./customer-notification-delivery.service.js";
@@ -70,24 +69,40 @@ async function savePublicSubmission(
 ): Promise<PublicLeadSubmissionRecord> {
   await ensurePublicSubmissionTableAvailable();
 
-  const district = await prisma.district.findUnique({
-    where: { id: input.districtId },
-    select: {
-      id: true,
-      name: true,
-      state: true
-    }
-  });
+  const supabase = getRequiredSupabaseAdminClient();
+  const districtLookup = await supabase
+    .from("districts")
+    .select("id, name, state")
+    .eq("id", input.districtId)
+    .maybeSingle();
 
+  if (districtLookup.error) {
+    throw new AppError(500, "DISTRICT_LOOKUP_FAILED", "Failed to resolve selected district", {
+      reason: districtLookup.error.message,
+      districtId: input.districtId
+    });
+  }
+
+  const district = districtLookup.data;
   if (!district) {
     throw new AppError(400, "DISTRICT_NOT_FOUND", "Selected district not found");
   }
 
+  const districtName = typeof district.name === "string" ? district.name.trim() : "";
+  const districtState = typeof district.state === "string" ? district.state.trim() : "";
+  if (!districtName || !districtState) {
+    throw new AppError(
+      500,
+      "DISTRICT_DATA_INVALID",
+      "Selected district is missing required district metadata",
+      { districtId: input.districtId }
+    );
+  }
+
   const id = randomUUID();
   const externalId = randomUUID();
-  const state = (input.state?.trim() || district.state).trim();
+  const state = (input.state?.trim() || districtState).trim();
 
-  const supabase = getRequiredSupabaseAdminClient();
   const { error } = await supabase.from("public_lead_submissions").insert({
     id,
     external_id: externalId,
@@ -95,8 +110,8 @@ async function savePublicSubmission(
     phone: input.phone,
     email: input.email ?? null,
     monthly_bill: input.monthlyBill ?? null,
-    district_id: district.id,
-    district_name: district.name,
+    district_id: input.districtId,
+    district_name: districtName,
     state,
     installation_type: input.installationType ?? null,
     message: input.message ?? null,
@@ -202,8 +217,25 @@ export async function submitPublicLeadWithSms(input: PublicLeadSubmissionInput) 
 }
 
 export async function countPublicSubmissionsByPhone(phone: string) {
-  await ensurePublicSubmissionTableAvailable();
-  const supabase = getRequiredSupabaseAdminClient();
+  const supabase = getSupabaseAdminClient();
+  if (!supabase) {
+    console.error("public_submission_duplicate_check_failed", {
+      phone,
+      error: "SUPABASE_ADMIN_NOT_CONFIGURED"
+    });
+    return 0;
+  }
+
+  try {
+    await ensurePublicSubmissionTableAvailable();
+  } catch (error) {
+    console.error("public_submission_duplicate_check_failed", {
+      phone,
+      error
+    });
+    return 0;
+  }
+
   const { count, error } = await supabase
     .from("public_lead_submissions")
     .select("id", { head: true, count: "exact" })
@@ -216,5 +248,31 @@ export async function countPublicSubmissionsByPhone(phone: string) {
     });
     return 0;
   }
+  return Number(count ?? 0);
+}
+
+export async function countLeadsByPhone(phone: string) {
+  const supabase = getSupabaseAdminClient();
+  if (!supabase) {
+    console.error("lead_duplicate_check_failed", {
+      phone,
+      error: "SUPABASE_ADMIN_NOT_CONFIGURED"
+    });
+    return 0;
+  }
+
+  const { count, error } = await supabase
+    .from("leads")
+    .select("id", { head: true, count: "exact" })
+    .eq("phone", phone);
+
+  if (error) {
+    console.error("lead_duplicate_check_failed", {
+      phone,
+      error: error.message
+    });
+    return 0;
+  }
+
   return Number(count ?? 0);
 }
