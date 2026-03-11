@@ -224,16 +224,19 @@ See `DEVOPS.md` for target deployment architecture:
 
 ## Render Deployment Checklist (Web + API)
 - API service root directory: `apps/api`
-- API build command: `pnpm install --frozen-lockfile && pnpm build`
-- API start command: `pnpm start`
+- API build command: `pnpm install --frozen-lockfile --prod=false && pnpm build`
+- API start command: `NODE_ENV=production pnpm start`
 - API required env:
-  - `NODE_ENV=production`
   - `PORT=10000` (or use Render default)
+  - `DATABASE_URL` (Supabase pooler URL, include `pgbouncer=true&connection_limit=1&sslmode=require`)
+  - `DIRECT_URL` (Supabase direct DB host URL, do not use pooler host/port)
   - `SUPABASE_URL`
   - `SUPABASE_ANON_KEY`
   - `SUPABASE_SERVICE_ROLE_KEY`
   - `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET` (if still used by legacy modules)
   - `SEED_SUPER_ADMIN_PASSWORD` (+ optional `SEED_SUPER_ADMIN_*`)
+- Render note: do not set `NODE_ENV=production` as a build-time env var, otherwise `pnpm install` may skip `devDependencies` needed for TypeScript build.
+- API post-deploy (one-time per migration): `pnpm exec prisma migrate deploy --schema=./prisma/schema.prisma`
 - Web service root directory: `apps/web`
 - Web build command: `pnpm install --frozen-lockfile && pnpm build`
 - Web start command: `pnpm start`

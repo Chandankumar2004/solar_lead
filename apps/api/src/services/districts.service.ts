@@ -1,4 +1,5 @@
-import { prisma } from "../lib/prisma.js";
+import type { PrismaClient } from "@prisma/client";
+import { prisma, prismaAuthFallback } from "../lib/prisma.js";
 import { UserRole } from "../types.js";
 
 type PublicDistrict = {
@@ -8,15 +9,15 @@ type PublicDistrict = {
 };
 
 export async function getPublicDistrictsPayload() {
-  const districts = await prisma.district.findMany({
-    where: { isActive: true },
-    select: {
-      id: true,
-      name: true,
-      state: true
-    },
-    orderBy: [{ state: "asc" }, { name: "asc" }]
-  });
+  const districts = await listPublicDistrictsWithFallback();
+
+  if (!districts.length) {
+    return {
+      districts,
+      mapping: {},
+      states: []
+    };
+  }
 
   const mapping = districts.reduce<Record<string, PublicDistrict[]>>((acc, district) => {
     if (!acc[district.state]) {
@@ -31,6 +32,41 @@ export async function getPublicDistrictsPayload() {
     mapping,
     states: Object.keys(mapping)
   };
+}
+
+async function listPublicDistricts(client: PrismaClient) {
+  return client.district.findMany({
+    where: { isActive: true },
+    select: {
+      id: true,
+      name: true,
+      state: true
+    },
+    orderBy: [{ state: "asc" }, { name: "asc" }]
+  });
+}
+
+async function listPublicDistrictsWithFallback() {
+  try {
+    return await listPublicDistricts(prisma);
+  } catch (primaryError) {
+    console.error("PUBLIC_DISTRICTS_PRIMARY_DB_FAILED", {
+      reason: primaryError instanceof Error ? primaryError.message : "UNKNOWN_ERROR"
+    });
+
+    if (prismaAuthFallback === prisma) {
+      throw primaryError;
+    }
+
+    try {
+      return await listPublicDistricts(prismaAuthFallback);
+    } catch (fallbackError) {
+      console.error("PUBLIC_DISTRICTS_FALLBACK_DB_FAILED", {
+        reason: fallbackError instanceof Error ? fallbackError.message : "UNKNOWN_ERROR"
+      });
+      throw fallbackError;
+    }
+  }
 }
 
 export async function getDistrictAssignmentsPayload(districtId?: string) {

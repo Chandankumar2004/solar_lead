@@ -1,7 +1,7 @@
 import bcrypt from "bcryptjs";
 import { randomUUID } from "node:crypto";
 import { Prisma, UserRole, UserStatus } from "@prisma/client";
-import { Router } from "express";
+import { Request, Response, Router } from "express";
 import { z } from "zod";
 import { created, ok } from "../lib/http.js";
 import { AppError } from "../lib/errors.js";
@@ -297,7 +297,7 @@ async function getUserOrFail(userId: string) {
 
 usersRouter.use(allowRoles("SUPER_ADMIN", "ADMIN"));
 
-usersRouter.get("/", validateQuery(listUsersQuerySchema), async (req, res) => {
+usersRouter.get("/", validateQuery(listUsersQuerySchema), async (req: Request, res: Response) => {
   const query = req.query as unknown as z.infer<typeof listUsersQuerySchema>;
   const actorRole = req.user!.role;
 
@@ -376,7 +376,7 @@ usersRouter.get("/", validateQuery(listUsersQuerySchema), async (req, res) => {
   );
 });
 
-usersRouter.post("/", validateBody(createUserSchema), async (req, res) => {
+usersRouter.post("/", validateBody(createUserSchema), async (req: Request, res: Response) => {
   const body = req.body as z.infer<typeof createUserSchema>;
   const actor = req.user!;
 
@@ -488,7 +488,7 @@ usersRouter.post("/", validateBody(createUserSchema), async (req, res) => {
   }
 });
 
-usersRouter.get("/:id", validateParams(userIdParamSchema), async (req, res) => {
+usersRouter.get("/:id", validateParams(userIdParamSchema), async (req: Request, res: Response) => {
   const { id } = req.params as z.infer<typeof userIdParamSchema>;
   const user = await getUserOrFail(id);
   ensureCanManageRole(req.user!.role, user.role);
@@ -525,7 +525,7 @@ usersRouter.patch(
   "/:id",
   validateParams(userIdParamSchema),
   validateBody(updateUserSchema),
-  async (req, res) => {
+  async (req: Request, res: Response) => {
     const { id } = req.params as z.infer<typeof userIdParamSchema>;
     const body = req.body as z.infer<typeof updateUserSchema>;
     const actor = req.user!;
@@ -651,7 +651,7 @@ usersRouter.put(
   "/:id/district-assignments",
   validateParams(userIdParamSchema),
   validateBody(updateAssignmentsSchema),
-  async (req, res) => {
+  async (req: Request, res: Response) => {
     const { id } = req.params as z.infer<typeof userIdParamSchema>;
     const body = req.body as z.infer<typeof updateAssignmentsSchema>;
     const actor = req.user!;
@@ -748,7 +748,7 @@ usersRouter.post(
   "/:id/approve",
   validateParams(userIdParamSchema),
   validateBody(statusActionSchema),
-  async (req, res) => {
+  async (req: Request, res: Response) => {
     const { id } = req.params as z.infer<typeof userIdParamSchema>;
     const body = req.body as z.infer<typeof statusActionSchema>;
 
@@ -770,7 +770,7 @@ usersRouter.post(
   "/:id/suspend",
   validateParams(userIdParamSchema),
   validateBody(statusActionSchema),
-  async (req, res) => {
+  async (req: Request, res: Response) => {
     const { id } = req.params as z.infer<typeof userIdParamSchema>;
     const body = req.body as z.infer<typeof statusActionSchema>;
     const reason = parseReason(body.reason);
@@ -797,7 +797,7 @@ usersRouter.post(
   "/:id/deactivate",
   validateParams(userIdParamSchema),
   validateBody(statusActionSchema),
-  async (req, res) => {
+  async (req: Request, res: Response) => {
     const { id } = req.params as z.infer<typeof userIdParamSchema>;
     const body = req.body as z.infer<typeof statusActionSchema>;
     const reason = parseReason(body.reason);

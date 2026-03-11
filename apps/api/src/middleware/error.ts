@@ -48,9 +48,13 @@ export function errorHandler(
     err instanceof Error &&
     (err.name.startsWith("PrismaClient") || err.message.toLowerCase().includes("prisma"))
   ) {
+    const prismaLike = err as Error & { code?: string; meta?: unknown };
     console.error("DB_ERROR", {
       requestId: req.requestId ?? null,
-      message: err.message
+      name: prismaLike.name,
+      code: prismaLike.code ?? null,
+      message: err.message,
+      path: req.originalUrl
     });
     return fail(res, 500, "DATABASE_ERROR", "Database operation failed", {
       requestId: req.requestId ?? null

@@ -69,8 +69,8 @@ function normalizePrismaDatasourceUrl(rawUrl: string) {
   }
 }
 
-const runtimeDatabaseUrl = (env.DATABASE_URL ?? process.env.DATABASE_URL ?? "").trim();
-const runtimeDirectUrl = (process.env.DIRECT_URL ?? "").trim();
+const runtimeDatabaseUrl = (env.DATABASE_URL ?? "").trim();
+const runtimeDirectUrl = (env.DIRECT_URL ?? "").trim();
 
 type RuntimeCandidate = {
   source: "DATABASE_URL" | "DIRECT_URL";
@@ -134,6 +134,32 @@ const rawPrismaUrl = runtimeChoice.primary?.rawUrl ?? "";
 const prismaDatasourceUrl = normalizePrismaDatasourceUrl(rawPrismaUrl);
 const alternateRawPrismaUrl = runtimeChoice.alternate?.rawUrl ?? "";
 const prismaAlternateDatasourceUrl = normalizePrismaDatasourceUrl(alternateRawPrismaUrl);
+
+function summarizeDatasource(rawUrl: string) {
+  try {
+    const parsed = new URL(rawUrl);
+    return {
+      host: parsed.hostname,
+      port: parsed.port || "5432",
+      schema: parsed.searchParams.get("schema") ?? null,
+      pgbouncer: parsed.searchParams.get("pgbouncer") ?? null
+    };
+  } catch {
+    return {
+      host: null,
+      port: null,
+      schema: null,
+      pgbouncer: null
+    };
+  }
+}
+
+if (runtimeChoice.primary) {
+  console.info("PRISMA_DATASOURCE_SELECTED", {
+    source: runtimeChoice.primary.source,
+    ...summarizeDatasource(prismaDatasourceUrl)
+  });
+}
 
 export const prisma = prismaDatasourceUrl
   ? new PrismaClient({

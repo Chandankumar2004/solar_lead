@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import { useRouter } from "next/navigation";
@@ -668,7 +669,14 @@ export default function LeadDetailPage() {
               <div className="rounded-md border border-slate-200 p-3">
                 <p className="mb-2 text-sm font-medium">Preview: {previewName ?? "Document"}</p>
                 {previewType?.startsWith("image/") ? (
-                  <img src={previewUrl} alt={previewName ?? "Document preview"} className="max-h-[420px] w-auto rounded-md border border-slate-200" />
+                  <Image
+                    src={previewUrl}
+                    alt={previewName ?? "Document preview"}
+                    width={1200}
+                    height={800}
+                    unoptimized
+                    className="max-h-[420px] w-auto rounded-md border border-slate-200"
+                  />
                 ) : (
                   <iframe
                     src={previewUrl}

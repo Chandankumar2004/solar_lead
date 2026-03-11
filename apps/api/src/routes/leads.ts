@@ -1,5 +1,5 @@
 import { Prisma } from "@prisma/client";
-import { Router } from "express";
+import { Request, Response, Router } from "express";
 import { z } from "zod";
 import { createLeadSchema, transitionLeadSchema } from "@solar/shared";
 import { allowRoles } from "../middleware/rbac.js";
@@ -480,7 +480,7 @@ leadsRouter.use(
   allowRoles("SUPER_ADMIN", "ADMIN", "DISTRICT_MANAGER", "FIELD_EXECUTIVE")
 );
 
-leadsRouter.get("/", validateQuery(listLeadsQuerySchema), async (req, res) => {
+leadsRouter.get("/", validateQuery(listLeadsQuerySchema), async (req: Request, res: Response) => {
   const query = req.query as unknown as z.infer<typeof listLeadsQuerySchema>;
   const dateFrom = parseDateBoundary(query.dateFrom, "dateFrom");
   const dateTo = parseDateBoundary(query.dateTo, "dateTo");
@@ -623,7 +623,7 @@ leadsRouter.get("/", validateQuery(listLeadsQuerySchema), async (req, res) => {
 leadsRouter.get(
   "/:id",
   validateParams(leadIdParamSchema),
-  async (req, res) => {
+  async (req: Request, res: Response) => {
     const { id } = req.params as z.infer<typeof leadIdParamSchema>;
 
     const lead = await prisma.lead.findUnique({
@@ -641,7 +641,7 @@ leadsRouter.get(
 leadsRouter.get(
   "/:id/allowed-next-statuses",
   validateParams(leadIdParamSchema),
-  async (req, res) => {
+  async (req: Request, res: Response) => {
     const { id } = req.params as z.infer<typeof leadIdParamSchema>;
 
     const lead = await prisma.lead.findUnique({
@@ -699,7 +699,7 @@ leadsRouter.get(
 leadsRouter.get(
   "/:id/customer-details",
   validateParams(leadIdParamSchema),
-  async (req, res) => {
+  async (req: Request, res: Response) => {
     const { id } = req.params as z.infer<typeof leadIdParamSchema>;
 
     const lead = await prisma.lead.findUnique({
@@ -744,7 +744,7 @@ leadsRouter.put(
   "/:id/customer-details",
   validateParams(leadIdParamSchema),
   validateBody(customerDetailsBodySchema),
-  async (req, res) => {
+  async (req: Request, res: Response) => {
     const { id } = req.params as z.infer<typeof leadIdParamSchema>;
     const payload = req.body as z.infer<typeof customerDetailsBodySchema>;
 
@@ -962,7 +962,7 @@ leadsRouter.patch(
   "/:id",
   validateParams(leadIdParamSchema),
   validateBody(patchLeadSchema),
-  async (req, res) => {
+  async (req: Request, res: Response) => {
     const { id } = req.params as z.infer<typeof leadIdParamSchema>;
     const payload = req.body as z.infer<typeof patchLeadSchema>;
 
@@ -1092,7 +1092,7 @@ leadsRouter.delete(
   "/:id",
   allowRoles("SUPER_ADMIN"),
   validateParams(leadIdParamSchema),
-  async (req, res) => {
+  async (req: Request, res: Response) => {
     const { id } = req.params as z.infer<typeof leadIdParamSchema>;
 
     const existing = await prisma.lead.findUnique({
@@ -1136,7 +1136,7 @@ leadsRouter.post(
   "/",
   allowRoles("SUPER_ADMIN", "ADMIN", "DISTRICT_MANAGER", "FIELD_EXECUTIVE"),
   validateBody(createLeadSchema),
-  async (req, res) => {
+  async (req: Request, res: Response) => {
     const { districtId, source, customer } = req.body as z.infer<typeof createLeadSchema>;
 
     const newStatus = await getNewLeadStatus();
@@ -1315,7 +1315,7 @@ leadsRouter.post(
   allowRoles("SUPER_ADMIN", "ADMIN", "DISTRICT_MANAGER", "FIELD_EXECUTIVE"),
   validateParams(leadIdParamSchema),
   validateBody(leadTransitionSchema),
-  async (req, res) => {
+  async (req: Request, res: Response) => {
     const parsed = req.body as z.infer<typeof leadTransitionSchema>;
     const { id } = req.params as z.infer<typeof leadIdParamSchema>;
     if (!req.user?.id) {

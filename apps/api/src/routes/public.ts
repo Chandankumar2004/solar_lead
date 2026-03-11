@@ -76,12 +76,12 @@ const duplicatePhoneQuerySchema = z.object({
   phone: z.string().min(8).max(20)
 });
 
-publicRouter.get("/districts", async (_req, res) => {
+publicRouter.get("/districts", async (_req: Request, res: Response) => {
   const payload = await getPublicDistrictsPayload();
   return ok(res, payload, "District list and mapping fetched");
 });
 
-publicRouter.get("/district-mapping", async (_req, res) => {
+publicRouter.get("/district-mapping", async (_req: Request, res: Response) => {
   const payload = await getPublicDistrictsPayload();
   return ok(res, payload, "District mapping fetched");
 });
@@ -89,7 +89,7 @@ publicRouter.get("/district-mapping", async (_req, res) => {
 publicRouter.get(
   "/leads/duplicate-check",
   validateQuery(duplicatePhoneQuerySchema),
-  async (req, res) => {
+  async (req: Request, res: Response) => {
     const query = req.query as z.infer<typeof duplicatePhoneQuerySchema>;
     const leadCount = await countLeadsByPhone(query.phone);
     let publicSubmissionCount = 0;
@@ -224,7 +224,7 @@ publicRouter.post(
   "/leads",
   publicLeadSubmissionRateLimit,
   validateBody(publicLeadSubmissionSchema),
-  async (req, res) => {
+  async (req: Request, res: Response) => {
     return createPublicLead(req, res);
   }
 );
@@ -233,7 +233,7 @@ publicRouter.post(
   "/lead-submission",
   publicLeadSubmissionRateLimit,
   validateBody(publicLeadSubmissionSchema),
-  async (req, res) => {
+  async (req: Request, res: Response) => {
     return createPublicLead(req, res);
   }
 );

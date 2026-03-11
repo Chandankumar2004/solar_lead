@@ -10,8 +10,12 @@
     "build:web": "pnpm --filter @solar/web build",
     "build:web:with-mapping": "pnpm --filter @solar/api districts:export:web && pnpm --filter @solar/web build",
     "build:web:mapping": "pnpm --filter @solar/api districts:export:web",
-    "lint": "pnpm -r --if-present lint",
-    "typecheck": "pnpm -r --if-present typecheck"
+    "lint": "pnpm --filter @solar/shared lint && pnpm --filter @solar/api lint && pnpm --filter @solar/web lint && pnpm --filter @solar/mobile lint",
+    "typecheck": "node scripts/typecheck-workspaces.cjs",
+    "typecheck:all": "node scripts/typecheck-workspaces.cjs"
+  },
+  "prisma": {
+    "schema": "apps/api/prisma/schema.prisma"
   },
   "devDependencies": {
     "@typescript-eslint/eslint-plugin": "^8.12.2",

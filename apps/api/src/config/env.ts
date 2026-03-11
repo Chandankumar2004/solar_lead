@@ -4,10 +4,29 @@ import { z } from "zod";
 dotenv.config();
 const resolvedPort = Number(process.env.PORT) || 10000;
 
+function unquote(value: string | undefined) {
+  if (typeof value !== "string") {
+    return value;
+  }
+  const trimmed = value.trim();
+  if (
+    (trimmed.startsWith("\"") && trimmed.endsWith("\"")) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed.slice(1, -1).trim();
+  }
+  return trimmed;
+}
+
+function normalizeEnv(input: NodeJS.ProcessEnv) {
+  const normalizedEntries = Object.entries(input).map(([key, value]) => [key, unquote(value)]);
+  return Object.fromEntries(normalizedEntries);
+}
+
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PORT: z.number().default(resolvedPort),
-  DATABASE_URL: z.string().url().optional(),
+  DATABASE_URL: z.string().url(),
   DIRECT_URL: z.string().url().optional(),
   SUPABASE_URL: z.string().url(),
   SUPABASE_ANON_KEY: z.string().min(20),
@@ -49,6 +68,6 @@ const envSchema = z.object({
 });
 
 export const env = envSchema.parse({
-  ...process.env,
+  ...normalizeEnv(process.env),
   PORT: resolvedPort
 });

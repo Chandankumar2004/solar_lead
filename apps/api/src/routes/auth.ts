@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Request, Response, Router } from "express";
 import { z } from "zod";
 import { loginSchema } from "@solar/shared";
 import { fail, ok } from "../lib/http.js";
@@ -67,7 +67,7 @@ const loginRequestSchema = z.object({
   recaptcha_action: z.string().optional()
 });
 
-authRouter.post("/login", async (req, res) => {
+authRouter.post("/login", async (req: Request, res: Response) => {
   try {
     const parsedRequest = loginRequestSchema.safeParse(req.body ?? {});
     if (!parsedRequest.success) {
@@ -341,7 +341,7 @@ authRouter.post("/login", async (req, res) => {
   }
 });
 
-authRouter.post("/refresh", async (req, res) => {
+authRouter.post("/refresh", async (req: Request, res: Response) => {
   try {
     const refreshToken = req.cookies?.[refreshCookieName] as string | undefined;
     if (!refreshToken) {
@@ -388,7 +388,7 @@ authRouter.post("/refresh", async (req, res) => {
   }
 });
 
-authRouter.post("/logout", requireAuth, async (req, res) => {
+authRouter.post("/logout", requireAuth, async (req: Request, res: Response) => {
   const refreshToken = req.cookies?.[refreshCookieName] as string | undefined;
   const userId = req.user?.id ?? null;
 
@@ -407,7 +407,7 @@ authRouter.post("/logout", requireAuth, async (req, res) => {
   return ok(res, {}, "Logged out");
 });
 
-authRouter.get("/me", requireAuth, async (req, res) => {
+authRouter.get("/me", requireAuth, async (req: Request, res: Response) => {
   try {
     await createAuditLog({
       actorUserId: req.user!.id,
@@ -439,7 +439,7 @@ authRouter.get("/me", requireAuth, async (req, res) => {
   }
 });
 
-authRouter.post("/change-password", requireAuth, validateBody(changePasswordSchema), async (req, res) => {
+authRouter.post("/change-password", requireAuth, validateBody(changePasswordSchema), async (req: Request, res: Response) => {
   const parsed = req.body as z.infer<typeof changePasswordSchema>;
   const changed = await changePassword({
     userId: req.user!.id,

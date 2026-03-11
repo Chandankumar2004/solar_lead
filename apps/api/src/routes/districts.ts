@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Request, Response, Router } from "express";
 import { z } from "zod";
 import { allowRoles } from "../middleware/rbac.js";
 import { validateBody, validateParams, validateQuery } from "../middleware/validate.js";
@@ -52,7 +52,7 @@ const updateAssignmentsSchema = z.object({
   executiveIds: z.array(z.string().uuid()).default([])
 });
 
-districtsRouter.get("/", allowDistrictMapping, validateQuery(listDistrictsQuerySchema), async (req, res) => {
+districtsRouter.get("/", allowDistrictMapping, validateQuery(listDistrictsQuerySchema), async (req: Request, res: Response) => {
   const query = req.query as z.infer<typeof listDistrictsQuerySchema>;
   const districts = await prisma.district.findMany({
     where: {
@@ -73,7 +73,7 @@ districtsRouter.get("/", allowDistrictMapping, validateQuery(listDistrictsQueryS
   return ok(res, districts, "Districts fetched");
 });
 
-districtsRouter.post("/", allowDistrictCrud, validateBody(createDistrictSchema), async (req, res) => {
+districtsRouter.post("/", allowDistrictCrud, validateBody(createDistrictSchema), async (req: Request, res: Response) => {
   const body = req.body as z.infer<typeof createDistrictSchema>;
 
   const existing = await prisma.district.findFirst({
@@ -107,17 +107,17 @@ districtsRouter.post("/", allowDistrictCrud, validateBody(createDistrictSchema),
   return created(res, district, "District created");
 });
 
-districtsRouter.get("/users/managers", allowDistrictMapping, async (_req, res) => {
+districtsRouter.get("/users/managers", allowDistrictMapping, async (_req: Request, res: Response) => {
   const managers = await getActiveUsersByRole("MANAGER");
   return ok(res, managers, "Active district managers fetched");
 });
 
-districtsRouter.get("/users/executives", allowDistrictMapping, async (_req, res) => {
+districtsRouter.get("/users/executives", allowDistrictMapping, async (_req: Request, res: Response) => {
   const executives = await getActiveUsersByRole("EXECUTIVE");
   return ok(res, executives, "Active field executives fetched");
 });
 
-districtsRouter.get("/mappings", allowDistrictMapping, async (_req, res) => {
+districtsRouter.get("/mappings", allowDistrictMapping, async (_req: Request, res: Response) => {
   const mappings = await getDistrictAssignmentsPayload();
   return ok(res, mappings, "District manager/executive mappings fetched");
 });
@@ -126,7 +126,7 @@ districtsRouter.get(
   "/:districtId/mappings",
   allowDistrictMapping,
   validateParams(districtIdParamSchema),
-  async (req, res) => {
+  async (req: Request, res: Response) => {
     const { districtId } = req.params as z.infer<typeof districtIdParamSchema>;
     const [mappings] = await getDistrictAssignmentsPayload(districtId);
     if (!mappings) {
@@ -141,7 +141,7 @@ districtsRouter.put(
   allowDistrictMapping,
   validateParams(districtIdParamSchema),
   validateBody(updateAssignmentsSchema),
-  async (req, res) => {
+  async (req: Request, res: Response) => {
     const { districtId } = req.params as z.infer<typeof districtIdParamSchema>;
     const body = req.body as z.infer<typeof updateAssignmentsSchema>;
 
@@ -184,7 +184,7 @@ districtsRouter.get(
   "/:districtId",
   allowDistrictCrud,
   validateParams(districtIdParamSchema),
-  async (req, res) => {
+  async (req: Request, res: Response) => {
     const { districtId } = req.params as z.infer<typeof districtIdParamSchema>;
     const district = await prisma.district.findUnique({
       where: { id: districtId },
@@ -209,7 +209,7 @@ districtsRouter.patch(
   allowDistrictCrud,
   validateParams(districtIdParamSchema),
   validateBody(updateDistrictSchema),
-  async (req, res) => {
+  async (req: Request, res: Response) => {
     const { districtId } = req.params as z.infer<typeof districtIdParamSchema>;
     const body = req.body as z.infer<typeof updateDistrictSchema>;
 
@@ -240,7 +240,7 @@ districtsRouter.delete(
   "/:districtId",
   allowDistrictCrud,
   validateParams(districtIdParamSchema),
-  async (req, res) => {
+  async (req: Request, res: Response) => {
     const { districtId } = req.params as z.infer<typeof districtIdParamSchema>;
 
     const district = await prisma.district.findUnique({ where: { id: districtId } });

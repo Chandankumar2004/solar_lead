@@ -1,5 +1,6 @@
 import { app } from "./app.js";
 import { env } from "./config/env.js";
+import { runPrismaStartupChecks } from "./lib/prisma.js";
 import { runStartupHealthChecks } from "./lib/startup-health.js";
 
 async function start() {
@@ -8,6 +9,7 @@ async function start() {
   });
   // Keep startup non-blocking for platform port detection.
   void runStartupHealthChecks();
+  void runPrismaStartupChecks();
 }
 
 void start();
