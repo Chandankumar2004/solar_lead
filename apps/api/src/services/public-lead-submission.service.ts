@@ -25,6 +25,7 @@ export type PublicLeadSubmissionInput = {
 type PublicLeadSubmissionRecord = {
   id: string;
   externalId: string;
+  districtName: string;
 };
 
 let verifiedPublicSubmissionTable = false;
@@ -131,7 +132,7 @@ async function savePublicSubmission(
     });
   }
 
-  return { id, externalId };
+  return { id, externalId, districtName };
 }
 
 async function updateSubmissionSmsState(input: {
@@ -176,8 +177,8 @@ async function updateSubmissionSmsStateBestEffort(input: {
   }
 }
 
-function buildCustomerAckSms(externalId: string) {
-  return `Thanks for your solar consultation request. Ref ID: ${externalId}. Our district team will contact you shortly.`;
+function buildCustomerAckSms(input: { name: string; externalId: string; districtName: string }) {
+  return `Thank you ${input.name} for choosing Solar Admin. Your solar consultation request is received. Ref ID: ${input.externalId}. Our ${input.districtName} team will contact you within 24 hours.`;
 }
 
 export async function submitPublicLeadWithSms(input: PublicLeadSubmissionInput) {
@@ -187,10 +188,15 @@ export async function submitPublicLeadWithSms(input: PublicLeadSubmissionInput) 
     const delivery = await sendCustomerNotification({
       channel: "SMS",
       recipient: input.phone,
-      body: buildCustomerAckSms(record.externalId),
+      body: buildCustomerAckSms({
+        name: input.name,
+        externalId: record.externalId,
+        districtName: record.districtName
+      }),
       metadata: {
         refId: record.externalId,
-        districtId: input.districtId
+        districtId: input.districtId,
+        districtName: record.districtName
       }
     });
 

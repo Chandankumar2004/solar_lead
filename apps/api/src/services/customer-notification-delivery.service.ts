@@ -63,18 +63,91 @@ class ConsoleSmsProvider implements SmsProviderAdapter {
 class Msg91SmsProvider implements SmsProviderAdapter {
   provider: SmsProviderAdapter["provider"] = "msg91";
 
+  private normalizePhoneForMsg91(rawPhone: string) {
+    const digits = rawPhone.replace(/\D/g, "");
+    if (!digits) {
+      throw new Error("Invalid phone number for SMS");
+    }
+
+    if (digits.length === 10) {
+      return digits;
+    }
+
+    if (digits.length === 12 && digits.startsWith("91")) {
+      return digits.slice(2);
+    }
+
+    if (digits.length === 11 && digits.startsWith("0")) {
+      return digits.slice(1);
+    }
+
+    throw new Error("Phone number must be a valid 10-digit Indian mobile number");
+  }
+
   async send(input: SmsInput) {
     if (!env.MSG91_AUTH_KEY || !env.MSG91_SENDER_ID) {
       throw new Error("MSG91 provider selected but credentials are missing");
     }
 
-    const providerMessageId = `msg91-${randomUUID()}`;
-    // Placeholder integration: wire MSG91 HTTP API client here.
-    console.info("[sms:msg91-placeholder]", {
+    const localMobile = this.normalizePhoneForMsg91(input.to);
+
+    const payload: Record<string, unknown> = {
+      sender: env.MSG91_SENDER_ID,
+      route: env.MSG91_ROUTE,
+      country: env.MSG91_COUNTRY,
+      sms: [
+        {
+          message: input.body,
+          to: [localMobile]
+        }
+      ]
+    };
+
+    if (env.MSG91_TEMPLATE_ID) {
+      payload.DLT_TE_ID = env.MSG91_TEMPLATE_ID;
+    }
+    if (env.MSG91_ENTITY_ID) {
+      payload.DLT_PE_ID = env.MSG91_ENTITY_ID;
+    }
+
+    const response = await fetch("https://api.msg91.com/api/v2/sendsms", {
+      method: "POST",
+      headers: {
+        authkey: env.MSG91_AUTH_KEY,
+        "content-type": "application/json"
+      },
+      body: JSON.stringify(payload)
+    });
+
+    const rawBody = await response.text();
+    let parsedBody: Record<string, unknown> | null = null;
+    try {
+      parsedBody = rawBody ? (JSON.parse(rawBody) as Record<string, unknown>) : null;
+    } catch {
+      parsedBody = null;
+    }
+
+    if (!response.ok) {
+      const failureMessage =
+        String(parsedBody?.message ?? parsedBody?.type ?? "").trim() || rawBody || "Unknown error";
+      throw new Error(
+        `MSG91 request failed (${response.status}): ${failureMessage}`
+      );
+    }
+
+    const providerMessageId = String(
+      parsedBody?.request_id ??
+        parsedBody?.requestId ??
+        parsedBody?.messageId ??
+        parsedBody?.message_id ??
+        `msg91-${randomUUID()}`
+    );
+
+    console.info("[sms:msg91]", {
       providerMessageId,
-      senderId: env.MSG91_SENDER_ID,
-      hasAuthKey: Boolean(env.MSG91_AUTH_KEY),
-      to: input.to
+      to: localMobile,
+      hasTemplateId: Boolean(env.MSG91_TEMPLATE_ID),
+      hasEntityId: Boolean(env.MSG91_ENTITY_ID)
     });
 
     return {
