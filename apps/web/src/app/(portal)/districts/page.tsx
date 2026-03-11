@@ -2,7 +2,8 @@
 
 import { useEffect, useMemo, useState } from "react";
 import useSWR from "swr";
-import { api } from "@/lib/api";
+import axios from "axios";
+import { api, getApiErrorMessage } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth-store";
 
 type DistrictRow = {
@@ -89,6 +90,12 @@ export default function DistrictsPage() {
   const rows = useMemo(() => asArray<DistrictRow>(districtsData), [districtsData]);
   const managers = useMemo(() => asArray<UserOption>(managersData), [managersData]);
   const executives = useMemo(() => asArray<UserOption>(executivesData), [executivesData]);
+  const districtErrorStatus = axios.isAxiosError(error) ? error.response?.status : undefined;
+  const isRoleUnavailable = districtErrorStatus === 403;
+  const districtErrorMessage =
+    error && !isRoleUnavailable
+      ? getApiErrorMessage(error, "Failed to load districts. Please retry.")
+      : null;
 
   const updateSelection = (districtId: string, key: "managerIds" | "executiveIds", values: string[]) => {
     setDrafts((prev) => ({
@@ -206,7 +213,7 @@ export default function DistrictsPage() {
     }
   };
 
-  if (error) {
+  if (isRoleUnavailable) {
     return (
       <div className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900">
         District data/mappings are unavailable for your role.
@@ -216,6 +223,11 @@ export default function DistrictsPage() {
 
   return (
     <section className="space-y-3 rounded-xl bg-white p-4 shadow-sm">
+      {districtErrorMessage ? (
+        <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+          {districtErrorMessage}
+        </div>
+      ) : null}
       {message ? (
         <div className="rounded-md border border-slate-300 bg-slate-50 px-3 py-2 text-sm text-slate-700">
           {message}
