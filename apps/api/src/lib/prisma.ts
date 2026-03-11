@@ -82,8 +82,14 @@ function scoreRuntimeUrl(rawUrl: string) {
   try {
     const parsed = new URL(rawUrl);
     const host = parsed.hostname.toLowerCase();
+    const port = parsed.port || "5432";
     // Prefer Supabase pooler endpoints in hosted environments.
     if (host.endsWith(".pooler.supabase.com")) {
+      // Supabase pooler commonly uses 6543. A pooler host on 5432 often indicates
+      // a misconfigured runtime URL and is less reliable than a valid DIRECT_URL.
+      if (port === "5432") {
+        return 0.5;
+      }
       return 2;
     }
     return 1;
@@ -159,9 +165,21 @@ if (runtimeChoice.primary) {
     source: runtimeChoice.primary.source,
     ...summarizeDatasource(prismaDatasourceUrl)
   });
+
+  const summary = summarizeDatasource(prismaDatasourceUrl);
+  if (
+    runtimeChoice.primary.source === "DATABASE_URL" &&
+    summary.host?.toLowerCase().endsWith(".pooler.supabase.com") &&
+    summary.port === "5432"
+  ) {
+    console.warn("PRISMA_DATASOURCE_WARNING", {
+      reason: "SUPABASE_POOLER_USING_5432",
+      recommendedPort: "6543"
+    });
+  }
 }
 
-export const prisma = prismaDatasourceUrl
+const primaryPrismaClient = prismaDatasourceUrl
   ? new PrismaClient({
       datasources: {
         db: {
@@ -180,7 +198,23 @@ export const prismaAuthFallback =
           }
         }
       })
-    : prisma;
+    : primaryPrismaClient;
+
+export let prisma = primaryPrismaClient;
+
+async function canConnect(client: PrismaClient, sourceLabel: string) {
+  try {
+    await client.$queryRaw`SELECT 1`;
+    return true;
+  } catch (error) {
+    console.error("PRISMA_INIT_ERROR", {
+      reason: "DATABASE_CONNECTION_FAILED",
+      source: sourceLabel,
+      error
+    });
+    return false;
+  }
+}
 
 async function checkAppUserTable() {
   try {
@@ -206,14 +240,23 @@ async function checkAppUserTable() {
 }
 
 export async function runPrismaStartupChecks() {
-  try {
-    await prisma.$queryRaw`SELECT 1`;
-  } catch (error) {
-    console.error("PRISMA_INIT_ERROR", {
-      reason: "DATABASE_CONNECTION_FAILED",
-      error
-    });
-    return;
+  const isPrimaryReachable = await canConnect(prisma, runtimeChoice.primary?.source ?? "PRIMARY");
+  if (!isPrimaryReachable) {
+    if (prismaAuthFallback !== prisma) {
+      const fallbackSource = runtimeChoice.alternate?.source ?? "ALTERNATE";
+      const isFallbackReachable = await canConnect(prismaAuthFallback, fallbackSource);
+      if (isFallbackReachable) {
+        prisma = prismaAuthFallback;
+        console.warn("PRISMA_FAILOVER_ENABLED", {
+          source: fallbackSource,
+          ...summarizeDatasource(prismaAlternateDatasourceUrl)
+        });
+      } else {
+        return;
+      }
+    } else {
+      return;
+    }
   }
 
   try {
