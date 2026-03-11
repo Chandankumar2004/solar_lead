@@ -91,10 +91,16 @@ publicRouter.get(
   validateQuery(duplicatePhoneQuerySchema),
   async (req, res) => {
     const query = req.query as z.infer<typeof duplicatePhoneQuerySchema>;
-    const [leadCount, publicSubmissionCount] = await Promise.all([
-      prisma.lead.count({ where: { phone: query.phone } }),
-      countPublicSubmissionsByPhone(query.phone)
-    ]);
+    const leadCount = await prisma.lead.count({ where: { phone: query.phone } });
+    let publicSubmissionCount = 0;
+    try {
+      publicSubmissionCount = await countPublicSubmissionsByPhone(query.phone);
+    } catch (error) {
+      console.error("PUBLIC_DUPLICATE_CHECK_FALLBACK", {
+        phone: query.phone,
+        error
+      });
+    }
     const count = leadCount + publicSubmissionCount;
 
     return ok(

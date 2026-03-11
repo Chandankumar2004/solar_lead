@@ -1,6 +1,7 @@
 import { randomUUID } from "crypto";
 import { prisma } from "../lib/prisma.js";
 import { AppError } from "../lib/errors.js";
+import { getSupabaseAdminClient } from "../lib/supabase.js";
 import { sendCustomerNotification } from "./customer-notification-delivery.service.js";
 
 export type PublicLeadSubmissionInput = {
@@ -27,78 +28,47 @@ type PublicLeadSubmissionRecord = {
   externalId: string;
 };
 
-let ensuredPublicSubmissionTable = false;
+let verifiedPublicSubmissionTable = false;
 
-async function publicSubmissionTableExists() {
-  const rows = await prisma.$queryRaw<Array<{ table_name: string | null }>>`
-    SELECT to_regclass('public.public_lead_submissions')::text AS table_name
-  `;
-  return Boolean(rows[0]?.table_name);
+function getRequiredSupabaseAdminClient() {
+  const client = getSupabaseAdminClient();
+  if (!client) {
+    throw new AppError(
+      500,
+      "SUPABASE_ADMIN_NOT_CONFIGURED",
+      "Supabase admin client is not configured on backend"
+    );
+  }
+  return client;
 }
 
-async function ensurePublicSubmissionTable() {
-  if (ensuredPublicSubmissionTable) {
+async function ensurePublicSubmissionTableAvailable() {
+  if (verifiedPublicSubmissionTable) {
     return;
   }
 
-  const alreadyExists = await publicSubmissionTableExists();
-  if (alreadyExists) {
-    ensuredPublicSubmissionTable = true;
-    return;
+  const supabase = getRequiredSupabaseAdminClient();
+  const { error } = await supabase
+    .from("public_lead_submissions")
+    .select("id", { head: true, count: "exact" })
+    .limit(1);
+
+  if (error) {
+    throw new AppError(
+      500,
+      "PUBLIC_SUBMISSIONS_TABLE_UNAVAILABLE",
+      "Public submissions table is unavailable",
+      { reason: error.message }
+    );
   }
 
-  try {
-    await prisma.$executeRawUnsafe(`
-      CREATE TABLE IF NOT EXISTS public.public_lead_submissions (
-        id UUID PRIMARY KEY,
-        external_id UUID NOT NULL UNIQUE,
-        name TEXT NOT NULL,
-        phone TEXT NOT NULL,
-        email TEXT NULL,
-        monthly_bill NUMERIC(12, 2) NULL,
-        district_id UUID NOT NULL,
-        district_name TEXT NOT NULL,
-        state TEXT NOT NULL,
-        installation_type TEXT NULL,
-        message TEXT NULL,
-        consent_given BOOLEAN NOT NULL DEFAULT false,
-        source_ip TEXT NULL,
-        recaptcha_score NUMERIC(5, 4) NULL,
-        utm_source TEXT NULL,
-        utm_medium TEXT NULL,
-        utm_campaign TEXT NULL,
-        utm_term TEXT NULL,
-        utm_content TEXT NULL,
-        sms_delivery_status TEXT NULL,
-        sms_provider_message_id TEXT NULL,
-        sms_error TEXT NULL,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-      )
-    `);
-    await prisma.$executeRawUnsafe(`
-      CREATE INDEX IF NOT EXISTS idx_public_lead_submissions_phone
-      ON public.public_lead_submissions(phone)
-    `);
-    await prisma.$executeRawUnsafe(`
-      CREATE INDEX IF NOT EXISTS idx_public_lead_submissions_created_at
-      ON public.public_lead_submissions(created_at DESC)
-    `);
-  } catch (error) {
-    // If table appears in a concurrent request/deploy, continue.
-    const existsAfterError = await publicSubmissionTableExists().catch(() => false);
-    if (!existsAfterError) {
-      throw error;
-    }
-  }
-
-  ensuredPublicSubmissionTable = true;
+  verifiedPublicSubmissionTable = true;
 }
 
 async function savePublicSubmission(
   input: PublicLeadSubmissionInput
 ): Promise<PublicLeadSubmissionRecord> {
-  await ensurePublicSubmissionTable();
+  await ensurePublicSubmissionTableAvailable();
 
   const district = await prisma.district.findUnique({
     where: { id: input.districtId },
@@ -117,49 +87,34 @@ async function savePublicSubmission(
   const externalId = randomUUID();
   const state = (input.state?.trim() || district.state).trim();
 
-  await prisma.$executeRaw`
-    INSERT INTO public.public_lead_submissions (
-      id,
-      external_id,
-      name,
-      phone,
-      email,
-      monthly_bill,
-      district_id,
-      district_name,
-      state,
-      installation_type,
-      message,
-      consent_given,
-      source_ip,
-      recaptcha_score,
-      utm_source,
-      utm_medium,
-      utm_campaign,
-      utm_term,
-      utm_content
-    ) VALUES (
-      ${id}::uuid,
-      ${externalId}::uuid,
-      ${input.name},
-      ${input.phone},
-      ${input.email ?? null},
-      ${input.monthlyBill ?? null},
-      ${district.id}::uuid,
-      ${district.name},
-      ${state},
-      ${input.installationType ?? null},
-      ${input.message ?? null},
-      ${input.consentGiven},
-      ${input.sourceIp ?? null},
-      ${input.recaptchaScore ?? null},
-      ${input.utmSource ?? null},
-      ${input.utmMedium ?? null},
-      ${input.utmCampaign ?? null},
-      ${input.utmTerm ?? null},
-      ${input.utmContent ?? null}
-    )
-  `;
+  const supabase = getRequiredSupabaseAdminClient();
+  const { error } = await supabase.from("public_lead_submissions").insert({
+    id,
+    external_id: externalId,
+    name: input.name,
+    phone: input.phone,
+    email: input.email ?? null,
+    monthly_bill: input.monthlyBill ?? null,
+    district_id: district.id,
+    district_name: district.name,
+    state,
+    installation_type: input.installationType ?? null,
+    message: input.message ?? null,
+    consent_given: input.consentGiven,
+    source_ip: input.sourceIp ?? null,
+    recaptcha_score: input.recaptchaScore ?? null,
+    utm_source: input.utmSource ?? null,
+    utm_medium: input.utmMedium ?? null,
+    utm_campaign: input.utmCampaign ?? null,
+    utm_term: input.utmTerm ?? null,
+    utm_content: input.utmContent ?? null
+  });
+
+  if (error) {
+    throw new AppError(500, "PUBLIC_SUBMISSION_INSERT_FAILED", "Lead submission failed", {
+      reason: error.message
+    });
+  }
 
   return { id, externalId };
 }
@@ -170,16 +125,40 @@ async function updateSubmissionSmsState(input: {
   providerMessageId?: string | null;
   error?: string | null;
 }) {
-  await ensurePublicSubmissionTable();
-  await prisma.$executeRaw`
-    UPDATE public.public_lead_submissions
-    SET
-      sms_delivery_status = ${input.status},
-      sms_provider_message_id = ${input.providerMessageId ?? null},
-      sms_error = ${input.error ?? null},
-      updated_at = now()
-    WHERE id = ${input.id}::uuid
-  `;
+  await ensurePublicSubmissionTableAvailable();
+  const supabase = getRequiredSupabaseAdminClient();
+  const { error } = await supabase
+    .from("public_lead_submissions")
+    .update({
+      sms_delivery_status: input.status,
+      sms_provider_message_id: input.providerMessageId ?? null,
+      sms_error: input.error ?? null,
+      updated_at: new Date().toISOString()
+    })
+    .eq("id", input.id);
+
+  if (error) {
+    throw new AppError(500, "PUBLIC_SUBMISSION_SMS_UPDATE_FAILED", "Failed to update SMS status", {
+      reason: error.message
+    });
+  }
+}
+
+async function updateSubmissionSmsStateBestEffort(input: {
+  id: string;
+  status: string;
+  providerMessageId?: string | null;
+  error?: string | null;
+}) {
+  try {
+    await updateSubmissionSmsState(input);
+  } catch (error) {
+    console.error("public_submission_sms_state_update_failed", {
+      submissionId: input.id,
+      status: input.status,
+      error
+    });
+  }
 }
 
 function buildCustomerAckSms(externalId: string) {
@@ -200,7 +179,7 @@ export async function submitPublicLeadWithSms(input: PublicLeadSubmissionInput) 
       }
     });
 
-    await updateSubmissionSmsState({
+    await updateSubmissionSmsStateBestEffort({
       id: record.id,
       status: "sent",
       providerMessageId: delivery.providerMessageId
@@ -212,7 +191,7 @@ export async function submitPublicLeadWithSms(input: PublicLeadSubmissionInput) 
       externalId: record.externalId,
       error: message
     });
-    await updateSubmissionSmsState({
+    await updateSubmissionSmsStateBestEffort({
       id: record.id,
       status: "failed",
       error: message
@@ -223,16 +202,19 @@ export async function submitPublicLeadWithSms(input: PublicLeadSubmissionInput) 
 }
 
 export async function countPublicSubmissionsByPhone(phone: string) {
-  await ensurePublicSubmissionTable();
-  const rows = await prisma.$queryRaw<Array<{ count: bigint | number }>>`
-    SELECT COUNT(*)::bigint AS count
-    FROM public.public_lead_submissions
-    WHERE phone = ${phone}
-  `;
+  await ensurePublicSubmissionTableAvailable();
+  const supabase = getRequiredSupabaseAdminClient();
+  const { count, error } = await supabase
+    .from("public_lead_submissions")
+    .select("id", { head: true, count: "exact" })
+    .eq("phone", phone);
 
-  const value = rows[0]?.count ?? 0;
-  if (typeof value === "bigint") {
-    return Number(value);
+  if (error) {
+    console.error("public_submission_duplicate_check_failed", {
+      phone,
+      error: error.message
+    });
+    return 0;
   }
-  return Number(value);
+  return Number(count ?? 0);
 }
