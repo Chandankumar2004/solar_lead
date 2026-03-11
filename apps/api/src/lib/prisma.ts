@@ -71,6 +71,10 @@ function normalizePrismaDatasourceUrl(rawUrl: string) {
 
 const runtimeDatabaseUrl = (env.DATABASE_URL ?? "").trim();
 const runtimeDirectUrl = (env.DIRECT_URL ?? "").trim();
+const isHostedRuntime =
+  env.NODE_ENV === "production" ||
+  process.env.RENDER === "true" ||
+  Boolean(process.env.RENDER_EXTERNAL_URL);
 
 type RuntimeCandidate = {
   source: "DATABASE_URL" | "DIRECT_URL";
@@ -78,11 +82,17 @@ type RuntimeCandidate = {
   score: number;
 };
 
-function scoreRuntimeUrl(rawUrl: string) {
+function scoreRuntimeUrl(rawUrl: string, source: RuntimeCandidate["source"]) {
   try {
     const parsed = new URL(rawUrl);
     const host = parsed.hostname.toLowerCase();
     const port = parsed.port || "5432";
+
+    // In hosted environments, direct URL is generally more reliable than a broken/blocked pooler.
+    if (source === "DIRECT_URL" && isHostedRuntime) {
+      return 3;
+    }
+
     // Prefer Supabase pooler endpoints in hosted environments.
     if (host.endsWith(".pooler.supabase.com")) {
       // Supabase pooler commonly uses 6543. A pooler host on 5432 often indicates
@@ -104,14 +114,14 @@ function pickRuntimeCandidates(databaseUrl: string, directUrl: string) {
     candidates.push({
       source: "DATABASE_URL",
       rawUrl: databaseUrl,
-      score: scoreRuntimeUrl(databaseUrl)
+      score: scoreRuntimeUrl(databaseUrl, "DATABASE_URL")
     });
   }
   if (directUrl) {
     candidates.push({
       source: "DIRECT_URL",
       rawUrl: directUrl,
-      score: scoreRuntimeUrl(directUrl)
+      score: scoreRuntimeUrl(directUrl, "DIRECT_URL")
     });
   }
   if (candidates.length === 0) {
@@ -202,17 +212,16 @@ export const prismaAuthFallback =
 
 export let prisma = primaryPrismaClient;
 
-async function canConnect(client: PrismaClient, sourceLabel: string) {
+type ConnectionCheck =
+  | { ok: true }
+  | { ok: false; source: string; error: unknown };
+
+async function canConnect(client: PrismaClient, sourceLabel: string): Promise<ConnectionCheck> {
   try {
     await client.$queryRaw`SELECT 1`;
-    return true;
+    return { ok: true };
   } catch (error) {
-    console.error("PRISMA_INIT_ERROR", {
-      reason: "DATABASE_CONNECTION_FAILED",
-      source: sourceLabel,
-      error
-    });
-    return false;
+    return { ok: false, source: sourceLabel, error };
   }
 }
 
@@ -240,21 +249,38 @@ async function checkAppUserTable() {
 }
 
 export async function runPrismaStartupChecks() {
-  const isPrimaryReachable = await canConnect(prisma, runtimeChoice.primary?.source ?? "PRIMARY");
-  if (!isPrimaryReachable) {
+  const primaryResult = await canConnect(prisma, runtimeChoice.primary?.source ?? "PRIMARY");
+  if (!primaryResult.ok) {
     if (prismaAuthFallback !== prisma) {
       const fallbackSource = runtimeChoice.alternate?.source ?? "ALTERNATE";
-      const isFallbackReachable = await canConnect(prismaAuthFallback, fallbackSource);
-      if (isFallbackReachable) {
+      const fallbackResult = await canConnect(prismaAuthFallback, fallbackSource);
+      if (fallbackResult.ok) {
         prisma = prismaAuthFallback;
         console.warn("PRISMA_FAILOVER_ENABLED", {
+          primarySource: primaryResult.source,
           source: fallbackSource,
           ...summarizeDatasource(prismaAlternateDatasourceUrl)
         });
       } else {
+        console.error("PRISMA_INIT_ERROR", {
+          reason: "DATABASE_CONNECTION_FAILED",
+          primary: {
+            source: primaryResult.source,
+            error: primaryResult.error
+          },
+          fallback: {
+            source: fallbackResult.source,
+            error: fallbackResult.error
+          }
+        });
         return;
       }
     } else {
+      console.error("PRISMA_INIT_ERROR", {
+        reason: "DATABASE_CONNECTION_FAILED",
+        source: primaryResult.source,
+        error: primaryResult.error
+      });
       return;
     }
   }
