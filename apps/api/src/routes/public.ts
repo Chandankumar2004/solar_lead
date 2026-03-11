@@ -4,22 +4,14 @@ import { created, ok } from "../lib/http.js";
 import { validateBody, validateQuery } from "../middleware/validate.js";
 import { publicLeadSubmissionRateLimit } from "../middleware/rate-limit.js";
 import { prisma } from "../lib/prisma.js";
-import { resolveLeadAutoAssignment } from "../services/lead-assignment.service.js";
 import { createAuditLog, requestIp } from "../services/audit-log.service.js";
 import { AppError } from "../lib/errors.js";
 import { getPublicDistrictsPayload } from "../services/districts.service.js";
 import { resolveRecaptchaSecret, verifyRecaptchaToken } from "../services/recaptcha.service.js";
 import {
-  assertValidTransition,
-  getAssignedLeadStatus,
-  getNewLeadStatus
-} from "../services/lead-status.service.js";
-import {
-  notifyActiveAdmins,
-  queueLeadStatusCustomerNotification,
-  triggerNewLeadNotification,
-  triggerOverdueLeadNotification
-} from "../services/notification.service.js";
+  countPublicSubmissionsByPhone,
+  submitPublicLeadWithSms
+} from "../services/public-lead-submission.service.js";
 
 export const publicRouter = Router();
 
@@ -99,14 +91,18 @@ publicRouter.get(
   validateQuery(duplicatePhoneQuerySchema),
   async (req, res) => {
     const query = req.query as z.infer<typeof duplicatePhoneQuerySchema>;
-    const leadCount = await prisma.lead.count({ where: { phone: query.phone } });
+    const [leadCount, publicSubmissionCount] = await Promise.all([
+      prisma.lead.count({ where: { phone: query.phone } }),
+      countPublicSubmissionsByPhone(query.phone)
+    ]);
+    const count = leadCount + publicSubmissionCount;
 
     return ok(
       res,
       {
         phone: query.phone,
-        isDuplicate: leadCount > 0,
-        count: leadCount
+        isDuplicate: count > 0,
+        count
       },
       "Duplicate phone check completed"
     );
@@ -164,191 +160,56 @@ async function createPublicLead(req: Request, res: Response) {
     payload.recaptchaScore = recaptchaResult.score ?? undefined;
   }
 
-  const newStatus = await getNewLeadStatus();
-  if (!newStatus) {
-    throw new AppError(
-      400,
-      "NO_STATUS_CONFIG",
-      'Lead status "New" (or "New Lead") is not configured'
-    );
-  }
-
-  const assignedStatus = await getAssignedLeadStatus();
-  if (!assignedStatus) {
-    throw new AppError(
-      400,
-      "NO_STATUS_CONFIG",
-      'Lead status "Assigned" is not configured'
-    );
-  }
-
-  const autoAssignment = await resolveLeadAutoAssignment(payload.districtId);
-  if (!autoAssignment) {
-    throw new AppError(
-      400,
-      "NO_ASSIGNEE_AVAILABLE",
-      "No active executive or district manager is available for this district"
-    );
-  }
-
-  const isNewToAssignedAllowed = await assertValidTransition(
-    newStatus.id,
-    assignedStatus.id
-  );
-  if (!isNewToAssignedAllowed) {
-    throw new AppError(
-      400,
-      "AUTO_ASSIGN_TRANSITION_NOT_ALLOWED",
-      'Transition "New -> Assigned" is not allowed in lead status transition config'
-    );
-  }
-
-  const historyActorUserId =
-    autoAssignment.assignedExecutiveId ?? autoAssignment.assignedManagerId;
-  if (!historyActorUserId) {
-    throw new AppError(500, "ASSIGNMENT_STATE_INVALID", "Lead assignment actor missing");
-  }
-
-  const autoAssignmentNote =
-    autoAssignment.mode === "EXECUTIVE"
-      ? "Auto-assigned to field executive"
-      : `Auto-assigned to district manager. ${autoAssignment.fallbackReason}`;
-
-  const lead = await prisma.$transaction(async (tx) => {
-    const createdLead = await tx.lead.create({
-      data: {
-        name: payload.name,
-        phone: payload.phone,
-        email: payload.email,
-        monthlyBill: payload.monthlyBill,
-        districtId: payload.districtId,
-        state: payload.state,
-        installationType: payload.installationType,
-        message: payload.message,
-        currentStatusId: newStatus.id,
-        assignedExecutiveId: autoAssignment.assignedExecutiveId,
-        assignedManagerId: autoAssignment.assignedManagerId,
-        isOverdue: autoAssignment.flagged,
-        utmSource: payload.utmSource,
-        utmMedium: payload.utmMedium,
-        utmCampaign: payload.utmCampaign,
-        utmTerm: payload.utmTerm,
-        utmContent: payload.utmContent,
-        sourceIp: requestIp(req),
-        recaptchaScore: payload.recaptchaScore,
-        consentGiven: payload.consentGiven,
-        consentTimestamp: payload.consentGiven ? new Date() : null,
-        statusHistory: {
-          create: {
-            toStatusId: newStatus.id,
-            changedByUserId: historyActorUserId,
-            notes: "Lead created via public submission"
-          }
-        }
-      }
-    });
-
-    return tx.lead.update({
-      where: { id: createdLead.id },
-      data: {
-        currentStatusId: assignedStatus.id,
-        statusHistory: {
-          create: {
-            fromStatusId: newStatus.id,
-            toStatusId: assignedStatus.id,
-            changedByUserId: historyActorUserId,
-            notes: autoAssignmentNote
-          }
-        }
-      }
-    });
+  const submission = await submitPublicLeadWithSms({
+    name: payload.name,
+    phone: payload.phone,
+    email: payload.email,
+    monthlyBill: payload.monthlyBill,
+    districtId: payload.districtId,
+    state: payload.state,
+    installationType: payload.installationType,
+    message: payload.message,
+    utmSource: payload.utmSource,
+    utmMedium: payload.utmMedium,
+    utmCampaign: payload.utmCampaign,
+    utmTerm: payload.utmTerm,
+    utmContent: payload.utmContent,
+    recaptchaScore: payload.recaptchaScore,
+    consentGiven: payload.consentGiven,
+    sourceIp: requestIp(req)
   });
 
-  await triggerNewLeadNotification({
-    leadId: lead.id,
-    externalId: lead.externalId,
-    assignedExecutiveId: autoAssignment.assignedExecutiveId,
-    assignedManagerId: autoAssignment.assignedManagerId
-  });
-
-  await queueLeadStatusCustomerNotification({
-    leadId: lead.id,
-    toStatusId: assignedStatus.id,
-    changedByUserId: historyActorUserId,
-    transitionNotes: autoAssignmentNote
-  });
-
-  let alertedAdminIds: string[] = [];
-  if (autoAssignment.flagged) {
-    alertedAdminIds = await notifyActiveAdmins(
-      "Executive unavailable in district",
-      `Lead ${lead.externalId} was assigned to a district manager because no active executive was available.`
-    );
-  }
-
-  await createAuditLog({
-    action: "PUBLIC_LEAD_SUBMITTED",
-    entityType: "lead",
-    entityId: lead.id,
-    detailsJson: {
-      leadId: lead.id,
-      externalId: lead.externalId,
-      districtId: lead.districtId,
-      initialStatusId: newStatus.id,
-      assignedStatusId: assignedStatus.id,
-      assignedExecutiveId: autoAssignment.assignedExecutiveId,
-      assignedManagerId: autoAssignment.assignedManagerId,
-      assignmentMode: autoAssignment.mode,
-      flagged: autoAssignment.flagged,
-      recaptchaTokenPresent: Boolean(payload.recaptchaToken)
-    },
-    ipAddress: requestIp(req)
-  });
-
-  await createAuditLog({
-    action: "LEAD_AUTO_ASSIGNED",
-    entityType: "lead",
-    entityId: lead.id,
-    detailsJson: {
-      leadId: lead.id,
-      externalId: lead.externalId,
-      fromStatusId: newStatus.id,
-      toStatusId: assignedStatus.id,
-      assignedExecutiveId: autoAssignment.assignedExecutiveId,
-      assignedManagerId: autoAssignment.assignedManagerId,
-      assignmentMode: autoAssignment.mode,
-      flagged: autoAssignment.flagged
-    },
-    ipAddress: requestIp(req)
-  });
-
-  if (autoAssignment.flagged) {
+  try {
     await createAuditLog({
-      action: "LEAD_AUTO_ASSIGNMENT_FALLBACK",
-      entityType: "lead",
-      entityId: lead.id,
+      action: "PUBLIC_LEAD_SUBMITTED",
+      entityType: "public_lead_submission",
+      entityId: submission.id,
       detailsJson: {
-        leadId: lead.id,
-        externalId: lead.externalId,
-        fallbackReason: autoAssignment.fallbackReason,
-        alertedAdminIds
+        submissionId: submission.id,
+        externalId: submission.externalId,
+        districtId: payload.districtId,
+        phone: payload.phone,
+        email: payload.email ?? null,
+        recaptchaTokenPresent: Boolean(payload.recaptchaToken),
+        consentGiven: payload.consentGiven
       },
       ipAddress: requestIp(req)
     });
-
-    await triggerOverdueLeadNotification({
-      leadId: lead.id,
-      reason: autoAssignment.fallbackReason
+  } catch (error) {
+    console.error("PUBLIC_LEAD_AUDIT_LOG_FAILED", {
+      submissionId: submission.id,
+      requestId: req.requestId ?? null,
+      error
     });
   }
 
   return created(
     res,
     {
-      id: lead.id,
-      externalId: lead.externalId
+      id: submission.id,
+      externalId: submission.externalId
     },
-    "Lead submitted"
+    "Consultation request submitted"
   );
 }
 

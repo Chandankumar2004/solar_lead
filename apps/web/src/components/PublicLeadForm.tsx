@@ -87,6 +87,16 @@ export function PublicLeadForm({ districtMapping }: PublicLeadFormProps) {
   }, [districtById, selectedDistrictId, setValue]);
 
   useEffect(() => {
+    if (!submitSuccess) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setSubmitSuccess(null);
+    }, 10000);
+    return () => window.clearTimeout(timer);
+  }, [submitSuccess]);
+
+  useEffect(() => {
     setDuplicateWarning(null);
     const normalizedPhone = phone?.trim() ?? "";
     if (normalizedPhone.length < 8) {
@@ -215,35 +225,12 @@ export function PublicLeadForm({ districtMapping }: PublicLeadFormProps) {
 
       setSubmitSuccess(payload);
       reset();
+      setDistrictSearch("");
+      setDuplicateWarning(null);
     } catch (error: unknown) {
       setSubmitError(getApiErrorMessage(error, "Lead submission failed. Please try again."));
     }
   });
-
-  if (submitSuccess) {
-    return (
-      <section className="rounded-2xl border border-emerald-200 bg-emerald-50 p-6 shadow-sm">
-        <h2 className="text-2xl font-semibold text-emerald-900">Request submitted successfully</h2>
-        <p className="mt-2 text-sm text-emerald-900/80">
-          Our solar advisor will contact you shortly.
-        </p>
-        <p className="mt-4 text-sm text-emerald-800">
-          Reference ID: <span className="font-semibold">{submitSuccess.externalId}</span>
-        </p>
-        <button
-          type="button"
-          onClick={() => {
-            setSubmitSuccess(null);
-            setDuplicateWarning(null);
-            setSubmitError(null);
-          }}
-          className="mt-5 rounded-md bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-800"
-        >
-          Submit another request
-        </button>
-      </section>
-    );
-  }
 
   return (
     <>
@@ -397,6 +384,12 @@ export function PublicLeadForm({ districtMapping }: PublicLeadFormProps) {
         ) : null}
 
         {submitError ? <p className="text-sm text-red-700">{submitError}</p> : null}
+        {submitSuccess ? (
+          <p className="text-sm text-emerald-700">
+            Request submitted successfully. Reference ID:{" "}
+            <span className="font-semibold">{submitSuccess.externalId}</span>
+          </p>
+        ) : null}
         {recaptchaConfigInvalid ? (
           <p className="text-xs text-amber-700">
             reCAPTCHA site key is invalid. Set a valid `NEXT_PUBLIC_RECAPTCHA_SITE_KEY`.
