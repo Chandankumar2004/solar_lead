@@ -32,6 +32,11 @@ function normalizePrismaDatasourceUrl(rawUrl: string) {
 
     const isSupabasePooler = parsed.hostname.toLowerCase().endsWith(".pooler.supabase.com");
     if (isSupabasePooler) {
+      const configuredPort = parsed.port || "5432";
+      // Supabase transaction pooler listens on 6543. Many broken envs accidentally keep 5432.
+      if (configuredPort === "5432") {
+        parsed.port = "6543";
+      }
       if (!parsed.searchParams.get("pgbouncer")) {
         parsed.searchParams.set("pgbouncer", "true");
       }
@@ -171,6 +176,14 @@ function summarizeDatasource(rawUrl: string) {
 }
 
 if (runtimeChoice.primary) {
+  if (rawPrismaUrl && prismaDatasourceUrl && rawPrismaUrl !== prismaDatasourceUrl) {
+    console.info("PRISMA_DATASOURCE_NORMALIZED", {
+      source: runtimeChoice.primary.source,
+      before: summarizeDatasource(rawPrismaUrl),
+      after: summarizeDatasource(prismaDatasourceUrl)
+    });
+  }
+
   console.info("PRISMA_DATASOURCE_SELECTED", {
     source: runtimeChoice.primary.source,
     ...summarizeDatasource(prismaDatasourceUrl)
