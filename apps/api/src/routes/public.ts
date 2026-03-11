@@ -193,6 +193,7 @@ async function createPublicLead(req: Request, res: Response) {
       detailsJson: {
         submissionId: submission.id,
         externalId: submission.externalId,
+        mirroredLeadId: submission.mirroredLeadId ?? null,
         districtId: payload.districtId,
         phone: payload.phone,
         email: payload.email ?? null,

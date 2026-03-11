@@ -2,6 +2,9 @@ import { randomUUID } from "crypto";
 import { AppError } from "../lib/errors.js";
 import { getSupabaseAdminClient } from "../lib/supabase.js";
 import { sendCustomerNotification } from "./customer-notification-delivery.service.js";
+import { prisma } from "../lib/prisma.js";
+import { resolveLeadAutoAssignment } from "./lead-assignment.service.js";
+import { assertValidTransition, getAssignedLeadStatus, getNewLeadStatus } from "./lead-status.service.js";
 
 export type PublicLeadSubmissionInput = {
   name: string;
@@ -26,6 +29,7 @@ type PublicLeadSubmissionRecord = {
   id: string;
   externalId: string;
   districtName: string;
+  mirroredLeadId?: string | null;
 };
 
 let verifiedPublicSubmissionTable = false;
@@ -181,8 +185,81 @@ function buildCustomerAckSms(input: { name: string; externalId: string; district
   return `Thank you ${input.name} for choosing Solar Admin. Your solar consultation request is received. Ref ID: ${input.externalId}. Our ${input.districtName} team will contact you within 24 hours.`;
 }
 
+async function mirrorPublicSubmissionToLead(input: PublicLeadSubmissionInput) {
+  const newStatus = await getNewLeadStatus();
+  if (!newStatus) {
+    console.error("public_submission_lead_mirror_failed", {
+      reason: "NEW_STATUS_NOT_CONFIGURED",
+      districtId: input.districtId,
+      phone: input.phone
+    });
+    return null;
+  }
+
+  const assignedStatus = await getAssignedLeadStatus();
+  const autoAssignment = await resolveLeadAutoAssignment(input.districtId);
+
+  let currentStatusId = newStatus.id;
+  let assignedExecutiveId: string | null = null;
+  let assignedManagerId: string | null = null;
+  let isOverdue = false;
+
+  if (autoAssignment) {
+    assignedExecutiveId = autoAssignment.assignedExecutiveId;
+    assignedManagerId = autoAssignment.assignedManagerId;
+    isOverdue = autoAssignment.flagged;
+
+    if (assignedStatus) {
+      const allowed = await assertValidTransition(newStatus.id, assignedStatus.id);
+      if (allowed) {
+        currentStatusId = assignedStatus.id;
+      }
+    }
+  }
+
+  const lead = await prisma.lead.create({
+    data: {
+      name: input.name,
+      phone: input.phone,
+      email: input.email ?? null,
+      monthlyBill: input.monthlyBill ?? null,
+      districtId: input.districtId,
+      state: input.state?.trim() || null,
+      installationType: input.installationType ?? null,
+      message: input.message ?? "Public lead submission",
+      currentStatusId,
+      assignedExecutiveId,
+      assignedManagerId,
+      utmSource: input.utmSource ?? null,
+      utmMedium: input.utmMedium ?? null,
+      utmCampaign: input.utmCampaign ?? null,
+      utmTerm: input.utmTerm ?? null,
+      utmContent: input.utmContent ?? null,
+      sourceIp: input.sourceIp ?? null,
+      recaptchaScore: input.recaptchaScore ?? null,
+      consentGiven: input.consentGiven,
+      consentTimestamp: input.consentGiven ? new Date() : null,
+      isOverdue
+    },
+    select: { id: true }
+  });
+
+  return lead.id;
+}
+
 export async function submitPublicLeadWithSms(input: PublicLeadSubmissionInput) {
   const record = await savePublicSubmission(input);
+  let mirroredLeadId: string | null = null;
+
+  try {
+    mirroredLeadId = await mirrorPublicSubmissionToLead(input);
+  } catch (error) {
+    console.error("public_submission_lead_mirror_failed", {
+      districtId: input.districtId,
+      phone: input.phone,
+      error
+    });
+  }
 
   try {
     const delivery = await sendCustomerNotification({
@@ -219,7 +296,10 @@ export async function submitPublicLeadWithSms(input: PublicLeadSubmissionInput) 
     });
   }
 
-  return record;
+  return {
+    ...record,
+    mirroredLeadId
+  };
 }
 
 export async function countPublicSubmissionsByPhone(phone: string) {
