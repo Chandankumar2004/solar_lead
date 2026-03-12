@@ -1,7 +1,8 @@
 # syntax=docker/dockerfile:1
 
-FROM node:20-alpine AS base
+FROM node:20-bookworm-slim AS base
 WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
 RUN corepack enable
 
 FROM base AS deps
@@ -14,9 +15,10 @@ FROM deps AS build
 COPY . .
 RUN pnpm --filter @solar/web build
 
-FROM node:20-alpine AS runtime
+FROM node:20-bookworm-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
 RUN corepack enable
 COPY --from=deps /app/node_modules /app/node_modules
 COPY --from=build /app/apps/web/.next /app/apps/web/.next
