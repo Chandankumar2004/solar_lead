@@ -164,6 +164,7 @@ const rawPrismaUrl = runtimeChoice.primary?.rawUrl ?? "";
 const prismaDatasourceUrl = normalizePrismaDatasourceUrl(rawPrismaUrl);
 const alternateRawPrismaUrl = runtimeChoice.alternate?.rawUrl ?? "";
 const prismaAlternateDatasourceUrl = normalizePrismaDatasourceUrl(alternateRawPrismaUrl);
+const configuredSessionPoolerFallbackUrl = (process.env.DATABASE_URL_SESSION_FALLBACK ?? "").trim();
 
 function deriveSupabaseSessionPoolerUrl(rawUrl: string) {
   if (!rawUrl.trim()) {
@@ -195,7 +196,7 @@ function deriveSupabaseSessionPoolerUrl(rawUrl: string) {
 }
 
 const prismaSessionPoolerDatasourceUrl = normalizePrismaDatasourceUrl(
-  deriveSupabaseSessionPoolerUrl(prismaDatasourceUrl)
+  configuredSessionPoolerFallbackUrl || deriveSupabaseSessionPoolerUrl(prismaDatasourceUrl)
 );
 
 function summarizeDatasource(rawUrl: string) {
@@ -266,6 +267,15 @@ const prismaSessionPoolerFallback =
         }
       })
     : null;
+
+if (prismaSessionPoolerFallback) {
+  console.info("PRISMA_SESSION_FALLBACK_CANDIDATE", {
+    source: configuredSessionPoolerFallbackUrl
+      ? "DATABASE_URL_SESSION_FALLBACK"
+      : "DERIVED_SESSION_POOLER",
+    ...summarizeDatasource(prismaSessionPoolerDatasourceUrl)
+  });
+}
 
 export const prismaAuthFallback =
   prismaAlternateDatasourceUrl && prismaAlternateDatasourceUrl !== prismaDatasourceUrl
