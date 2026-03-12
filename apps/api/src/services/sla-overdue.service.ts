@@ -1,5 +1,6 @@
 import { env } from "../config/env.js";
 import { prisma } from "../lib/prisma.js";
+import { isPrismaConnected, runPrismaStartupChecks } from "../lib/prisma.js";
 import { createAuditLog } from "./audit-log.service.js";
 import { notifyDistrictManagersAndAdmins } from "./notification.service.js";
 
@@ -13,6 +14,7 @@ type SlaCheckSummary = {
 
 let timer: NodeJS.Timeout | null = null;
 let isRunning = false;
+let lastDbUnavailableLogAt = 0;
 
 function resolveSlaCheckIntervalMs() {
   const raw = Number(process.env.SLA_CHECK_INTERVAL_MS ?? "");
@@ -155,6 +157,21 @@ export function startSlaOverdueMonitor() {
     if (isRunning) return;
     isRunning = true;
     try {
+      if (!isPrismaConnected()) {
+        await runPrismaStartupChecks({ quiet: true });
+      }
+
+      if (!isPrismaConnected()) {
+        const now = Date.now();
+        if (now - lastDbUnavailableLogAt > 15 * 60 * 1000) {
+          lastDbUnavailableLogAt = now;
+          console.warn("sla_overdue_check_skipped", {
+            reason: "PRISMA_DB_UNAVAILABLE"
+          });
+        }
+        return;
+      }
+
       const summary = await runSlaOverdueCheck();
       if (summary.markedOverdue > 0) {
         console.info("sla_overdue_check_completed", summary);

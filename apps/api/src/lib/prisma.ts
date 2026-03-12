@@ -292,6 +292,11 @@ export const prismaAuthFallback =
     : primaryPrismaClient;
 
 export let prisma = primaryPrismaClient;
+let prismaConnected = false;
+
+export function isPrismaConnected() {
+  return prismaConnected;
+}
 
 type ConnectionCheck =
   | { ok: true }
@@ -304,6 +309,22 @@ async function canConnect(client: PrismaClient, sourceLabel: string): Promise<Co
   } catch (error) {
     return { ok: false, source: sourceLabel, error };
   }
+}
+
+function compactError(error: unknown) {
+  if (error && typeof error === "object") {
+    const maybeError = error as { name?: unknown; message?: unknown; code?: unknown };
+    return {
+      name: typeof maybeError.name === "string" ? maybeError.name : null,
+      code: typeof maybeError.code === "string" ? maybeError.code : null,
+      message: typeof maybeError.message === "string" ? maybeError.message : String(error)
+    };
+  }
+  return {
+    name: null,
+    code: null,
+    message: String(error)
+  };
 }
 
 async function checkAppUserTable() {
@@ -329,7 +350,8 @@ async function checkAppUserTable() {
   }
 }
 
-export async function runPrismaStartupChecks() {
+export async function runPrismaStartupChecks(options?: { quiet?: boolean }) {
+  const quiet = options?.quiet === true;
   const primaryResult = await canConnect(prisma, runtimeChoice.primary?.source ?? "PRIMARY");
   if (!primaryResult.ok) {
     if (prismaSessionPoolerFallback) {
@@ -345,10 +367,10 @@ export async function runPrismaStartupChecks() {
           ...summarizeDatasource(prismaSessionPoolerDatasourceUrl)
         });
       } else {
-        console.error("PRISMA_SESSION_POOLER_FALLBACK_FAILED", {
+        (quiet ? console.warn : console.error)("PRISMA_SESSION_POOLER_FALLBACK_FAILED", {
           primarySource: primaryResult.source,
           source: sessionFallbackResult.source,
-          error: sessionFallbackResult.error
+          error: quiet ? compactError(sessionFallbackResult.error) : sessionFallbackResult.error
         });
       }
     }
@@ -366,28 +388,32 @@ export async function runPrismaStartupChecks() {
           ...summarizeDatasource(prismaAlternateDatasourceUrl)
         });
       } else {
-        console.error("PRISMA_INIT_ERROR", {
+        prismaConnected = false;
+        (quiet ? console.warn : console.error)("PRISMA_INIT_ERROR", {
           reason: "DATABASE_CONNECTION_FAILED",
           primary: {
             source: primaryResult.source,
-            error: primaryResult.error
+            error: quiet ? compactError(primaryResult.error) : primaryResult.error
           },
           fallback: {
             source: fallbackResult.source,
-            error: fallbackResult.error
+            error: quiet ? compactError(fallbackResult.error) : fallbackResult.error
           }
         });
         return;
       }
     } else {
-      console.error("PRISMA_INIT_ERROR", {
+      prismaConnected = false;
+      (quiet ? console.warn : console.error)("PRISMA_INIT_ERROR", {
         reason: "DATABASE_CONNECTION_FAILED",
         source: primaryResult.source,
-        error: primaryResult.error
+        error: quiet ? compactError(primaryResult.error) : primaryResult.error
       });
       return;
     }
   }
+
+  prismaConnected = true;
 
   try {
     const rows = await prisma.$queryRaw<
