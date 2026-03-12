@@ -255,6 +255,12 @@ const runtimeAlternateCandidates = runtimeChoice.alternates
 
 const prismaAlternateDatasourceUrl = runtimeAlternateCandidates[0]?.normalizedUrl ?? "";
 const configuredSessionPoolerFallbackUrl = (process.env.DATABASE_URL_SESSION_FALLBACK ?? "").trim();
+const normalizedConfiguredSessionPoolerFallbackUrl =
+  deriveSupabaseSessionPoolerUrl(configuredSessionPoolerFallbackUrl) ||
+  configuredSessionPoolerFallbackUrl;
+const sessionPoolerFallbackWasNormalized =
+  Boolean(configuredSessionPoolerFallbackUrl) &&
+  configuredSessionPoolerFallbackUrl !== normalizedConfiguredSessionPoolerFallbackUrl;
 
 function deriveSupabaseSessionPoolerUrl(rawUrl: string) {
   if (!rawUrl.trim()) {
@@ -286,7 +292,7 @@ function deriveSupabaseSessionPoolerUrl(rawUrl: string) {
 }
 
 const prismaSessionPoolerDatasourceUrl = normalizePrismaDatasourceUrl(
-  configuredSessionPoolerFallbackUrl || deriveSupabaseSessionPoolerUrl(prismaDatasourceUrl)
+  normalizedConfiguredSessionPoolerFallbackUrl || deriveSupabaseSessionPoolerUrl(prismaDatasourceUrl)
 );
 
 function summarizeDatasource(rawUrl: string) {
@@ -306,6 +312,13 @@ function summarizeDatasource(rawUrl: string) {
       pgbouncer: null
     };
   }
+}
+
+if (sessionPoolerFallbackWasNormalized) {
+  console.info("PRISMA_SESSION_FALLBACK_NORMALIZED", {
+    before: summarizeDatasource(configuredSessionPoolerFallbackUrl),
+    after: summarizeDatasource(normalizedConfiguredSessionPoolerFallbackUrl)
+  });
 }
 
 if (runtimeChoice.primary) {
