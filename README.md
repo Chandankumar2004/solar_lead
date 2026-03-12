@@ -229,7 +229,7 @@ See `DEVOPS.md` for target deployment architecture:
 - API start command: `NODE_ENV=production pnpm start`
 - API required env:
   - `PORT=10000` (or use Render default)
-  - `DATABASE_URL` (Supabase pooler URL on `:6543`, include `pgbouncer=true&connection_limit=1&sslmode=require`)
+  - `DATABASE_URL` (Supabase pooler URL; prefer `:6543` with `pgbouncer=true&connection_limit=1&sslmode=require`, or use session pooler `:5432` if runtime network blocks `6543`)
   - `DIRECT_URL` (Supabase direct DB host URL, do not use pooler host/port)
   - `SUPABASE_URL`
   - `SUPABASE_ANON_KEY`

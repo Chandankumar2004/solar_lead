@@ -32,16 +32,20 @@ function normalizePrismaDatasourceUrl(rawUrl: string) {
 
     const isSupabasePooler = parsed.hostname.toLowerCase().endsWith(".pooler.supabase.com");
     if (isSupabasePooler) {
-      const configuredPort = parsed.port || "5432";
-      // Supabase transaction pooler listens on 6543. Many broken envs accidentally keep 5432.
-      if (configuredPort === "5432") {
-        parsed.port = "6543";
+      const configuredPort = parsed.port || "6543";
+      // Keep caller-selected pooler mode:
+      // - 6543 transaction pooler (requires pgbouncer=true)
+      // - 5432 session pooler
+      if (!parsed.port) {
+        parsed.port = configuredPort;
       }
-      if (!parsed.searchParams.get("pgbouncer")) {
-        parsed.searchParams.set("pgbouncer", "true");
-      }
-      if (!parsed.searchParams.get("connection_limit")) {
-        parsed.searchParams.set("connection_limit", "1");
+      if (configuredPort === "6543") {
+        if (!parsed.searchParams.get("pgbouncer")) {
+          parsed.searchParams.set("pgbouncer", "true");
+        }
+        if (!parsed.searchParams.get("connection_limit")) {
+          parsed.searchParams.set("connection_limit", "1");
+        }
       }
       if (!parsed.searchParams.get("sslmode")) {
         parsed.searchParams.set("sslmode", "require");
@@ -126,7 +130,8 @@ function pickRuntimeCandidates(databaseUrl: string, directUrl: string) {
       score: scoreRuntimeUrl(databaseUrl, "DATABASE_URL")
     });
   }
-  if (directUrl) {
+  const allowDirectAsRuntimeCandidate = Boolean(directUrl) && (!isHostedRuntime || !databaseUrl);
+  if (allowDirectAsRuntimeCandidate) {
     candidates.push({
       source: "DIRECT_URL",
       rawUrl: directUrl,
@@ -159,6 +164,39 @@ const rawPrismaUrl = runtimeChoice.primary?.rawUrl ?? "";
 const prismaDatasourceUrl = normalizePrismaDatasourceUrl(rawPrismaUrl);
 const alternateRawPrismaUrl = runtimeChoice.alternate?.rawUrl ?? "";
 const prismaAlternateDatasourceUrl = normalizePrismaDatasourceUrl(alternateRawPrismaUrl);
+
+function deriveSupabaseSessionPoolerUrl(rawUrl: string) {
+  if (!rawUrl.trim()) {
+    return "";
+  }
+
+  try {
+    const parsed = new URL(rawUrl);
+    const isPostgres = parsed.protocol === "postgresql:" || parsed.protocol === "postgres:";
+    const isSupabasePooler = parsed.hostname.toLowerCase().endsWith(".pooler.supabase.com");
+    if (!isPostgres || !isSupabasePooler) {
+      return "";
+    }
+
+    // Session pooler fallback for environments where transaction pooler connectivity is unstable.
+    parsed.port = "5432";
+    parsed.searchParams.delete("pgbouncer");
+    parsed.searchParams.delete("connection_limit");
+    if (!parsed.searchParams.get("sslmode")) {
+      parsed.searchParams.set("sslmode", "require");
+    }
+    if (!parsed.searchParams.get("schema")) {
+      parsed.searchParams.set("schema", DEFAULT_APP_DB_SCHEMA);
+    }
+    return parsed.toString();
+  } catch {
+    return "";
+  }
+}
+
+const prismaSessionPoolerDatasourceUrl = normalizePrismaDatasourceUrl(
+  deriveSupabaseSessionPoolerUrl(prismaDatasourceUrl)
+);
 
 function summarizeDatasource(rawUrl: string) {
   try {
@@ -216,6 +254,19 @@ const primaryPrismaClient = prismaDatasourceUrl
     })
   : new PrismaClient();
 
+const prismaSessionPoolerFallback =
+  prismaSessionPoolerDatasourceUrl &&
+  prismaSessionPoolerDatasourceUrl !== prismaDatasourceUrl &&
+  prismaSessionPoolerDatasourceUrl !== prismaAlternateDatasourceUrl
+    ? new PrismaClient({
+        datasources: {
+          db: {
+            url: prismaSessionPoolerDatasourceUrl
+          }
+        }
+      })
+    : null;
+
 export const prismaAuthFallback =
   prismaAlternateDatasourceUrl && prismaAlternateDatasourceUrl !== prismaDatasourceUrl
     ? new PrismaClient({
@@ -268,7 +319,30 @@ async function checkAppUserTable() {
 export async function runPrismaStartupChecks() {
   const primaryResult = await canConnect(prisma, runtimeChoice.primary?.source ?? "PRIMARY");
   if (!primaryResult.ok) {
-    if (prismaAuthFallback !== prisma) {
+    if (prismaSessionPoolerFallback) {
+      const sessionFallbackResult = await canConnect(
+        prismaSessionPoolerFallback,
+        "DATABASE_URL_SESSION_POOLER"
+      );
+      if (sessionFallbackResult.ok) {
+        prisma = prismaSessionPoolerFallback;
+        console.warn("PRISMA_FAILOVER_ENABLED", {
+          primarySource: primaryResult.source,
+          source: "DATABASE_URL_SESSION_POOLER",
+          ...summarizeDatasource(prismaSessionPoolerDatasourceUrl)
+        });
+      } else {
+        console.error("PRISMA_SESSION_POOLER_FALLBACK_FAILED", {
+          primarySource: primaryResult.source,
+          source: sessionFallbackResult.source,
+          error: sessionFallbackResult.error
+        });
+      }
+    }
+
+    if (primaryResult.ok || prisma !== primaryPrismaClient) {
+      // Primary recovered or fallback already enabled.
+    } else if (prismaAuthFallback !== prisma) {
       const fallbackSource = runtimeChoice.alternate?.source ?? "ALTERNATE";
       const fallbackResult = await canConnect(prismaAuthFallback, fallbackSource);
       if (fallbackResult.ok) {
