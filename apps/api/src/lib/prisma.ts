@@ -102,22 +102,55 @@ function expandSupabasePoolerVariants(rawUrl: string) {
 
   try {
     const parsed = new URL(rawUrl);
-    const match = parsed.hostname
-      .toLowerCase()
-      .match(/^aws-(\d+)-([a-z0-9-]+)\.pooler\.supabase\.com$/);
+    const isPostgres = parsed.protocol === "postgresql:" || parsed.protocol === "postgres:";
+    if (!isPostgres) {
+      return Array.from(results);
+    }
+
+    const match = parsed.hostname.toLowerCase().match(/^aws-(\d+)-([a-z0-9-]+)\.pooler\.supabase\.com$/);
     if (!match) {
       return Array.from(results);
     }
 
     const currentIndex = Number(match[1]);
     const region = match[2];
+
+    const hostVariants = new Set<string>([parsed.hostname]);
     for (const index of [0, 1]) {
       if (index === currentIndex) {
         continue;
       }
-      const variant = new URL(rawUrl);
-      variant.hostname = `aws-${index}-${region}.pooler.supabase.com`;
-      results.add(variant.toString());
+      hostVariants.add(`aws-${index}-${region}.pooler.supabase.com`);
+    }
+
+    const portVariants = new Set<string>([parsed.port || "5432"]);
+    portVariants.add("5432");
+    portVariants.add("6543");
+
+    for (const host of hostVariants) {
+      for (const port of portVariants) {
+        const variant = new URL(rawUrl);
+        variant.hostname = host;
+        variant.port = port;
+
+        if (port === "6543") {
+          if (!variant.searchParams.get("pgbouncer")) {
+            variant.searchParams.set("pgbouncer", "true");
+          }
+          if (!variant.searchParams.get("connection_limit")) {
+            variant.searchParams.set("connection_limit", "1");
+          }
+        } else {
+          variant.searchParams.delete("pgbouncer");
+          variant.searchParams.delete("connection_limit");
+        }
+
+        if (!variant.searchParams.get("sslmode")) {
+          variant.searchParams.set("sslmode", "require");
+        }
+
+        results.add(variant.toString());
+      }
     }
   } catch {
     // Keep original URL only.
