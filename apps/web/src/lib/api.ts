@@ -5,20 +5,57 @@ function normalizeBaseUrl(raw: string | undefined) {
   return (raw ?? "").trim().replace(/\/+$/, "");
 }
 
+function isLocalDevHost(hostname: string) {
+  const normalized = hostname.trim().toLowerCase();
+  return (
+    normalized === "localhost" ||
+    normalized === "127.0.0.1" ||
+    normalized === "0.0.0.0"
+  );
+}
+
+function isRenderHostedUrl(raw: string) {
+  try {
+    const parsed = new URL(raw);
+    return parsed.hostname.toLowerCase().endsWith(".onrender.com");
+  } catch {
+    return false;
+  }
+}
+
 const configuredApiBaseUrl = normalizeBaseUrl(
   process.env.NEXT_PUBLIC_API_BASE_URL ?? process.env.NEXT_PUBLIC_API_URL
 );
 const fallbackApiBaseUrl =
   process.env.NODE_ENV === "production"
-    ? "https://solar-lead.onrender.com"
+    ? ""
     : "http://localhost:4000";
 
-const apiBaseUrl = configuredApiBaseUrl || fallbackApiBaseUrl;
+const runningLocallyInBrowser =
+  typeof window !== "undefined" && isLocalDevHost(window.location.hostname);
+const shouldUseLocalApiForDev =
+  process.env.NODE_ENV !== "production" &&
+  runningLocallyInBrowser &&
+  Boolean(configuredApiBaseUrl) &&
+  isRenderHostedUrl(configuredApiBaseUrl);
+
+const apiBaseUrl = shouldUseLocalApiForDev
+  ? "http://localhost:4000"
+  : configuredApiBaseUrl || fallbackApiBaseUrl;
 
 if (!configuredApiBaseUrl) {
   console.error("API_CONFIG_ERROR", {
-    reason: "MISSING_NEXT_PUBLIC_API_BASE_URL",
+    reason:
+      process.env.NODE_ENV === "production"
+        ? "MISSING_NEXT_PUBLIC_API_BASE_URL_IN_PRODUCTION"
+        : "MISSING_NEXT_PUBLIC_API_BASE_URL",
     fallbackApiBaseUrl
+  });
+} else if (shouldUseLocalApiForDev) {
+  console.warn("API_CONFIG_WARNING", {
+    reason: "REMOTE_API_URL_IN_LOCAL_DEV",
+    configuredApiBaseUrl,
+    selectedApiBaseUrl: apiBaseUrl
   });
 }
 

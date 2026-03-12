@@ -14,7 +14,7 @@ let pendingQueue: Array<{ resolve: () => void; reject: (error: unknown) => void 
 function normalizeBaseUrl(rawValue: string | undefined) {
   const trimmed = (rawValue || "").trim();
   if (!trimmed) {
-    return "http://127.0.0.1:4000";
+    return "https://solar-lead.onrender.com";
   }
   return trimmed.replace(/\/+$/, "");
 }

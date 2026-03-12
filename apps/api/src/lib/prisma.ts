@@ -92,22 +92,26 @@ function scoreRuntimeUrl(rawUrl: string, source: RuntimeCandidate["source"]) {
     const parsed = new URL(rawUrl);
     const host = parsed.hostname.toLowerCase();
     const port = parsed.port || "5432";
+    const isSupabasePooler = host.endsWith(".pooler.supabase.com");
 
-    // In hosted environments, direct URL is generally more reliable than a broken/blocked pooler.
-    if (source === "DIRECT_URL" && isHostedRuntime) {
-      return 3;
-    }
-
-    // Prefer Supabase pooler endpoints in hosted environments.
-    if (host.endsWith(".pooler.supabase.com")) {
-      // Supabase pooler commonly uses 6543. A pooler host on 5432 often indicates
-      // a misconfigured runtime URL and is less reliable than a valid DIRECT_URL.
-      if (port === "5432") {
-        return 0.5;
+    // Runtime app traffic should use DATABASE_URL (pooler-first).
+    if (source === "DATABASE_URL") {
+      if (isSupabasePooler) {
+        // Prefer canonical Supabase pooler port for runtime.
+        return port === "5432" ? 25 : 30;
       }
-      return 2;
+      return 20;
     }
-    return 1;
+
+    // DIRECT_URL is intended primarily for migrations and acts as runtime fallback only.
+    if (source === "DIRECT_URL") {
+      if (isSupabasePooler) {
+        return 15;
+      }
+      return isHostedRuntime ? 10 : 12;
+    }
+
+    return 0;
   } catch {
     return 0;
   }
