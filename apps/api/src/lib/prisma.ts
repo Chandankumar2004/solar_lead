@@ -89,7 +89,42 @@ type RuntimeCandidate = {
   source: "DATABASE_URL" | "DIRECT_URL";
   rawUrl: string;
   score: number;
+  priority: number;
 };
+
+function expandSupabasePoolerVariants(rawUrl: string) {
+  const results = new Set<string>();
+  if (!rawUrl.trim()) {
+    return [];
+  }
+
+  results.add(rawUrl);
+
+  try {
+    const parsed = new URL(rawUrl);
+    const match = parsed.hostname
+      .toLowerCase()
+      .match(/^aws-(\d+)-([a-z0-9-]+)\.pooler\.supabase\.com$/);
+    if (!match) {
+      return Array.from(results);
+    }
+
+    const currentIndex = Number(match[1]);
+    const region = match[2];
+    for (const index of [0, 1]) {
+      if (index === currentIndex) {
+        continue;
+      }
+      const variant = new URL(rawUrl);
+      variant.hostname = `aws-${index}-${region}.pooler.supabase.com`;
+      results.add(variant.toString());
+    }
+  } catch {
+    // Keep original URL only.
+  }
+
+  return Array.from(results);
+}
 
 function scoreRuntimeUrl(rawUrl: string, source: RuntimeCandidate["source"]) {
   try {
@@ -123,23 +158,30 @@ function scoreRuntimeUrl(rawUrl: string, source: RuntimeCandidate["source"]) {
 
 function pickRuntimeCandidates(databaseUrl: string, directUrl: string) {
   const candidates: RuntimeCandidate[] = [];
+  let priority = 0;
   if (databaseUrl) {
-    candidates.push({
-      source: "DATABASE_URL",
-      rawUrl: databaseUrl,
-      score: scoreRuntimeUrl(databaseUrl, "DATABASE_URL")
-    });
+    for (const url of expandSupabasePoolerVariants(databaseUrl)) {
+      candidates.push({
+        source: "DATABASE_URL",
+        rawUrl: url,
+        score: scoreRuntimeUrl(url, "DATABASE_URL"),
+        priority: priority++
+      });
+    }
   }
   // Keep DATABASE_URL as primary for runtime, but always keep DIRECT_URL as an alternate
   // candidate when it is provided and different. This allows automatic failover when
   // pooler connectivity is unstable in hosted environments.
   const allowDirectAsRuntimeCandidate = Boolean(directUrl) && directUrl !== databaseUrl;
   if (allowDirectAsRuntimeCandidate) {
-    candidates.push({
-      source: "DIRECT_URL",
-      rawUrl: directUrl,
-      score: scoreRuntimeUrl(directUrl, "DIRECT_URL")
-    });
+    for (const url of expandSupabasePoolerVariants(directUrl)) {
+      candidates.push({
+        source: "DIRECT_URL",
+        rawUrl: url,
+        score: scoreRuntimeUrl(url, "DIRECT_URL"),
+        priority: priority++
+      });
+    }
   }
   if (candidates.length === 0) {
     return { primary: null, alternate: null };
@@ -151,7 +193,7 @@ function pickRuntimeCandidates(databaseUrl: string, directUrl: string) {
     }
     // Stable preference: DATABASE_URL before DIRECT_URL when equal.
     if (a.source === b.source) {
-      return 0;
+      return a.priority - b.priority;
     }
     return a.source === "DATABASE_URL" ? -1 : 1;
   });
