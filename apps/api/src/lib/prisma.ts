@@ -130,7 +130,10 @@ function pickRuntimeCandidates(databaseUrl: string, directUrl: string) {
       score: scoreRuntimeUrl(databaseUrl, "DATABASE_URL")
     });
   }
-  const allowDirectAsRuntimeCandidate = Boolean(directUrl) && (!isHostedRuntime || !databaseUrl);
+  // Keep DATABASE_URL as primary for runtime, but always keep DIRECT_URL as an alternate
+  // candidate when it is provided and different. This allows automatic failover when
+  // pooler connectivity is unstable in hosted environments.
+  const allowDirectAsRuntimeCandidate = Boolean(directUrl) && directUrl !== databaseUrl;
   if (allowDirectAsRuntimeCandidate) {
     candidates.push({
       source: "DIRECT_URL",
