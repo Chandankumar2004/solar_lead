@@ -19,13 +19,15 @@ WORKDIR /app
 ENV NODE_ENV=production
 RUN corepack enable
 COPY --from=deps /app/node_modules /app/node_modules
-COPY --from=deps /app/apps/api/node_modules /app/apps/api/node_modules
-COPY --from=deps /app/packages/shared/node_modules /app/packages/shared/node_modules
 COPY --from=build /app/apps/api/dist /app/apps/api/dist
 COPY --from=build /app/apps/api/prisma /app/apps/api/prisma
 COPY --from=build /app/packages/shared/dist /app/packages/shared/dist
 COPY --from=build /app/apps/api/package.json /app/apps/api/package.json
 COPY --from=build /app/packages/shared/package.json /app/packages/shared/package.json
+RUN mkdir -p /app/node_modules/@solar /app/apps/api /app/packages/shared && \
+    ln -sf /app/packages/shared /app/node_modules/@solar/shared && \
+    ln -sf /app/node_modules /app/apps/api/node_modules && \
+    ln -sf /app/node_modules /app/packages/shared/node_modules
 WORKDIR /app/apps/api
 EXPOSE 10000
 CMD ["node", "dist/index.js"]
