@@ -184,7 +184,7 @@ function pickRuntimeCandidates(databaseUrl: string, directUrl: string) {
     }
   }
   if (candidates.length === 0) {
-    return { primary: null, alternate: null };
+    return { primary: null, alternates: [] as RuntimeCandidate[] };
   }
 
   candidates.sort((a, b) => {
@@ -200,15 +200,27 @@ function pickRuntimeCandidates(databaseUrl: string, directUrl: string) {
 
   return {
     primary: candidates[0] ?? null,
-    alternate: candidates[1] ?? null
+    alternates: candidates.slice(1)
   };
 }
 
 const runtimeChoice = pickRuntimeCandidates(runtimeDatabaseUrl, runtimeDirectUrl);
 const rawPrismaUrl = runtimeChoice.primary?.rawUrl ?? "";
 const prismaDatasourceUrl = normalizePrismaDatasourceUrl(rawPrismaUrl);
-const alternateRawPrismaUrl = runtimeChoice.alternate?.rawUrl ?? "";
-const prismaAlternateDatasourceUrl = normalizePrismaDatasourceUrl(alternateRawPrismaUrl);
+const runtimeAlternateCandidates = runtimeChoice.alternates
+  .map((candidate) => ({
+    source: candidate.source,
+    rawUrl: candidate.rawUrl,
+    normalizedUrl: normalizePrismaDatasourceUrl(candidate.rawUrl)
+  }))
+  .filter((candidate) => Boolean(candidate.normalizedUrl))
+  .filter((candidate) => candidate.normalizedUrl !== prismaDatasourceUrl)
+  .filter(
+    (candidate, index, all) =>
+      all.findIndex((entry) => entry.normalizedUrl === candidate.normalizedUrl) === index
+  );
+
+const prismaAlternateDatasourceUrl = runtimeAlternateCandidates[0]?.normalizedUrl ?? "";
 const configuredSessionPoolerFallbackUrl = (process.env.DATABASE_URL_SESSION_FALLBACK ?? "").trim();
 
 function deriveSupabaseSessionPoolerUrl(rawUrl: string) {
@@ -303,7 +315,9 @@ const primaryPrismaClient = prismaDatasourceUrl
 const prismaSessionPoolerFallback =
   prismaSessionPoolerDatasourceUrl &&
   prismaSessionPoolerDatasourceUrl !== prismaDatasourceUrl &&
-  prismaSessionPoolerDatasourceUrl !== prismaAlternateDatasourceUrl
+  !runtimeAlternateCandidates.some(
+    (candidate) => candidate.normalizedUrl === prismaSessionPoolerDatasourceUrl
+  )
     ? new PrismaClient({
         datasources: {
           db: {
@@ -332,6 +346,21 @@ export const prismaAuthFallback =
         }
       })
     : primaryPrismaClient;
+
+const prismaAlternateFallbacks = runtimeAlternateCandidates.map((candidate) => ({
+  source: candidate.source,
+  normalizedUrl: candidate.normalizedUrl,
+  client:
+    candidate.normalizedUrl === prismaAlternateDatasourceUrl && prismaAuthFallback !== primaryPrismaClient
+      ? prismaAuthFallback
+      : new PrismaClient({
+          datasources: {
+            db: {
+              url: candidate.normalizedUrl
+            }
+          }
+        })
+}));
 
 export let prisma = primaryPrismaClient;
 let prismaConnected = false;
@@ -405,15 +434,29 @@ export async function runPrismaStartupChecks(options?: { quiet?: boolean }): Pro
 
     if (primaryResult.ok || prisma !== primaryPrismaClient) {
       // Primary recovered or fallback already enabled.
-    } else if (prismaAuthFallback !== prisma) {
-      const fallbackSource = runtimeChoice.alternate?.source ?? "ALTERNATE";
-      const fallbackResult = await canConnect(prismaAuthFallback, fallbackSource);
-      if (fallbackResult.ok) {
-        prisma = prismaAuthFallback;
+    } else if (prismaAlternateFallbacks.length > 0) {
+      let connectedFallback: (typeof prismaAlternateFallbacks)[number] | null = null;
+      let lastFallbackResult: ConnectionCheck | null = null;
+
+      for (const fallback of prismaAlternateFallbacks) {
+        if (fallback.client === prisma) {
+          continue;
+        }
+
+        const fallbackResult = await canConnect(fallback.client, fallback.source);
+        if (fallbackResult.ok) {
+          connectedFallback = fallback;
+          break;
+        }
+        lastFallbackResult = fallbackResult;
+      }
+
+      if (connectedFallback) {
+        prisma = connectedFallback.client;
         console.warn("PRISMA_FAILOVER_ENABLED", {
           primarySource: primaryResult.source,
-          source: fallbackSource,
-          ...summarizeDatasource(prismaAlternateDatasourceUrl)
+          source: connectedFallback.source,
+          ...summarizeDatasource(connectedFallback.normalizedUrl)
         });
       } else {
         prismaConnected = false;
@@ -424,10 +467,12 @@ export async function runPrismaStartupChecks(options?: { quiet?: boolean }): Pro
               source: primaryResult.source,
               error: primaryResult.error
             },
-            fallback: {
-              source: fallbackResult.source,
-              error: fallbackResult.error
-            }
+            fallback: lastFallbackResult
+              ? {
+                  source: lastFallbackResult.source,
+                  error: lastFallbackResult.error
+                }
+              : null
           });
         }
         return false;
