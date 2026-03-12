@@ -223,6 +223,7 @@ See `DEVOPS.md` for target deployment architecture:
 - Monitoring: CloudWatch + Sentry
 
 ## Render Deployment Checklist (Web + API)
+- Pin Node to `20.x` in Render (or rely on repo `.node-version` / `engines`) to avoid Prisma runtime init failures on newer default Node versions.
 - API service root directory: `apps/api`
 - API build command: `pnpm install --frozen-lockfile --prod=false && pnpm build`
 - API start command: `NODE_ENV=production pnpm start`
