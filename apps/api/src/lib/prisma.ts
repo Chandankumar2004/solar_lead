@@ -311,22 +311,6 @@ async function canConnect(client: PrismaClient, sourceLabel: string): Promise<Co
   }
 }
 
-function compactError(error: unknown) {
-  if (error && typeof error === "object") {
-    const maybeError = error as { name?: unknown; message?: unknown; code?: unknown };
-    return {
-      name: typeof maybeError.name === "string" ? maybeError.name : null,
-      code: typeof maybeError.code === "string" ? maybeError.code : null,
-      message: typeof maybeError.message === "string" ? maybeError.message : String(error)
-    };
-  }
-  return {
-    name: null,
-    code: null,
-    message: String(error)
-  };
-}
-
 async function checkAppUserTable() {
   try {
     const rows = await prisma.$queryRaw<Array<{ users: string | null; user: string | null }>>`
@@ -350,7 +334,7 @@ async function checkAppUserTable() {
   }
 }
 
-export async function runPrismaStartupChecks(options?: { quiet?: boolean }) {
+export async function runPrismaStartupChecks(options?: { quiet?: boolean }): Promise<boolean> {
   const quiet = options?.quiet === true;
   const primaryResult = await canConnect(prisma, runtimeChoice.primary?.source ?? "PRIMARY");
   if (!primaryResult.ok) {
@@ -367,11 +351,13 @@ export async function runPrismaStartupChecks(options?: { quiet?: boolean }) {
           ...summarizeDatasource(prismaSessionPoolerDatasourceUrl)
         });
       } else {
-        (quiet ? console.warn : console.error)("PRISMA_SESSION_POOLER_FALLBACK_FAILED", {
-          primarySource: primaryResult.source,
-          source: sessionFallbackResult.source,
-          error: quiet ? compactError(sessionFallbackResult.error) : sessionFallbackResult.error
-        });
+        if (!quiet) {
+          console.error("PRISMA_SESSION_POOLER_FALLBACK_FAILED", {
+            primarySource: primaryResult.source,
+            source: sessionFallbackResult.source,
+            error: sessionFallbackResult.error
+          });
+        }
       }
     }
 
@@ -389,27 +375,31 @@ export async function runPrismaStartupChecks(options?: { quiet?: boolean }) {
         });
       } else {
         prismaConnected = false;
-        (quiet ? console.warn : console.error)("PRISMA_INIT_ERROR", {
-          reason: "DATABASE_CONNECTION_FAILED",
-          primary: {
-            source: primaryResult.source,
-            error: quiet ? compactError(primaryResult.error) : primaryResult.error
-          },
-          fallback: {
-            source: fallbackResult.source,
-            error: quiet ? compactError(fallbackResult.error) : fallbackResult.error
-          }
-        });
-        return;
+        if (!quiet) {
+          console.error("PRISMA_INIT_ERROR", {
+            reason: "DATABASE_CONNECTION_FAILED",
+            primary: {
+              source: primaryResult.source,
+              error: primaryResult.error
+            },
+            fallback: {
+              source: fallbackResult.source,
+              error: fallbackResult.error
+            }
+          });
+        }
+        return false;
       }
     } else {
       prismaConnected = false;
-      (quiet ? console.warn : console.error)("PRISMA_INIT_ERROR", {
-        reason: "DATABASE_CONNECTION_FAILED",
-        source: primaryResult.source,
-        error: quiet ? compactError(primaryResult.error) : primaryResult.error
-      });
-      return;
+      if (!quiet) {
+        console.error("PRISMA_INIT_ERROR", {
+          reason: "DATABASE_CONNECTION_FAILED",
+          source: primaryResult.source,
+          error: primaryResult.error
+        });
+      }
+      return false;
     }
   }
 
@@ -439,4 +429,5 @@ export async function runPrismaStartupChecks(options?: { quiet?: boolean }) {
   }
 
   await checkAppUserTable();
+  return true;
 }

@@ -10,7 +10,13 @@ async function start() {
   });
   // Keep startup non-blocking for platform port detection.
   void runStartupHealthChecks();
-  void runPrismaStartupChecks();
+  void runPrismaStartupChecks({ quiet: true }).then((connected) => {
+    if (!connected) {
+      console.warn("PRISMA_DEGRADED_MODE", {
+        reason: "DATABASE_UNAVAILABLE_ON_STARTUP"
+      });
+    }
+  });
   startSlaOverdueMonitor();
 }
 
