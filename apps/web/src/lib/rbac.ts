@@ -4,8 +4,7 @@ import type { Route } from "next";
 export const ALL_ADMIN_ROLES: AdminRole[] = [
   "SUPER_ADMIN",
   "ADMIN",
-  "DISTRICT_MANAGER",
-  "FIELD_EXECUTIVE"
+  "DISTRICT_MANAGER"
 ];
 
 export type NavItem = {
@@ -19,7 +18,7 @@ export const ADMIN_NAV_ITEMS: NavItem[] = [
   { href: "/leads", label: "Leads", roles: ALL_ADMIN_ROLES },
   { href: "/users", label: "Users", roles: ["SUPER_ADMIN", "ADMIN"] },
   { href: "/districts", label: "Districts", roles: ["SUPER_ADMIN"] },
-  { href: "/workflow", label: "Workflow", roles: ["SUPER_ADMIN", "ADMIN"] },
+  { href: "/workflow", label: "Workflow", roles: ["SUPER_ADMIN"] },
   {
     href: "/documents-review",
     label: "Documents Review",
@@ -30,7 +29,7 @@ export const ADMIN_NAV_ITEMS: NavItem[] = [
     label: "Payments Verification",
     roles: ["SUPER_ADMIN", "ADMIN", "DISTRICT_MANAGER"]
   },
-  { href: "/notifications", label: "Notifications", roles: ALL_ADMIN_ROLES }
+  { href: "/notifications", label: "Notifications", roles: ["SUPER_ADMIN", "ADMIN"] }
 ];
 
 const ROUTE_ACCESS = [
@@ -38,7 +37,7 @@ const ROUTE_ACCESS = [
   { pattern: /^\/leads(\/[^/]+)?$/, roles: ALL_ADMIN_ROLES },
   { pattern: /^\/users(\/.*)?$/, roles: ["SUPER_ADMIN", "ADMIN"] as AdminRole[] },
   { pattern: /^\/districts$/, roles: ["SUPER_ADMIN"] as AdminRole[] },
-  { pattern: /^\/workflow$/, roles: ["SUPER_ADMIN", "ADMIN"] as AdminRole[] },
+  { pattern: /^\/workflow$/, roles: ["SUPER_ADMIN"] as AdminRole[] },
   {
     pattern: /^\/documents-review$/,
     roles: ["SUPER_ADMIN", "ADMIN", "DISTRICT_MANAGER"] as AdminRole[]
@@ -47,7 +46,10 @@ const ROUTE_ACCESS = [
     pattern: /^\/payments-verification$/,
     roles: ["SUPER_ADMIN", "ADMIN", "DISTRICT_MANAGER"] as AdminRole[]
   },
-  { pattern: /^\/notifications$/, roles: ALL_ADMIN_ROLES }
+  {
+    pattern: /^\/notifications$/,
+    roles: ["SUPER_ADMIN", "ADMIN"] as AdminRole[]
+  }
 ];
 
 export function hasRouteAccess(pathname: string, role: AdminRole) {

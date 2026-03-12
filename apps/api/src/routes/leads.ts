@@ -20,6 +20,10 @@ import {
 import { createAuditLog, requestIp } from "../services/audit-log.service.js";
 import { validateBody, validateParams, validateQuery } from "../middleware/validate.js";
 import { AppError } from "../lib/errors.js";
+import {
+  assertDistrictAccessForLeadCreation,
+  scopeLeadWhere
+} from "../services/lead-access.service.js";
 
 export const leadsRouter = Router();
 
@@ -286,6 +290,14 @@ function maskSensitiveLast4(value: string | null | undefined) {
   return `${"*".repeat(compact.length - 4)}${compact.slice(-4)}`;
 }
 
+function canViewUnmaskedSensitiveLeadData(role: string) {
+  return role === "SUPER_ADMIN" || role === "ADMIN";
+}
+
+type CustomerDetailResponseOptions = {
+  includeSensitiveFields?: boolean;
+};
+
 function toCustomerDetailResponse(detail: {
   id: string;
   fullName: string;
@@ -318,7 +330,9 @@ function toCustomerDetailResponse(detail: {
   preferredLender: string | null;
   createdAt: Date;
   updatedAt: Date;
-}) {
+}, options: CustomerDetailResponseOptions = {}) {
+  const includeSensitiveFields = options.includeSensitiveFields ?? false;
+  const panNumber = detail.panEncrypted ? detail.panEncrypted.toUpperCase() : null;
   return {
     id: detail.id,
     fullName: detail.fullName,
@@ -326,7 +340,8 @@ function toCustomerDetailResponse(detail: {
     gender: detail.gender,
     fatherHusbandName: detail.fatherHusbandName,
     aadhaarMasked: maskSensitiveLast4(detail.aadhaarEncrypted),
-    panNumber: detail.panEncrypted ? detail.panEncrypted.toUpperCase() : null,
+    panNumber: includeSensitiveFields ? panNumber : null,
+    panMasked: maskSensitiveLast4(panNumber),
     addressLine1: detail.addressLine1,
     addressLine2: detail.addressLine2,
     villageLocality: detail.villageLocality,
@@ -351,6 +366,20 @@ function toCustomerDetailResponse(detail: {
     preferredLender: detail.preferredLender,
     createdAt: detail.createdAt,
     updatedAt: detail.updatedAt
+  };
+}
+
+function sanitizeLeadResponseForRole(lead: any, role: string) {
+  if (!lead || typeof lead !== "object") {
+    return lead;
+  }
+
+  const includeSensitiveFields = canViewUnmaskedSensitiveLeadData(role);
+  return {
+    ...lead,
+    customerDetail: lead.customerDetail
+      ? toCustomerDetailResponse(lead.customerDetail, { includeSensitiveFields })
+      : null
   };
 }
 
@@ -594,12 +623,13 @@ leadsRouter.get("/", validateQuery(listLeadsQuerySchema), async (req: Request, r
 
   const where: Prisma.LeadWhereInput =
     whereClauses.length > 0 ? { AND: whereClauses } : {};
+  const scopedWhere = scopeLeadWhere(req.user!, where);
 
   const skip = (query.page - 1) * query.pageSize;
   const [total, leads] = await prisma.$transaction([
-    prisma.lead.count({ where }),
+    prisma.lead.count({ where: scopedWhere }),
     prisma.lead.findMany({
-      where,
+      where: scopedWhere,
       skip,
       take: query.pageSize,
       orderBy: { createdAt: "desc" },
@@ -626,15 +656,19 @@ leadsRouter.get(
   async (req: Request, res: Response) => {
     const { id } = req.params as z.infer<typeof leadIdParamSchema>;
 
-    const lead = await prisma.lead.findUnique({
-      where: { id },
+    const lead = await prisma.lead.findFirst({
+      where: scopeLeadWhere(req.user!, { id }),
       include: detailInclude
     });
     if (!lead) {
       throw new AppError(404, "NOT_FOUND", "Lead not found");
     }
 
-    return ok(res, lead, "Lead detail fetched");
+    return ok(
+      res,
+      sanitizeLeadResponseForRole(lead, req.user!.role),
+      "Lead detail fetched"
+    );
   }
 );
 
@@ -644,8 +678,8 @@ leadsRouter.get(
   async (req: Request, res: Response) => {
     const { id } = req.params as z.infer<typeof leadIdParamSchema>;
 
-    const lead = await prisma.lead.findUnique({
-      where: { id },
+    const lead = await prisma.lead.findFirst({
+      where: scopeLeadWhere(req.user!, { id }),
       select: {
         id: true,
         currentStatusId: true,
@@ -702,8 +736,8 @@ leadsRouter.get(
   async (req: Request, res: Response) => {
     const { id } = req.params as z.infer<typeof leadIdParamSchema>;
 
-    const lead = await prisma.lead.findUnique({
-      where: { id },
+    const lead = await prisma.lead.findFirst({
+      where: scopeLeadWhere(req.user!, { id }),
       select: {
         id: true,
         currentStatus: {
@@ -732,7 +766,9 @@ leadsRouter.get(
         currentStatus: lead.currentStatus,
         isEditable,
         customerDetail: lead.customerDetail
-          ? toCustomerDetailResponse(lead.customerDetail)
+          ? toCustomerDetailResponse(lead.customerDetail, {
+              includeSensitiveFields: canViewUnmaskedSensitiveLeadData(req.user!.role)
+            })
           : null
       },
       "Customer details fetched"
@@ -748,8 +784,8 @@ leadsRouter.put(
     const { id } = req.params as z.infer<typeof leadIdParamSchema>;
     const payload = req.body as z.infer<typeof customerDetailsBodySchema>;
 
-    const lead = await prisma.lead.findUnique({
-      where: { id },
+    const lead = await prisma.lead.findFirst({
+      where: scopeLeadWhere(req.user!, { id }),
       select: {
         id: true,
         name: true,
@@ -951,7 +987,9 @@ leadsRouter.put(
         leadId: lead.id,
         currentStatus: lead.currentStatus,
         isEditable,
-        customerDetail: toCustomerDetailResponse(customerDetail)
+        customerDetail: toCustomerDetailResponse(customerDetail, {
+          includeSensitiveFields: canViewUnmaskedSensitiveLeadData(req.user!.role)
+        })
       },
       "Customer details saved"
     );
@@ -960,17 +998,19 @@ leadsRouter.put(
 
 leadsRouter.patch(
   "/:id",
+  allowRoles("SUPER_ADMIN", "ADMIN", "DISTRICT_MANAGER"),
   validateParams(leadIdParamSchema),
   validateBody(patchLeadSchema),
   async (req: Request, res: Response) => {
     const { id } = req.params as z.infer<typeof leadIdParamSchema>;
     const payload = req.body as z.infer<typeof patchLeadSchema>;
 
-    const existing = await prisma.lead.findUnique({
-      where: { id },
+    const existing = await prisma.lead.findFirst({
+      where: scopeLeadWhere(req.user!, { id }),
       select: {
         id: true,
         externalId: true,
+        districtId: true,
         assignedExecutiveId: true,
         assignedManagerId: true,
         isOverdue: true
@@ -985,6 +1025,16 @@ leadsRouter.patch(
       payload.assignedExecutiveId !== existing.assignedExecutiveId;
     const isExecutiveReassignment =
       existing.assignedExecutiveId !== null && isExecutiveAssignmentChanged;
+    const assignmentFieldsTouched =
+      payload.assignedExecutiveId !== undefined || payload.assignedManagerId !== undefined;
+
+    const actorRole = req.user!.role;
+    const canReassignLead =
+      actorRole === "SUPER_ADMIN" || actorRole === "ADMIN" || actorRole === "MANAGER";
+
+    if (assignmentFieldsTouched && !canReassignLead) {
+      throw new AppError(403, "FORBIDDEN", "You cannot reassign this lead");
+    }
 
     if (isExecutiveReassignment && !payload.reassignmentReason) {
       throw new AppError(
@@ -1004,13 +1054,23 @@ leadsRouter.patch(
       }
     }
 
+    const targetDistrictId = payload.districtId ?? existing.districtId;
+
     if (payload.assignedExecutiveId) {
       const executive = await prisma.user.findUnique({
         where: { id: payload.assignedExecutiveId },
         select: { id: true, role: true, status: true }
       });
-      if (!executive || executive.role !== "EXECUTIVE") {
-        throw new AppError(400, "INVALID_EXECUTIVE", "assignedExecutiveId must be an executive");
+      if (
+        !executive ||
+        executive.role !== "EXECUTIVE" ||
+        executive.status !== "ACTIVE"
+      ) {
+        throw new AppError(
+          400,
+          "INVALID_EXECUTIVE",
+          "assignedExecutiveId must be an active executive"
+        );
       }
     }
 
@@ -1019,8 +1079,70 @@ leadsRouter.patch(
         where: { id: payload.assignedManagerId },
         select: { id: true, role: true, status: true }
       });
-      if (!manager || manager.role !== "MANAGER") {
-        throw new AppError(400, "INVALID_MANAGER", "assignedManagerId must be a manager");
+      if (
+        !manager ||
+        manager.role !== "MANAGER" ||
+        manager.status !== "ACTIVE"
+      ) {
+        throw new AppError(400, "INVALID_MANAGER", "assignedManagerId must be an active manager");
+      }
+    }
+
+    if (actorRole === "MANAGER") {
+      if (payload.districtId !== undefined && payload.districtId !== existing.districtId) {
+        throw new AppError(
+          403,
+          "FORBIDDEN",
+          "District managers cannot move leads across districts"
+        );
+      }
+
+      if (
+        payload.assignedManagerId !== undefined &&
+        payload.assignedManagerId !== existing.assignedManagerId
+      ) {
+        throw new AppError(
+          403,
+          "FORBIDDEN",
+          "District managers cannot reassign district manager ownership"
+        );
+      }
+
+      if (payload.assignedExecutiveId !== undefined) {
+        if (!payload.assignedExecutiveId) {
+          throw new AppError(
+            400,
+            "INVALID_EXECUTIVE",
+            "District managers can only reassign to an active executive in their district"
+          );
+        }
+
+        if (!targetDistrictId) {
+          throw new AppError(
+            400,
+            "INVALID_DISTRICT",
+            "Lead district is required for district manager reassignment"
+          );
+        }
+
+        const executiveAssignment = await prisma.userDistrictAssignment.findFirst({
+          where: {
+            userId: payload.assignedExecutiveId,
+            districtId: targetDistrictId,
+            user: {
+              role: "EXECUTIVE",
+              status: "ACTIVE"
+            }
+          },
+          select: { id: true }
+        });
+        if (!executiveAssignment) {
+          throw new AppError(
+            400,
+            "INVALID_EXECUTIVE_DISTRICT_SCOPE",
+            "District manager can reassign only to executives mapped to the same district"
+          );
+        }
       }
     }
 
@@ -1084,7 +1206,11 @@ leadsRouter.patch(
       });
     }
 
-    return ok(res, updated, "Lead updated");
+    return ok(
+      res,
+      sanitizeLeadResponseForRole(updated, req.user!.role),
+      "Lead updated"
+    );
   }
 );
 
@@ -1138,6 +1264,7 @@ leadsRouter.post(
   validateBody(createLeadSchema),
   async (req: Request, res: Response) => {
     const { districtId, source, customer } = req.body as z.infer<typeof createLeadSchema>;
+    await assertDistrictAccessForLeadCreation(req.user!, districtId);
 
     const newStatus = await getNewLeadStatus();
     if (!newStatus) {
@@ -1306,7 +1433,11 @@ leadsRouter.post(
       });
     }
 
-    return created(res, lead, "Lead created");
+    return created(
+      res,
+      sanitizeLeadResponseForRole(lead, req.user!.role),
+      "Lead created"
+    );
   }
 );
 
@@ -1322,8 +1453,8 @@ leadsRouter.post(
       throw new AppError(401, "UNAUTHORIZED", "Login required");
     }
     try {
-      const lead = await prisma.lead.findUnique({
-        where: { id },
+      const lead = await prisma.lead.findFirst({
+        where: scopeLeadWhere(req.user!, { id }),
         include: {
           currentStatus: {
             select: { id: true, name: true, isTerminal: true }

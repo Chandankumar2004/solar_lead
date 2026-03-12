@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import useSWR from "swr";
 import { api } from "@/lib/api";
+import { useAuthStore } from "@/lib/auth-store";
 
 type ReviewStatus = "PENDING" | "VERIFIED" | "REJECTED";
 
@@ -72,6 +73,20 @@ function extractApiMessage(error: unknown) {
   return maybe.response?.data?.message ?? "Operation failed";
 }
 
+function inferMimeType(fileName: string, fileType?: string) {
+  if (fileType && fileType !== "application/octet-stream") {
+    return fileType;
+  }
+
+  const lower = fileName.toLowerCase();
+  if (lower.endsWith(".pdf")) return "application/pdf";
+  if (lower.endsWith(".png")) return "image/png";
+  if (lower.endsWith(".webp")) return "image/webp";
+  if (lower.endsWith(".heic")) return "image/heic";
+  if (lower.endsWith(".heif")) return "image/heif";
+  return "image/jpeg";
+}
+
 const STATUS_OPTIONS: Array<{ value: ReviewStatus; label: string }> = [
   { value: "PENDING", label: "Pending" },
   { value: "VERIFIED", label: "Verified" },
@@ -79,11 +94,18 @@ const STATUS_OPTIONS: Array<{ value: ReviewStatus; label: string }> = [
 ];
 
 export default function DocumentsReviewPage() {
+  const user = useAuthStore((state) => state.user);
+  const canUploadDocuments = user?.role === "SUPER_ADMIN" || user?.role === "ADMIN";
   const [status, setStatus] = useState<ReviewStatus>("PENDING");
   const [search, setSearch] = useState("");
   const [districtId, setDistrictId] = useState("");
   const [executiveId, setExecutiveId] = useState("");
   const [category, setCategory] = useState("");
+  const [uploadLeadId, setUploadLeadId] = useState("");
+  const [uploadCategory, setUploadCategory] = useState("general");
+  const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [uploadSubmitting, setUploadSubmitting] = useState(false);
+  const [uploadInputKey, setUploadInputKey] = useState(0);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
   const [selectedDocumentId, setSelectedDocumentId] = useState<string | null>(null);
@@ -93,6 +115,10 @@ export default function DocumentsReviewPage() {
   const [reviewNotes, setReviewNotes] = useState("");
   const [actionLoading, setActionLoading] = useState<"verify" | "reject" | null>(null);
   const [actionMessage, setActionMessage] = useState<{
+    type: "success" | "error";
+    text: string;
+  } | null>(null);
+  const [uploadMessage, setUploadMessage] = useState<{
     type: "success" | "error";
     text: string;
   } | null>(null);
@@ -224,6 +250,67 @@ export default function DocumentsReviewPage() {
     }
   };
 
+  const submitUpload = async () => {
+    if (!canUploadDocuments) return;
+    const leadId = uploadLeadId.trim();
+    const categoryValue = uploadCategory.trim().length >= 2 ? uploadCategory.trim() : "general";
+
+    if (!leadId) {
+      setUploadMessage({ type: "error", text: "Lead ID is required." });
+      return;
+    }
+    if (!uploadFile) {
+      setUploadMessage({ type: "error", text: "Please select a file." });
+      return;
+    }
+
+    const fileType = inferMimeType(uploadFile.name, uploadFile.type);
+    setUploadSubmitting(true);
+    setUploadMessage(null);
+    try {
+      const presignResponse = await api.post(`/api/leads/${leadId}/documents/presign`, {
+        category: categoryValue,
+        fileName: uploadFile.name,
+        fileType,
+        fileSize: uploadFile.size
+      });
+
+      const uploadUrl = presignResponse.data?.data?.uploadUrl as string | undefined;
+      const s3Key = presignResponse.data?.data?.s3Key as string | undefined;
+      if (!uploadUrl || !s3Key) {
+        throw new Error("Upload URL generation failed.");
+      }
+
+      const putResponse = await fetch(uploadUrl, {
+        method: "PUT",
+        headers: {
+          "Content-Type": fileType
+        },
+        body: uploadFile
+      });
+      if (!putResponse.ok) {
+        throw new Error(`File upload failed (${putResponse.status})`);
+      }
+
+      await api.post(`/api/leads/${leadId}/documents/complete`, {
+        category: categoryValue,
+        s3Key,
+        fileName: uploadFile.name,
+        fileType,
+        fileSize: uploadFile.size
+      });
+
+      setUploadMessage({ type: "success", text: "Document uploaded successfully." });
+      setUploadFile(null);
+      setUploadInputKey((current) => current + 1);
+      await mutate();
+    } catch (error) {
+      setUploadMessage({ type: "error", text: extractApiMessage(error) });
+    } finally {
+      setUploadSubmitting(false);
+    }
+  };
+
   const renderPreview = () => {
     if (!selectedDocument) {
       return <p className="text-sm text-slate-500">Select a document to preview.</p>;
@@ -252,6 +339,49 @@ export default function DocumentsReviewPage() {
 
   return (
     <div className="space-y-4">
+      {canUploadDocuments ? (
+        <section className="rounded-xl bg-white p-4 shadow-sm">
+          <h2 className="text-base font-semibold">Upload Document</h2>
+          <div className="mt-3 grid gap-3 lg:grid-cols-4">
+            <input
+              value={uploadLeadId}
+              onChange={(event) => setUploadLeadId(event.target.value)}
+              placeholder="Lead ID (UUID)"
+              className="rounded-md border border-slate-300 px-3 py-2 text-sm"
+            />
+            <input
+              value={uploadCategory}
+              onChange={(event) => setUploadCategory(event.target.value)}
+              placeholder="Category (e.g. aadhaar)"
+              className="rounded-md border border-slate-300 px-3 py-2 text-sm"
+            />
+            <input
+              key={uploadInputKey}
+              type="file"
+              accept=".pdf,.jpg,.jpeg,.png,.webp,.heic,.heif"
+              onChange={(event) => setUploadFile(event.target.files?.[0] ?? null)}
+              className="rounded-md border border-slate-300 px-3 py-2 text-sm"
+            />
+            <button
+              onClick={() => void submitUpload()}
+              disabled={uploadSubmitting || !uploadFile}
+              className="rounded-md bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-700 disabled:opacity-60"
+            >
+              {uploadSubmitting ? "Uploading..." : "Upload Document"}
+            </button>
+          </div>
+          {uploadMessage ? (
+            <p
+              className={`mt-2 text-sm ${
+                uploadMessage.type === "success" ? "text-emerald-700" : "text-rose-700"
+              }`}
+            >
+              {uploadMessage.text}
+            </p>
+          ) : null}
+        </section>
+      ) : null}
+
       <section className="rounded-xl bg-white p-4 shadow-sm">
         <h2 className="text-base font-semibold">Documents Review Queue</h2>
         <div className="mt-3 grid gap-3 lg:grid-cols-5">

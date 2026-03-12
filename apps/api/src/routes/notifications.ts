@@ -16,6 +16,7 @@ import {
 import { createAuditLog, requestIp } from "../services/audit-log.service.js";
 
 export const notificationsRouter = Router();
+const allowNotificationManagers = allowRoles("SUPER_ADMIN", "ADMIN");
 
 const customerTemplateChannelSchema = z.enum(["SMS", "EMAIL", "WHATSAPP"]);
 
@@ -244,6 +245,7 @@ notificationsRouter.delete(
 
 notificationsRouter.post(
   "/internal",
+  allowNotificationManagers,
   validateBody(createInternalNotificationSchema),
   async (req, res) => {
     const body = req.body as z.infer<typeof createInternalNotificationSchema>;
@@ -263,7 +265,7 @@ notificationsRouter.post(
 
 notificationsRouter.get(
   "/templates",
-  allowRoles("SUPER_ADMIN", "ADMIN", "DISTRICT_MANAGER"),
+  allowNotificationManagers,
   validateQuery(templateListQuerySchema),
   async (req, res) => {
     const query = req.query as unknown as z.infer<typeof templateListQuerySchema>;
@@ -302,7 +304,7 @@ notificationsRouter.get(
 
 notificationsRouter.post(
   "/templates",
-  allowRoles("SUPER_ADMIN", "ADMIN"),
+  allowNotificationManagers,
   validateBody(createTemplateSchema),
   async (req, res) => {
     const body = req.body as z.infer<typeof createTemplateSchema>;
@@ -333,7 +335,7 @@ notificationsRouter.post(
 
 notificationsRouter.patch(
   "/templates/:id",
-  allowRoles("SUPER_ADMIN", "ADMIN"),
+  allowNotificationManagers,
   validateParams(notificationTemplateIdParamSchema),
   validateBody(patchTemplateSchema),
   async (req, res) => {
@@ -384,7 +386,7 @@ notificationsRouter.patch(
 
 notificationsRouter.delete(
   "/templates/:id",
-  allowRoles("SUPER_ADMIN", "ADMIN"),
+  allowNotificationManagers,
   validateParams(notificationTemplateIdParamSchema),
   async (req, res) => {
     const { id } = req.params as z.infer<typeof notificationTemplateIdParamSchema>;
@@ -416,7 +418,7 @@ notificationsRouter.delete(
 
 notificationsRouter.post(
   "/templates/:id/render",
-  allowRoles("SUPER_ADMIN", "ADMIN", "DISTRICT_MANAGER"),
+  allowNotificationManagers,
   validateParams(notificationTemplateIdParamSchema),
   validateBody(previewTemplateSchema),
   async (req, res) => {
@@ -502,7 +504,7 @@ notificationsRouter.post(
 
 notificationsRouter.get(
   "/logs",
-  allowRoles("SUPER_ADMIN", "ADMIN", "DISTRICT_MANAGER"),
+  allowNotificationManagers,
   validateQuery(logsQuerySchema),
   async (req, res) => {
     const query = req.query as unknown as z.infer<typeof logsQuerySchema>;
@@ -551,7 +553,6 @@ notificationsRouter.get(
         }
       });
     }
-
     const where: Prisma.NotificationLogWhereInput =
       whereClauses.length > 0 ? { AND: whereClauses } : {};
     const skip = (query.page - 1) * query.pageSize;
@@ -599,7 +600,7 @@ notificationsRouter.get(
 
 notificationsRouter.get(
   "/logs/:id",
-  allowRoles("SUPER_ADMIN", "ADMIN", "DISTRICT_MANAGER"),
+  allowNotificationManagers,
   validateParams(logIdParamSchema),
   async (req, res) => {
     const { id } = req.params as z.infer<typeof logIdParamSchema>;

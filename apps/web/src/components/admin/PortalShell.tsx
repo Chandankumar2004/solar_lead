@@ -31,6 +31,11 @@ export function PortalShell({ children }: PortalShellProps) {
           router.replace("/login");
           return;
         }
+        if (nextUser.role === "FIELD_EXECUTIVE") {
+          setUser(null);
+          router.replace("/login?error=portal_access_denied");
+          return;
+        }
         setUser(nextUser);
       } catch {
         if (!active) return;
@@ -50,12 +55,18 @@ export function PortalShell({ children }: PortalShellProps) {
 
   useEffect(() => {
     if (!user) return;
+    if (user.role === "FIELD_EXECUTIVE") {
+      setForbidden(true);
+      setUser(null);
+      router.replace("/login?error=portal_access_denied");
+      return;
+    }
     const allowed = hasRouteAccess(pathname, user.role);
     setForbidden(!allowed);
     if (!allowed) {
       router.replace("/dashboard");
     }
-  }, [pathname, router, user]);
+  }, [pathname, router, setUser, user]);
 
   const navItems = useMemo(() => {
     if (!user) return [];

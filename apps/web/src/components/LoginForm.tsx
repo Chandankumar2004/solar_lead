@@ -167,6 +167,11 @@ export function LoginForm() {
         setError("No app profile is mapped for this account");
         return;
       }
+      if (user.role === "FIELD_EXECUTIVE") {
+        await supabase.auth.signOut();
+        setError("This account is restricted to the mobile app and cannot access admin portal.");
+        return;
+      }
 
       setUser(user);
       router.push("/dashboard");

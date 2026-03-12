@@ -13,6 +13,7 @@ import {
   createDocumentUploadUrl,
   STORAGE_BUCKET_NAME
 } from "../services/storage/supabaseStorage.js";
+import { type LeadAccessActor, scopeLeadWhere } from "../services/lead-access.service.js";
 
 export const leadDocumentsRouter = Router({ mergeParams: true });
 
@@ -75,9 +76,9 @@ function assertFileTypeAndSize(fileType: string, fileSize: number) {
   }
 }
 
-async function ensureLeadExists(leadId: string) {
-  const lead = await prisma.lead.findUnique({
-    where: { id: leadId },
+async function ensureLeadExists(leadId: string, actor: LeadAccessActor) {
+  const lead = await prisma.lead.findFirst({
+    where: scopeLeadWhere(actor, { id: leadId }),
     select: { id: true }
   });
   if (!lead) {
@@ -161,7 +162,7 @@ leadDocumentsRouter.post(
     const body = req.body as z.infer<typeof createPresignSchema>;
 
     assertFileTypeAndSize(body.fileType, body.fileSize);
-    await ensureLeadExists(leadId);
+    await ensureLeadExists(leadId, req.user!);
 
     const safeCategory = body.category.toLowerCase().replace(/[^a-z0-9_-]/g, "_");
     const safeFileName = sanitizeFileName(body.fileName);
@@ -190,7 +191,7 @@ leadDocumentsRouter.post(
     const body = req.body as z.infer<typeof completeDocumentSchema>;
 
     assertFileTypeAndSize(body.fileType, body.fileSize);
-    await ensureLeadExists(leadId);
+    await ensureLeadExists(leadId, req.user!);
 
     const expectedPrefix = `leads/${leadId}/documents/`;
     if (!body.s3Key.startsWith(expectedPrefix)) {
@@ -246,7 +247,7 @@ leadDocumentsRouter.get(
     const { leadId } = req.params as z.infer<typeof leadIdParamSchema>;
     const query = req.query as unknown as z.infer<typeof listDocumentsQuerySchema>;
 
-    await ensureLeadExists(leadId);
+    await ensureLeadExists(leadId, req.user!);
 
     const documents = await prisma.document.findMany({
       where: {

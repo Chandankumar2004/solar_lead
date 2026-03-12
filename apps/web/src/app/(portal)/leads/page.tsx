@@ -66,7 +66,7 @@ function extractApiMessage(error: unknown) {
 
 export default function LeadsPage() {
   const user = useAuthStore((state) => state.user);
-  const canLoadTransitions = user?.role === "SUPER_ADMIN" || user?.role === "ADMIN";
+  const canLoadTransitions = user?.role === "SUPER_ADMIN";
   const canDeleteLead = user?.role === "SUPER_ADMIN";
 
   const [search, setSearch] = useState("");

@@ -1,0 +1,354 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [4 0 R 6 0 R 8 0 R] /Count 3 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
+endobj
+5 0 obj
+<< /Length 1863 >>
+stream
+BT
+/F1 10 Tf
+50 790 Td
+14 TL
+(Implementation Status) Tj
+T*
+() Tj
+T*
+(Last Updated: 2026-03-12) Tj
+T*
+() Tj
+T*
+(This document tracks how much of the system is implemented across frontend, backend, and) Tj
+T*
+(database/data layers.) Tj
+T*
+() Tj
+T*
+(1. Frontend Status) Tj
+T*
+() Tj
+T*
+(1.1 Public Landing \(Next.js\)) Tj
+T*
+(Status: Completed) Tj
+T*
+() Tj
+T*
+(Completed:) Tj
+T*
+(- Public lead form with validation and submission to backend REST API.) Tj
+T*
+(- District mapping integration.) Tj
+T*
+(- Duplicate-check and lead-capture flow.) Tj
+T*
+() Tj
+T*
+(1.2 Web Admin Portal \(Next.js\)) Tj
+T*
+(Status: Mostly Completed) Tj
+T*
+() Tj
+T*
+(Completed:) Tj
+T*
+(- Login/session-based portal access.) Tj
+T*
+(- Role-based navigation visibility.) Tj
+T*
+(- Dashboard, leads list/detail, users, districts, workflow pages.) Tj
+T*
+(- Lead reassignment and status transition UX.) Tj
+T*
+(- Documents review queue.) Tj
+T*
+(- Document preview/download.) Tj
+T*
+(- Document upload for SUPER_ADMIN and ADMIN:) Tj
+T*
+(- Lead detail page documents tab.) Tj
+T*
+(- Documents Review page upload panel.) Tj
+T*
+(- Payments verification queue and review actions.) Tj
+T*
+(- Notifications management UI.) Tj
+T*
+() Tj
+T*
+(Partial / Pending:) Tj
+T*
+(- Additional UX polish and guided upload flow \(currently uses lead UUID input in Documents) Tj
+T*
+(Review upload panel\).) Tj
+T*
+() Tj
+T*
+(1.3 Mobile App \(Expo React Native\)) Tj
+T*
+(Status: Mostly Completed) Tj
+T*
+() Tj
+T*
+(Completed:) Tj
+T*
+(- Auth/session flow.) Tj
+T*
+(- Assigned leads flow for field users.) Tj
+T*
+(- Lead details, status updates, document upload service.) Tj
+T*
+(- Offline queue and retry behavior.) Tj
+T*
+(- QR-UTR payment submission flow.) Tj
+T*
+() Tj
+T*
+(Partial / Pending:) Tj
+T*
+(- Automatic device push token registration lifecycle is not fully wired end-to-end.) Tj
+T*
+() Tj
+T*
+(2. Backend Status) Tj
+T*
+() Tj
+T*
+ET
+endstream
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R >> >> /Contents 7 0 R >>
+endobj
+7 0 obj
+<< /Length 2215 >>
+stream
+BT
+/F1 10 Tf
+50 790 Td
+14 TL
+(Status: Mostly Completed) Tj
+T*
+() Tj
+T*
+(Completed:) Tj
+T*
+(- Express REST API with route validation and error handling.) Tj
+T*
+(- Auth middleware and RBAC enforcement.) Tj
+T*
+(- District/assigned-lead scoped authorization checks.) Tj
+T*
+(- Lead management APIs \(list/detail/create/update/reassign/status transitions\).) Tj
+T*
+(- User and district management APIs.) Tj
+T*
+(- Document upload flow:) Tj
+T*
+(- presign endpoint) Tj
+T*
+(- complete endpoint) Tj
+T*
+(- review and download-url endpoints) Tj
+T*
+(- Supabase Storage signed URL integration.) Tj
+T*
+(- Payments:) Tj
+T*
+(- QR-UTR creation) Tj
+T*
+(- verification queue and review) Tj
+T*
+(- Razorpay order creation \(live API call + DB persistence\)) Tj
+T*
+(- Notifications:) Tj
+T*
+(- internal and customer notifications) Tj
+T*
+(- Firebase push integration) Tj
+T*
+(- queue-backed dispatch with Bull/Redis) Tj
+T*
+(- Audit logs for key actions.) Tj
+T*
+() Tj
+T*
+(Partial / Pending:) Tj
+T*
+(- PayU gateway endpoint remains placeholder.) Tj
+T*
+(- Some provider adapters are still placeholder-level:) Tj
+T*
+(- WhatsApp providers \(Twilio/Interakt/WATI\)) Tj
+T*
+(- depends on selected provider and credentials.) Tj
+T*
+() Tj
+T*
+(3. Database and Data Layer Status) Tj
+T*
+() Tj
+T*
+(Status: Completed \(Core\) / Partial \(Operational cleanup\)) Tj
+T*
+() Tj
+T*
+(Completed:) Tj
+T*
+(- Prisma schema covers core entities:) Tj
+T*
+(- users, districts, user_district_assignments) Tj
+T*
+(- leads, lead_statuses, lead_status_transitions, lead_status_history) Tj
+T*
+(- customer_details, documents, payments) Tj
+T*
+(- notification_templates, notification_logs) Tj
+T*
+(- loan_details, audit_logs, user_device_tokens) Tj
+T*
+(- PostgreSQL \(Supabase\) is configured and used.) Tj
+T*
+(- Supabase Storage is used for file objects.) Tj
+T*
+(- Redis is wired for queue/caching support.) Tj
+T*
+(- Bull queue connection and worker processing implemented.) Tj
+T*
+() Tj
+T*
+(Partial / Pending:) Tj
+T*
+(- Legacy field naming \(s3Key\) remains in schema/code for compatibility; backend storage is) Tj
+T*
+(Supabase.) Tj
+T*
+(- Migration/seed hygiene depends on deployment environment state.) Tj
+T*
+() Tj
+T*
+(4. Role and Permission Coverage \(Current\)) Tj
+T*
+() Tj
+T*
+ET
+endstream
+endobj
+8 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R >> >> /Contents 9 0 R >>
+endobj
+9 0 obj
+<< /Length 1623 >>
+stream
+BT
+/F1 10 Tf
+50 790 Td
+14 TL
+(Status: Implemented with enforced backend checks) Tj
+T*
+() Tj
+T*
+(Implemented:) Tj
+T*
+(- Super Admin: full control, including status/assignment config and global access.) Tj
+T*
+(- Admin: broad operational access, restricted from super-admin-only config paths.) Tj
+T*
+(- District Manager: district-scoped access and reassignment controls.) Tj
+T*
+(- Field Executive: assigned-lead scope and restricted admin/web capabilities.) Tj
+T*
+(- Customer: public lead submitter only \(not platform admin user\).) Tj
+T*
+() Tj
+T*
+(Reference:) Tj
+T*
+(- ROLE_PERMISSION_AUDIT.md) Tj
+T*
+() Tj
+T*
+(5. Architecture Alignment Snapshot) Tj
+T*
+() Tj
+T*
+(Aligned:) Tj
+T*
+(- Next.js web + landing, Expo mobile, Express API, Prisma, Supabase Postgres/Storage,) Tj
+T*
+(Redis/Bull, Firebase.) Tj
+T*
+() Tj
+T*
+(Still to monitor:) Tj
+T*
+(- Provider-specific production integrations \(non-console channels\) based on business) Tj
+T*
+(activation.) Tj
+T*
+() Tj
+T*
+(Reference:) Tj
+T*
+(- SYSTEM_ARCHITECTURE_AUDIT.md) Tj
+T*
+() Tj
+T*
+(6. Ready-for-UAT Areas) Tj
+T*
+() Tj
+T*
+(Ready:) Tj
+T*
+(- Public lead capture.) Tj
+T*
+(- Admin lead lifecycle and reassignment flows.) Tj
+T*
+(- Document upload/review/download flows.) Tj
+T*
+(- Payment QR-UTR verification flow.) Tj
+T*
+(- Razorpay order creation flow.) Tj
+T*
+(- Role-based access control and scoped data access.) Tj
+T*
+() Tj
+T*
+(Needs targeted UAT before production:) Tj
+T*
+(- Provider channel delivery paths \(SMS/Email/WhatsApp\) with real credentials.) Tj
+T*
+(- Mobile push token lifecycle and push delivery reliability under real device conditions.) Tj
+T*
+() Tj
+T*
+() Tj
+T*
+ET
+endstream
+endobj
+xref
+0 10
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000127 00000 n 
+0000000197 00000 n 
+0000000323 00000 n 
+0000002238 00000 n 
+0000002364 00000 n 
+0000004631 00000 n 
+0000004757 00000 n 
+trailer
+<< /Size 10 /Root 1 0 R >>
+startxref
+6432
+%%EOF

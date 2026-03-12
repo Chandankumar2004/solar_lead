@@ -199,6 +199,7 @@ export default function LeadDetailPage() {
   const leadId = params.id;
   const user = useAuthStore((state) => state.user);
   const isSuperAdmin = user?.role === "SUPER_ADMIN";
+  const canWebUploadDocument = user?.role === "SUPER_ADMIN" || user?.role === "ADMIN";
   const canReassign =
     user?.role === "SUPER_ADMIN" || user?.role === "ADMIN" || user?.role === "DISTRICT_MANAGER";
 
@@ -215,6 +216,14 @@ export default function LeadDetailPage() {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewType, setPreviewType] = useState<string | null>(null);
   const [previewName, setPreviewName] = useState<string | null>(null);
+  const [uploadCategory, setUploadCategory] = useState("general");
+  const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [uploadSubmitting, setUploadSubmitting] = useState(false);
+  const [uploadMessage, setUploadMessage] = useState<{
+    type: "success" | "error";
+    text: string;
+  } | null>(null);
+  const [uploadInputKey, setUploadInputKey] = useState(0);
   const [paymentAmount, setPaymentAmount] = useState("");
   const [paymentUtrNumber, setPaymentUtrNumber] = useState("");
   const [paymentSubmitting, setPaymentSubmitting] = useState(false);
@@ -299,6 +308,62 @@ export default function LeadDetailPage() {
       window.open(url, "_blank", "noopener,noreferrer");
     } finally {
       setPreviewLoadingDocId(null);
+    }
+  };
+
+  const uploadLeadDocument = async () => {
+    if (!lead || !canWebUploadDocument) return;
+    if (!uploadFile) {
+      setUploadMessage({ type: "error", text: "Please select a file to upload." });
+      return;
+    }
+
+    const category = uploadCategory.trim().length >= 2 ? uploadCategory.trim() : "general";
+    const fileType = uploadFile.type || "application/octet-stream";
+
+    setUploadSubmitting(true);
+    setUploadMessage(null);
+    try {
+      const presignResponse = await api.post(`/api/leads/${lead.id}/documents/presign`, {
+        category,
+        fileName: uploadFile.name,
+        fileType,
+        fileSize: uploadFile.size
+      });
+
+      const uploadUrl = presignResponse.data?.data?.uploadUrl as string | undefined;
+      const s3Key = presignResponse.data?.data?.s3Key as string | undefined;
+      if (!uploadUrl || !s3Key) {
+        throw new Error("Upload URL generation failed.");
+      }
+
+      const putResponse = await fetch(uploadUrl, {
+        method: "PUT",
+        headers: {
+          "Content-Type": fileType
+        },
+        body: uploadFile
+      });
+      if (!putResponse.ok) {
+        throw new Error(`File upload failed (${putResponse.status})`);
+      }
+
+      await api.post(`/api/leads/${lead.id}/documents/complete`, {
+        category,
+        s3Key,
+        fileName: uploadFile.name,
+        fileType,
+        fileSize: uploadFile.size
+      });
+
+      setUploadMessage({ type: "success", text: "Document uploaded successfully." });
+      setUploadFile(null);
+      setUploadInputKey((current) => current + 1);
+      await mutate();
+    } catch (error) {
+      setUploadMessage({ type: "error", text: extractApiMessage(error) });
+    } finally {
+      setUploadSubmitting(false);
     }
   };
 
@@ -612,6 +677,42 @@ export default function LeadDetailPage() {
 
         {activeTab === "documents" ? (
           <div className="mt-4 space-y-4">
+            {canWebUploadDocument ? (
+              <div className="rounded-md border border-slate-200 p-3">
+                <h3 className="text-sm font-semibold">Upload Document</h3>
+                <div className="mt-3 grid gap-3 md:grid-cols-3">
+                  <input
+                    value={uploadCategory}
+                    onChange={(event) => setUploadCategory(event.target.value)}
+                    placeholder="Category (e.g. aadhaar, pan, bill)"
+                    className="rounded-md border border-slate-300 px-3 py-2 text-sm"
+                  />
+                  <input
+                    key={uploadInputKey}
+                    type="file"
+                    accept=".pdf,.jpg,.jpeg,.png,.webp,.heic,.heif"
+                    onChange={(event) => setUploadFile(event.target.files?.[0] ?? null)}
+                    className="rounded-md border border-slate-300 px-3 py-2 text-sm"
+                  />
+                  <button
+                    onClick={() => void uploadLeadDocument()}
+                    disabled={uploadSubmitting || !uploadFile}
+                    className="rounded-md bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-700 disabled:opacity-60"
+                  >
+                    {uploadSubmitting ? "Uploading..." : "Upload Document"}
+                  </button>
+                </div>
+                {uploadMessage ? (
+                  <p
+                    className={`mt-2 text-sm ${
+                      uploadMessage.type === "success" ? "text-emerald-700" : "text-rose-700"
+                    }`}
+                  >
+                    {uploadMessage.text}
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
             <div className="overflow-x-auto">
               <table className="min-w-full text-sm">
                 <thead className="bg-slate-100 text-left text-xs uppercase text-slate-600">

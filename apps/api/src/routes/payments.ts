@@ -18,6 +18,7 @@ import {
   queueLeadStatusCustomerNotification,
   triggerUtrPendingNotification
 } from "../services/notification.service.js";
+import { type LeadAccessActor, scopeLeadWhere } from "../services/lead-access.service.js";
 
 export const paymentsRouter = Router();
 
@@ -139,6 +140,96 @@ const gatewayOrderSchema = z
     currency: value.currency.toUpperCase()
   }));
 
+type RazorpayOrderResponse = {
+  id: string;
+  amount: number;
+  amount_due: number;
+  amount_paid: number;
+  currency: string;
+  receipt: string | null;
+  status: string;
+  notes: Record<string, string>;
+  created_at: number;
+};
+
+function resolveRazorpayCredentials() {
+  if (!env.RAZORPAY_KEY_ID || !env.RAZORPAY_KEY_SECRET) {
+    throw new AppError(
+      503,
+      "RAZORPAY_NOT_CONFIGURED",
+      "Razorpay credentials are not configured"
+    );
+  }
+
+  return {
+    keyId: env.RAZORPAY_KEY_ID,
+    keySecret: env.RAZORPAY_KEY_SECRET
+  };
+}
+
+function resolveRazorpayOrderApiUrl() {
+  const sanitizedBase = env.RAZORPAY_API_BASE_URL.replace(/\/+$/, "");
+  const withVersion = sanitizedBase.endsWith("/v1")
+    ? sanitizedBase
+    : `${sanitizedBase}/v1`;
+  return `${withVersion}/orders`;
+}
+
+async function createRazorpayOrder(input: {
+  amountInPaise: number;
+  currency: string;
+  receipt: string;
+  notes: Record<string, string>;
+}) {
+  const credentials = resolveRazorpayCredentials();
+  const authHeader = Buffer.from(
+    `${credentials.keyId}:${credentials.keySecret}`,
+    "utf-8"
+  ).toString("base64");
+
+  const response = await fetch(resolveRazorpayOrderApiUrl(), {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${authHeader}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      amount: input.amountInPaise,
+      currency: input.currency,
+      receipt: input.receipt,
+      notes: input.notes
+    })
+  });
+
+  const rawBody = await response.text();
+  let parsedBody: Record<string, unknown> | null = null;
+  try {
+    parsedBody = rawBody ? (JSON.parse(rawBody) as Record<string, unknown>) : null;
+  } catch {
+    parsedBody = null;
+  }
+
+  if (!response.ok) {
+    const razorpayMessage =
+      typeof parsedBody?.error === "object" && parsedBody.error
+        ? String((parsedBody.error as Record<string, unknown>).description ?? "")
+        : String(parsedBody?.message ?? "");
+    const message =
+      razorpayMessage.trim() || rawBody || "Failed to create Razorpay order";
+    throw new AppError(502, "RAZORPAY_ORDER_CREATE_FAILED", message);
+  }
+
+  if (!parsedBody || typeof parsedBody.id !== "string") {
+    throw new AppError(
+      502,
+      "RAZORPAY_ORDER_CREATE_FAILED",
+      "Invalid response from Razorpay order API"
+    );
+  }
+
+  return parsedBody as unknown as RazorpayOrderResponse;
+}
+
 function parseDateBoundary(
   raw: string | undefined,
   field: "dateFrom" | "dateTo"
@@ -158,9 +249,9 @@ function parseDateBoundary(
   return date;
 }
 
-async function assertLeadExists(leadId: string) {
-  const lead = await prisma.lead.findUnique({
-    where: { id: leadId },
+async function assertLeadExists(leadId: string, actor: LeadAccessActor) {
+  const lead = await prisma.lead.findFirst({
+    where: scopeLeadWhere(actor, { id: leadId }),
     select: {
       id: true,
       externalId: true,
@@ -178,10 +269,10 @@ async function createPendingQrUtrPayment(input: {
   leadId: string;
   amount: number;
   utrNumber: string;
-  actorUserId?: string;
+  actor: LeadAccessActor;
   actorIpAddress?: string | null;
 }) {
-  const lead = await assertLeadExists(input.leadId);
+  const lead = await assertLeadExists(input.leadId, input.actor);
 
   const payment = await prisma.payment.create({
     data: {
@@ -190,7 +281,7 @@ async function createPendingQrUtrPayment(input: {
       method: "QR_UTR",
       utrNumber: input.utrNumber,
       status: "PENDING",
-      collectedByUserId: input.actorUserId ?? null
+      collectedByUserId: input.actor.id
     },
     include: {
       lead: {
@@ -219,7 +310,7 @@ async function createPendingQrUtrPayment(input: {
   });
 
   await createAuditLog({
-    actorUserId: input.actorUserId,
+    actorUserId: input.actor.id,
     action: "PAYMENT_QR_UTR_CREATED",
     entityType: "payment",
     entityId: payment.id,
@@ -247,7 +338,7 @@ paymentsRouter.post(
       leadId: body.leadId,
       amount: body.amount,
       utrNumber: body.utrNumber,
-      actorUserId: req.user?.id,
+      actor: req.user!,
       actorIpAddress: requestIp(req)
     });
     return created(res, payment, "QR-UTR payment submitted for verification");
@@ -285,7 +376,7 @@ paymentsRouter.post(
       leadId: body.leadId,
       amount: body.amount,
       utrNumber: body.utrNumber,
-      actorUserId: req.user?.id,
+      actor: req.user!,
       actorIpAddress: requestIp(req)
     });
 
@@ -383,6 +474,14 @@ paymentsRouter.get(
         createdAt: {
           ...(dateFrom ? { gte: dateFrom } : {}),
           ...(dateTo ? { lte: dateTo } : {})
+        }
+      });
+    }
+
+    if (req.user!.role !== "SUPER_ADMIN" && req.user!.role !== "ADMIN") {
+      whereClauses.push({
+        lead: {
+          is: scopeLeadWhere(req.user!, {})
         }
       });
     }
@@ -489,6 +588,15 @@ paymentsRouter.post(
     });
     if (!existing) {
       throw new AppError(404, "NOT_FOUND", "Payment not found");
+    }
+    if (req.user!.role !== "SUPER_ADMIN" && req.user!.role !== "ADMIN") {
+      const accessibleLead = await prisma.lead.findFirst({
+        where: scopeLeadWhere(req.user!, { id: existing.leadId }),
+        select: { id: true }
+      });
+      if (!accessibleLead) {
+        throw new AppError(404, "NOT_FOUND", "Payment not found");
+      }
     }
     if (existing.status !== "PENDING") {
       throw new AppError(
@@ -671,21 +779,63 @@ paymentsRouter.post(
   validateBody(gatewayOrderSchema),
   async (req, res) => {
     const body = req.body as z.infer<typeof gatewayOrderSchema>;
-    const lead = await assertLeadExists(body.leadId);
-    const orderId = `rzp_${randomUUID().replace(/-/g, "")}`;
+    const lead = await assertLeadExists(body.leadId, req.user!);
+    const amountInPaise = Math.round(body.amount * 100);
+    if (!Number.isFinite(amountInPaise) || amountInPaise <= 0) {
+      throw new AppError(400, "VALIDATION_ERROR", "amount must be a valid positive number");
+    }
+
+    const receipt =
+      body.receipt ??
+      `lead-${lead.externalId.slice(0, 8)}-${Date.now().toString().slice(-8)}`;
+
+    const orderNotes = {
+      leadId: lead.id,
+      leadExternalId: lead.externalId,
+      requestedByUserId: req.user!.id,
+      ...(body.notes ?? {})
+    };
+
+    const order = await createRazorpayOrder({
+      amountInPaise,
+      currency: body.currency,
+      receipt,
+      notes: orderNotes
+    });
+
+    const payment = await prisma.payment.create({
+      data: {
+        leadId: lead.id,
+        amount: body.amount,
+        method: PaymentMethod.UPI_GATEWAY,
+        status: PaymentStatus.PENDING,
+        gatewayOrderId: order.id,
+        collectedByUserId: req.user!.id
+      },
+      include: {
+        lead: {
+          select: {
+            id: true,
+            externalId: true,
+            name: true
+          }
+        }
+      }
+    });
 
     await createAuditLog({
       actorUserId: req.user?.id,
-      action: "PAYMENT_GATEWAY_ORDER_PLACEHOLDER_CREATED",
+      action: "PAYMENT_GATEWAY_ORDER_CREATED",
       entityType: "payment_gateway_order",
-      entityId: orderId,
+      entityId: order.id,
       detailsJson: {
         provider: "razorpay",
         leadId: lead.id,
         externalId: lead.externalId,
         amount: body.amount,
         currency: body.currency,
-        receipt: body.receipt ?? null
+        receipt,
+        paymentId: payment.id
       },
       ipAddress: requestIp(req)
     });
@@ -694,18 +844,30 @@ paymentsRouter.post(
       res,
       {
         provider: "razorpay",
-        mode: "placeholder",
+        mode: "live",
+        keyId: env.RAZORPAY_KEY_ID,
         merchant: merchantDetails,
-        orderId,
-        leadId: lead.id,
-        externalId: lead.externalId,
-        amount: body.amount,
-        currency: body.currency,
-        receipt: body.receipt ?? `lead-${lead.externalId}`,
-        notes: body.notes ?? {},
-        expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString()
+        order: {
+          id: order.id,
+          amount: order.amount / 100,
+          amountPaise: order.amount,
+          currency: order.currency,
+          status: order.status,
+          receipt: order.receipt,
+          notes: order.notes,
+          createdAt: new Date(order.created_at * 1000).toISOString()
+        },
+        payment: {
+          id: payment.id,
+          leadId: payment.leadId,
+          externalId: payment.lead.externalId,
+          amount: payment.amount,
+          method: payment.method,
+          status: payment.status,
+          gatewayOrderId: payment.gatewayOrderId
+        }
       },
-      "Razorpay order placeholder created"
+      "Razorpay order created"
     );
   }
 );
@@ -716,7 +878,7 @@ paymentsRouter.post(
   validateBody(gatewayOrderSchema),
   async (req, res) => {
     const body = req.body as z.infer<typeof gatewayOrderSchema>;
-    const lead = await assertLeadExists(body.leadId);
+    const lead = await assertLeadExists(body.leadId, req.user!);
     const orderId = `payu_${randomUUID().replace(/-/g, "")}`;
 
     await createAuditLog({

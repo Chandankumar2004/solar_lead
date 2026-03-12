@@ -60,10 +60,7 @@ function extractApiMessage(error: unknown) {
 export default function NotificationsPage() {
   const user = useAuthStore((state) => state.user);
   const canManageTemplates = user?.role === "SUPER_ADMIN" || user?.role === "ADMIN";
-  const canViewAdminData =
-    user?.role === "SUPER_ADMIN" ||
-    user?.role === "ADMIN" ||
-    user?.role === "DISTRICT_MANAGER";
+  const canViewAdminData = user?.role === "SUPER_ADMIN" || user?.role === "ADMIN";
 
   const [tab, setTab] = useState<"templates" | "logs" | "internal">(
     canViewAdminData ? "templates" : "internal"

@@ -8,6 +8,10 @@ Production-style monorepo for a Solar Panel Installation Lead Management System.
 - Mobile App: Expo (React Native), React Navigation, Zustand, React Hook Form, AsyncStorage offline queue, document/image picker, maps, biometric unlock
 - Shared package: `@solar/shared` (types, constants, schemas)
 
+## Current Implementation Status
+- See `IMPLEMENTATION_STATUS.md` for frontend/backend/database completion tracking and pending gaps.
+- See `DEPLOYMENT_READY.md` for deployment readiness checklist.
+
 ## Monorepo Structure
 ```txt
 .
@@ -209,24 +213,36 @@ pnpm --filter @solar/mobile typecheck
 3. Call complete endpoint to persist metadata
 4. Review/verify/reject from admin queue
 
+## Document Upload Access
+- Super Admin
+- Admin
+- District Manager
+- Field Executive
+- Customer: Not a system user (cannot upload via admin/mobile system roles)
+
 ## Database ER Diagram
 - Mermaid ERD file: `docs/database-er-diagram.mmd`
 - Prisma schema: `apps/api/prisma/schema.prisma`
 
 ## Deployment Notes
-See `DEVOPS.md` for target deployment architecture:
-- Web: Vercel
-- API: AWS ECS/EC2
-- DB: RDS PostgreSQL
-- Cache/Queue: ElastiCache Redis
-- Files: Supabase Storage (`documents` bucket)
-- Monitoring: CloudWatch + Sentry
+See:
+- `DEVOPS.md` for production architecture and env matrix.
+- `render.yaml` for Render blueprint deploy.
+- `apps/api/Dockerfile` and `apps/web/Dockerfile` for container deploy.
+
+Deployment stack (current):
+- DB: Supabase PostgreSQL
+- File storage: Supabase Storage (`documents` bucket)
+- Queue/cache: Redis + BullMQ
+- Backend: Node/Express API + separate worker process
+- Web: Next.js
 
 ## Render Deployment Checklist (Web + API)
 - Pin Node to `20.x` in Render (or rely on repo `.node-version` / `engines`) to avoid Prisma runtime init failures on newer default Node versions.
 - API service root directory: `apps/api`
 - API build command: `pnpm install --frozen-lockfile --prod=false && pnpm build`
 - API start command: `NODE_ENV=production pnpm start`
+- API worker start command: `NODE_ENV=production pnpm worker`
 - API required env:
   - `PORT=10000` (or use Render default)
   - `DATABASE_URL` (Supabase pooler URL; prefer `:6543` with `pgbouncer=true&connection_limit=1&sslmode=require`, or use session pooler `:5432` if runtime network blocks `6543`)
@@ -235,10 +251,11 @@ See `DEVOPS.md` for target deployment architecture:
   - `SUPABASE_URL`
   - `SUPABASE_ANON_KEY`
   - `SUPABASE_SERVICE_ROLE_KEY`
-  - `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET` (if still used by legacy modules)
-  - `SEED_SUPER_ADMIN_PASSWORD` (+ optional `SEED_SUPER_ADMIN_*`)
+  - `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`, `FIREBASE_PRIVATE_KEY`
+  - `REDIS_URL`, `BULL_NOTIFICATION_QUEUE`
+  - `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`
 - Render note: do not set `NODE_ENV=production` as a build-time env var, otherwise `pnpm install` may skip `devDependencies` needed for TypeScript build.
-- API post-deploy (one-time per migration): `pnpm exec prisma migrate deploy --schema=./prisma/schema.prisma`
+- API post-deploy (one-time per migration): `pnpm exec prisma migrate deploy --schema=./apps/api/prisma/schema.prisma`
 - Web service root directory: `apps/web`
 - Web build command: `pnpm install --frozen-lockfile && pnpm build`
 - Web start command: `pnpm start`

@@ -5,6 +5,14 @@ import { api, setAuthFailureHandler } from "../services/api";
 
 const BIOMETRIC_ENABLED_KEY = "auth.biometric_enabled";
 const HAS_LOGGED_IN_ONCE_KEY = "auth.has_logged_in_once";
+const MOBILE_ALLOWED_ROLE = "FIELD_EXECUTIVE";
+
+class MobileRoleError extends Error {
+  constructor() {
+    super("This account is not allowed in the mobile app. Use the admin portal.");
+    this.name = "MobileRoleError";
+  }
+}
 
 type User = {
   id: string;
@@ -50,6 +58,12 @@ function toUser(value: unknown): User | null {
   };
 }
 
+function assertMobileRoleAllowed(user: User) {
+  if (user.role !== MOBILE_ALLOWED_ROLE) {
+    throw new MobileRoleError();
+  }
+}
+
 async function fetchAuthenticatedUser(): Promise<User> {
   const response = await api.get("/api/auth/me");
   const user = toUser(response.data?.data?.user);
@@ -57,6 +71,7 @@ async function fetchAuthenticatedUser(): Promise<User> {
   if (!user) {
     throw new Error("Invalid /auth/me response");
   }
+  assertMobileRoleAllowed(user);
 
   return user;
 }
@@ -87,7 +102,19 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     try {
       const user = await fetchAuthenticatedUser();
       set({ user, isBiometricUnlocked: !biometricEnabled });
-    } catch {
+    } catch (error) {
+      if (error instanceof MobileRoleError) {
+        try {
+          await api.post("/api/auth/logout");
+        } catch {
+          // Ignore server errors and clear local state.
+        }
+        set({
+          user: null,
+          isBiometricUnlocked: false
+        });
+        return;
+      }
       try {
         await api.post("/api/auth/refresh");
         const user = await fetchAuthenticatedUser();
@@ -113,6 +140,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     if (!user) {
       throw new Error("Invalid /auth/login response");
     }
+    assertMobileRoleAllowed(user);
 
     await AsyncStorage.setItem(HAS_LOGGED_IN_ONCE_KEY, "1");
 

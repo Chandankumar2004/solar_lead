@@ -6,6 +6,7 @@ import { AppError } from "../lib/errors.js";
 import { prisma } from "../lib/prisma.js";
 import { allowRoles } from "../middleware/rbac.js";
 import { validateQuery } from "../middleware/validate.js";
+import { scopeLeadWhere } from "../services/lead-access.service.js";
 
 export const dashboardRouter = Router();
 
@@ -102,12 +103,59 @@ async function getDashboardSummary(req: Request, res: Response) {
     throw new AppError(400, "VALIDATION_ERROR", "dateFrom cannot be greater than dateTo");
   }
 
-  const baseLeadWhere: Prisma.LeadWhereInput = {
+  const requestedLeadWhere: Prisma.LeadWhereInput = {
     ...(query.districtId ? { districtId: query.districtId } : {}),
     ...(query.executiveId ? { assignedExecutiveId: query.executiveId } : {})
   };
+  const baseLeadWhere = scopeLeadWhere(req.user!, requestedLeadWhere);
 
   const rangedLeadWhere = withCreatedAt(baseLeadWhere, dateFrom, dateTo);
+  const executiveWhereClauses: Prisma.UserWhereInput[] = [
+    {
+      role: "EXECUTIVE",
+      status: "ACTIVE"
+    },
+    ...(query.executiveId ? [{ id: query.executiveId }] : []),
+    ...(query.districtId
+      ? [
+          {
+            districts: {
+              some: {
+                districtId: query.districtId
+              }
+            }
+          } satisfies Prisma.UserWhereInput
+        ]
+      : []),
+    ...(req.user!.role === "EXECUTIVE"
+      ? [{ id: req.user!.id }]
+      : []),
+    ...(req.user!.role === "MANAGER"
+      ? [
+          {
+            districts: {
+              some: {
+                district: {
+                  assignments: {
+                    some: {
+                      userId: req.user!.id,
+                      user: {
+                        role: "MANAGER",
+                        status: "ACTIVE"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          } satisfies Prisma.UserWhereInput
+        ]
+      : [])
+  ];
+  const executiveWhere: Prisma.UserWhereInput =
+    executiveWhereClauses.length > 1
+      ? { AND: executiveWhereClauses }
+      : executiveWhereClauses[0] ?? {};
 
   const now = new Date();
   const todayBounds = boundedPeriod(startOfDay(now), dateFrom, dateTo, now);
@@ -188,20 +236,7 @@ async function getDashboardSummary(req: Request, res: Response) {
       }
     }),
     prisma.user.findMany({
-      where: {
-        role: "EXECUTIVE",
-        status: "ACTIVE",
-        ...(query.executiveId ? { id: query.executiveId } : {}),
-        ...(query.districtId
-          ? {
-              districts: {
-                some: {
-                  districtId: query.districtId
-                }
-              }
-            }
-          : {})
-      },
+      where: executiveWhere,
       select: {
         id: true,
         fullName: true,
@@ -409,14 +444,14 @@ async function getDashboardSummary(req: Request, res: Response) {
 
 dashboardRouter.get(
   "/summary",
-  allowRoles("SUPER_ADMIN", "ADMIN", "DISTRICT_MANAGER", "FIELD_EXECUTIVE"),
+  allowRoles("SUPER_ADMIN", "ADMIN", "DISTRICT_MANAGER"),
   validateQuery(dashboardQuerySchema),
   async (req, res) => getDashboardSummary(req, res)
 );
 
 dashboardRouter.get(
   "/",
-  allowRoles("SUPER_ADMIN", "ADMIN", "DISTRICT_MANAGER", "FIELD_EXECUTIVE"),
+  allowRoles("SUPER_ADMIN", "ADMIN", "DISTRICT_MANAGER"),
   validateQuery(dashboardQuerySchema),
   async (req, res) => getDashboardSummary(req, res)
 );

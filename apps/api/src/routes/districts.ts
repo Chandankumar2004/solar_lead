@@ -15,7 +15,8 @@ import {
 
 export const districtsRouter = Router();
 const allowDistrictCrud = allowRoles("SUPER_ADMIN");
-const allowDistrictMapping = allowRoles("SUPER_ADMIN", "ADMIN");
+const allowDistrictRead = allowRoles("SUPER_ADMIN", "ADMIN");
+const allowDistrictMapping = allowRoles("SUPER_ADMIN");
 
 const districtIdParamSchema = z.object({
   districtId: z.string().uuid()
@@ -53,7 +54,7 @@ const updateAssignmentsSchema = z.object({
   executiveIds: z.array(z.string().uuid()).default([])
 });
 
-districtsRouter.get("/", allowDistrictMapping, validateQuery(listDistrictsQuerySchema), async (req: Request, res: Response) => {
+districtsRouter.get("/", allowDistrictRead, validateQuery(listDistrictsQuerySchema), async (req: Request, res: Response) => {
   const query = req.query as z.infer<typeof listDistrictsQuerySchema>;
   const districts = await listDistrictsWithCounts({
     state: query.state,
@@ -97,12 +98,12 @@ districtsRouter.post("/", allowDistrictCrud, validateBody(createDistrictSchema),
   return created(res, district, "District created");
 });
 
-districtsRouter.get("/users/managers", allowDistrictMapping, async (_req: Request, res: Response) => {
+districtsRouter.get("/users/managers", allowDistrictRead, async (_req: Request, res: Response) => {
   const managers = await getActiveUsersByRole("MANAGER");
   return ok(res, managers, "Active district managers fetched");
 });
 
-districtsRouter.get("/users/executives", allowDistrictMapping, async (_req: Request, res: Response) => {
+districtsRouter.get("/users/executives", allowDistrictRead, async (_req: Request, res: Response) => {
   const executives = await getActiveUsersByRole("EXECUTIVE");
   return ok(res, executives, "Active field executives fetched");
 });

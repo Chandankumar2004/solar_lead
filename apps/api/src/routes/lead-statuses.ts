@@ -10,7 +10,7 @@ import { createAuditLog, requestIp } from "../services/audit-log.service.js";
 
 export const leadStatusesRouter = Router();
 
-leadStatusesRouter.use(allowRoles("SUPER_ADMIN", "ADMIN"));
+leadStatusesRouter.use(allowRoles("SUPER_ADMIN"));
 
 const leadStatusIdParamSchema = z.object({
   id: z.string().uuid()

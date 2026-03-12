@@ -9,6 +9,7 @@ import { validateBody, validateParams, validateQuery } from "../middleware/valid
 import { createAuditLog, requestIp } from "../services/audit-log.service.js";
 import { notifyUsers } from "../services/notification.service.js";
 import { createDocumentDownloadUrl } from "../services/storage/supabaseStorage.js";
+import { scopeLeadWhere } from "../services/lead-access.service.js";
 
 export const documentsRouter = Router();
 
@@ -159,6 +160,14 @@ documentsRouter.get(
       });
     }
 
+    if (req.user!.role !== "SUPER_ADMIN" && req.user!.role !== "ADMIN") {
+      whereClauses.push({
+        lead: {
+          is: scopeLeadWhere(req.user!, {})
+        }
+      });
+    }
+
     const where: Prisma.DocumentWhereInput =
       whereClauses.length > 0 ? { AND: whereClauses } : {};
 
@@ -232,6 +241,15 @@ documentsRouter.post(
     });
     if (!existing) {
       throw new AppError(404, "NOT_FOUND", "Document not found");
+    }
+    if (req.user!.role !== "SUPER_ADMIN" && req.user!.role !== "ADMIN") {
+      const accessibleLead = await prisma.lead.findFirst({
+        where: scopeLeadWhere(req.user!, { id: existing.leadId }),
+        select: { id: true }
+      });
+      if (!accessibleLead) {
+        throw new AppError(404, "NOT_FOUND", "Document not found");
+      }
     }
 
     const nextStatus: DocumentReviewStatus =
@@ -320,6 +338,15 @@ documentsRouter.get(
     });
     if (!document) {
       throw new AppError(404, "NOT_FOUND", "Document not found");
+    }
+    if (req.user!.role !== "SUPER_ADMIN" && req.user!.role !== "ADMIN") {
+      const accessibleLead = await prisma.lead.findFirst({
+        where: scopeLeadWhere(req.user!, { id: document.leadId }),
+        select: { id: true }
+      });
+      if (!accessibleLead) {
+        throw new AppError(404, "NOT_FOUND", "Document not found");
+      }
     }
 
     const downloadUrl = await createDocumentDownloadUrl(

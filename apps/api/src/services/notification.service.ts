@@ -1,6 +1,11 @@
 import { DevicePlatform, NotificationChannel } from "@prisma/client";
 import { firebaseMessaging, firestore } from "../lib/firebase.js";
 import { prisma } from "../lib/prisma.js";
+import {
+  enqueueCustomerNotificationJob,
+  enqueueInAppNotificationJob,
+  registerNotificationJobHandlers
+} from "../workers/notification.worker.js";
 import { sendCustomerNotification } from "./customer-notification-delivery.service.js";
 
 export type NotificationEventType =
@@ -36,6 +41,11 @@ function uniqueIds(ids: Array<string | null | undefined>) {
 }
 
 export async function enqueueInAppNotification(params: InAppNotificationJobPayload) {
+  const queued = await enqueueInAppNotificationJob(params);
+  if (queued) {
+    return;
+  }
+
   void processInternalNotification(params).catch((error) => {
     console.error("internal_notification_failed", {
       userId: params.userId,
@@ -199,6 +209,18 @@ async function processCustomerNotification(
   }
 }
 
+export async function processCustomerNotificationJob(
+  payload: CustomerNotificationJobPayload,
+  context?: {
+    attemptsMade: number;
+    maxAttempts: number;
+  }
+) {
+  const attemptsMade = context?.attemptsMade ?? 0;
+  const maxAttempts = context?.maxAttempts ?? 3;
+  await processCustomerNotification(payload, attemptsMade, maxAttempts);
+}
+
 function wait(milliseconds: number) {
   return new Promise((resolve) => {
     setTimeout(resolve, milliseconds);
@@ -219,6 +241,11 @@ async function processCustomerNotificationWithRetries(payload: CustomerNotificat
     }
   }
 }
+
+registerNotificationJobHandlers({
+  inApp: processInternalNotification,
+  customer: processCustomerNotificationJob
+});
 
 function toTemplateValue(value: unknown) {
   if (value === null || value === undefined) return "";
@@ -575,13 +602,16 @@ export async function queueLeadStatusCustomerNotification(
       subject: renderedSubject,
       body: renderedBody
     } satisfies CustomerNotificationJobPayload;
-    void processCustomerNotificationWithRetries(payload).catch((error) => {
-      console.error("queue_customer_notification_failed", {
-        leadId: input.leadId,
-        toStatusId: input.toStatusId,
-        error
+    const queued = await enqueueCustomerNotificationJob(payload);
+    if (!queued) {
+      void processCustomerNotificationWithRetries(payload).catch((error) => {
+        console.error("queue_customer_notification_failed", {
+          leadId: input.leadId,
+          toStatusId: input.toStatusId,
+          error
+        });
       });
-    });
+    }
 
     return {
       queued: true,
