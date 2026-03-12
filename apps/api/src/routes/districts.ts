@@ -9,6 +9,7 @@ import { createAuditLog, requestIp } from "../services/audit-log.service.js";
 import {
   getActiveUsersByRole,
   getDistrictAssignmentsPayload,
+  listDistrictsWithCounts,
   replaceDistrictAssignments
 } from "../services/districts.service.js";
 
@@ -54,20 +55,9 @@ const updateAssignmentsSchema = z.object({
 
 districtsRouter.get("/", allowDistrictMapping, validateQuery(listDistrictsQuerySchema), async (req: Request, res: Response) => {
   const query = req.query as z.infer<typeof listDistrictsQuerySchema>;
-  const districts = await prisma.district.findMany({
-    where: {
-      ...(query.state ? { state: query.state } : {}),
-      ...(query.isActive !== undefined ? { isActive: query.isActive } : {})
-    },
-    include: {
-      _count: {
-        select: {
-          leads: true,
-          assignments: true
-        }
-      }
-    },
-    orderBy: [{ state: "asc" }, { name: "asc" }]
+  const districts = await listDistrictsWithCounts({
+    state: query.state,
+    isActive: query.isActive
   });
 
   return ok(res, districts, "Districts fetched");

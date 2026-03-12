@@ -8,6 +8,59 @@ type PublicDistrict = {
   state: string;
 };
 
+type DistrictListFilters = {
+  state?: string;
+  isActive?: boolean;
+};
+
+async function withReadFallback<T>(
+  operation: string,
+  run: (client: PrismaClient) => Promise<T>
+) {
+  try {
+    return await run(prisma);
+  } catch (primaryError) {
+    console.error("DISTRICTS_READ_PRIMARY_DB_FAILED", {
+      operation,
+      reason: primaryError instanceof Error ? primaryError.message : "UNKNOWN_ERROR"
+    });
+
+    if (prismaAuthFallback === prisma) {
+      throw primaryError;
+    }
+
+    try {
+      return await run(prismaAuthFallback);
+    } catch (fallbackError) {
+      console.error("DISTRICTS_READ_FALLBACK_DB_FAILED", {
+        operation,
+        reason: fallbackError instanceof Error ? fallbackError.message : "UNKNOWN_ERROR"
+      });
+      throw fallbackError;
+    }
+  }
+}
+
+export async function listDistrictsWithCounts(filters: DistrictListFilters) {
+  return withReadFallback("LIST_DISTRICTS_WITH_COUNTS", async (client) => {
+    return client.district.findMany({
+      where: {
+        ...(filters.state ? { state: filters.state } : {}),
+        ...(filters.isActive !== undefined ? { isActive: filters.isActive } : {})
+      },
+      include: {
+        _count: {
+          select: {
+            leads: true,
+            assignments: true
+          }
+        }
+      },
+      orderBy: [{ state: "asc" }, { name: "asc" }]
+    });
+  });
+}
+
 export async function getPublicDistrictsPayload() {
   const districts = await listPublicDistrictsWithFallback();
 
@@ -70,32 +123,34 @@ async function listPublicDistrictsWithFallback() {
 }
 
 export async function getDistrictAssignmentsPayload(districtId?: string) {
-  const districts = await prisma.district.findMany({
-    where: districtId ? { id: districtId } : undefined,
-    select: {
-      id: true,
-      name: true,
-      state: true,
-      isActive: true,
-      assignments: {
-        select: {
-          id: true,
-          assignedAt: true,
-          user: {
-            select: {
-              id: true,
-              fullName: true,
-              email: true,
-              phone: true,
-              role: true,
-              status: true
+  const districts = await withReadFallback("GET_DISTRICT_ASSIGNMENTS_PAYLOAD", (client) =>
+    client.district.findMany({
+      where: districtId ? { id: districtId } : undefined,
+      select: {
+        id: true,
+        name: true,
+        state: true,
+        isActive: true,
+        assignments: {
+          select: {
+            id: true,
+            assignedAt: true,
+            user: {
+              select: {
+                id: true,
+                fullName: true,
+                email: true,
+                phone: true,
+                role: true,
+                status: true
+              }
             }
           }
         }
-      }
-    },
-    orderBy: [{ state: "asc" }, { name: "asc" }]
-  });
+      },
+      orderBy: [{ state: "asc" }, { name: "asc" }]
+    })
+  );
 
   return districts.map((district) => {
     const managers = district.assignments
@@ -185,17 +240,19 @@ export async function replaceDistrictAssignments(
 }
 
 export async function getActiveUsersByRole(role: UserRole) {
-  return prisma.user.findMany({
-    where: {
-      role,
-      status: "ACTIVE"
-    },
-    select: {
-      id: true,
-      fullName: true,
-      email: true,
-      phone: true
-    },
-    orderBy: { fullName: "asc" }
-  });
+  return withReadFallback("GET_ACTIVE_USERS_BY_ROLE", (client) =>
+    client.user.findMany({
+      where: {
+        role,
+        status: "ACTIVE"
+      },
+      select: {
+        id: true,
+        fullName: true,
+        email: true,
+        phone: true
+      },
+      orderBy: { fullName: "asc" }
+    })
+  );
 }
