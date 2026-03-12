@@ -260,7 +260,7 @@ Deployment stack (current):
 - Web build command: `pnpm install --frozen-lockfile && pnpm build`
 - Web start command: `pnpm start`
 - Web env:
-  - `NEXT_PUBLIC_API_BASE_URL=https://<your-api-service>.onrender.com`
+  - `NEXT_PUBLIC_API_BASE_URL=https://solar-lead.onrender.com`
 - Verify in browser network tab:
   - `POST /api/auth/login` returns `200`
   - response has both `Set-Cookie` headers (`accessToken`, `refreshToken`)
