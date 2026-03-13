@@ -23,6 +23,38 @@ function normalizeEnv(input: NodeJS.ProcessEnv) {
   return Object.fromEntries(normalizedEntries);
 }
 
+type DatabaseUrlEnvDebug = {
+  exists: boolean;
+  length: number | null;
+  startsWithPostgresql: boolean;
+  hasStartQuote: boolean;
+  hasEndQuote: boolean;
+  hasNewline: boolean;
+};
+
+function summarizeDatabaseUrlEnv(rawValue: string | undefined, normalizedValue: string | undefined): DatabaseUrlEnvDebug {
+  const trimmedRaw = typeof rawValue === "string" ? rawValue.trim() : "";
+  return {
+    exists: typeof rawValue === "string",
+    length: typeof rawValue === "string" ? rawValue.length : null,
+    startsWithPostgresql:
+      typeof normalizedValue === "string" &&
+      normalizedValue.toLowerCase().startsWith("postgresql://"),
+    hasStartQuote: trimmedRaw.startsWith("\"") || trimmedRaw.startsWith("'"),
+    hasEndQuote: trimmedRaw.endsWith("\"") || trimmedRaw.endsWith("'"),
+    hasNewline: typeof rawValue === "string" && /[\r\n]/.test(rawValue)
+  };
+}
+
+function logDatabaseEnvDiagnostics(input: NodeJS.ProcessEnv, normalized: Record<string, unknown>) {
+  const databaseUrl = typeof normalized.DATABASE_URL === "string" ? normalized.DATABASE_URL : undefined;
+  const directUrl = typeof normalized.DIRECT_URL === "string" ? normalized.DIRECT_URL : undefined;
+  console.info("ENV_DB_URL_DIAGNOSTIC", {
+    DATABASE_URL: summarizeDatabaseUrlEnv(input.DATABASE_URL, databaseUrl),
+    DIRECT_URL: summarizeDatabaseUrlEnv(input.DIRECT_URL, directUrl)
+  });
+}
+
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PORT: z.number().default(resolvedPort),
@@ -73,7 +105,10 @@ const envSchema = z.object({
   PAYMENT_GST: z.string().min(5).default("")
 });
 
+const normalizedEnv = normalizeEnv(process.env);
+logDatabaseEnvDiagnostics(process.env, normalizedEnv);
+
 export const env = envSchema.parse({
-  ...normalizeEnv(process.env),
+  ...normalizedEnv,
   PORT: resolvedPort
 });
