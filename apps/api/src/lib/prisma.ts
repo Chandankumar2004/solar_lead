@@ -41,6 +41,25 @@ type PrismaNetworkDiagnostic = {
   };
 };
 
+function logNetworkDiagnostic(diagnostic: PrismaNetworkDiagnostic) {
+  console.info("PRISMA_NETWORK_DNS", {
+    source: diagnostic.source,
+    host: diagnostic.host,
+    ok: diagnostic.dns.ok,
+    addresses: diagnostic.dns.addresses,
+    error: diagnostic.dns.error
+  });
+  console.info("PRISMA_NETWORK_TCP", {
+    source: diagnostic.source,
+    host: diagnostic.host,
+    port: diagnostic.port,
+    ok: diagnostic.tcp.ok,
+    remoteAddress: diagnostic.tcp.remoteAddress,
+    remoteFamily: diagnostic.tcp.remoteFamily,
+    error: diagnostic.tcp.error
+  });
+}
+
 function summarizeDatasource(rawUrl: string) {
   try {
     const parsed = new URL(rawUrl);
@@ -169,6 +188,9 @@ async function runDnsAndTcpDiagnostic(options?: { quiet?: boolean; force?: boole
   const now = Date.now();
 
   if (!force && prismaLastNetworkDiagnostic && now - prismaLastNetworkDiagnosticAt < NETWORK_DIAGNOSTIC_TTL_MS) {
+    if (!quiet) {
+      logNetworkDiagnostic(prismaLastNetworkDiagnostic);
+    }
     return prismaLastNetworkDiagnostic;
   }
 
@@ -274,22 +296,7 @@ async function runDnsAndTcpDiagnostic(options?: { quiet?: boolean; force?: boole
   prismaLastNetworkDiagnosticAt = now;
 
   if (!quiet) {
-    console.info("PRISMA_NETWORK_DNS", {
-      source: "DATABASE_URL",
-      host,
-      ok: dnsResult.ok,
-      addresses: dnsResult.addresses,
-      error: dnsResult.error
-    });
-    console.info("PRISMA_NETWORK_TCP", {
-      source: "DATABASE_URL",
-      host,
-      port,
-      ok: tcpResult.ok,
-      remoteAddress: tcpResult.remoteAddress,
-      remoteFamily: tcpResult.remoteFamily,
-      error: tcpResult.error
-    });
+    logNetworkDiagnostic(prismaLastNetworkDiagnostic);
   }
 
   return prismaLastNetworkDiagnostic;
@@ -321,7 +328,7 @@ async function canConnect() {
 
 export async function runPrismaStartupChecks(options?: { quiet?: boolean }): Promise<boolean> {
   const quiet = options?.quiet === true;
-  const networkDiagnostic = await runDnsAndTcpDiagnostic({ quiet });
+  const networkDiagnostic = await runDnsAndTcpDiagnostic({ quiet, force: !quiet });
   if (!quiet && networkDiagnostic.dns.ok && !networkDiagnostic.tcp.ok) {
     console.error("PRISMA_NETWORK_REACHABILITY_ERROR", {
       reason: "DNS_RESOLVES_BUT_TCP_CONNECT_FAILS",
