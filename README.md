@@ -227,7 +227,7 @@ pnpm --filter @solar/mobile typecheck
 ## Deployment Notes
 See:
 - `DEVOPS.md` for production architecture and env matrix.
-- `render.yaml` for Render blueprint deploy.
+- `NORTHFLANK_DEPLOYMENT.md` for monorepo API deployment on Northflank.
 - `apps/api/Dockerfile` and `apps/web/Dockerfile` for container deploy.
 
 ## Vercel Deployment (Web)
@@ -253,34 +253,22 @@ Deployment stack (current):
 - Backend: Node/Express API + separate worker process
 - Web: Next.js
 
-## Render Deployment Checklist (Web + API)
-- Pin Node to `20.x` in Render (or rely on repo `.node-version` / `engines`) to avoid Prisma runtime init failures on newer default Node versions.
-- API service root directory: `apps/api`
-- API build command: `pnpm install --frozen-lockfile --prod=false && pnpm --filter @solar/api build`
-- API start command: `NODE_ENV=production pnpm --filter @solar/api start`
-- API worker start command: `NODE_ENV=production pnpm --filter @solar/api worker`
-- API pre-deploy / release command: leave empty (do not run Supabase CLI migration-status/list commands)
-- API required env:
-  - `PORT=10000` (or use Render default)
-  - `DATABASE_URL=postgresql://postgres.onblngbhnigulspucvwg:<PASSWORD>@aws-1-ap-south-1.pooler.supabase.com:6543/postgres?pgbouncer=true&sslmode=require`
-  - `DIRECT_URL=postgresql://postgres:<PASSWORD>@db.onblngbhnigulspucvwg.supabase.co:5432/postgres?sslmode=require` (must not use pooler host on `:5432`)
-  - `SUPABASE_URL`
-  - `SUPABASE_ANON_KEY`
-  - `SUPABASE_SERVICE_ROLE_KEY`
+## Northflank Deployment Checklist (API)
+- Service type: Combined service
+- Working directory: repo root
+- Build command: `pnpm install --frozen-lockfile --prod=false && pnpm --filter @solar/api build`
+- Start command: `pnpm --filter @solar/api start`
+- Keep release command empty unless you intentionally run:
+  - `pnpm --filter @solar/api exec prisma migrate deploy --schema ./prisma/schema.prisma`
+- Required env baseline:
+  - `NODE_ENV=production`
+  - `PORT=3000`
+  - `DATABASE_URL` (Supabase runtime URL)
+  - `DIRECT_URL` (Supabase direct URL for migrations/introspection)
+  - `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`
   - `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`, `FIREBASE_PRIVATE_KEY`
-  - `REDIS_URL`, `BULL_NOTIFICATION_QUEUE`
-  - `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`
-- Render note: do not set `NODE_ENV=production` as a build-time env var, otherwise `pnpm install` may skip `devDependencies` needed for TypeScript build.
-- API migration command (manual, when needed): `pnpm --filter @solar/api exec prisma migrate deploy --schema ./prisma/schema.prisma`
-- Web service root directory: `apps/web`
-- Web build command: `pnpm install --frozen-lockfile && pnpm build`
-- Web start command: `pnpm start`
-- Web env:
-  - `NEXT_PUBLIC_API_BASE_URL=https://solar-lead.onrender.com`
-- Verify in browser network tab:
-  - `POST /api/auth/login` returns `200`
-  - response has both `Set-Cookie` headers (`accessToken`, `refreshToken`)
-  - next `GET /api/auth/me` returns `200` (not `401`)
+- Detailed env matrix and exact examples:
+  - `NORTHFLANK_DEPLOYMENT.md`
 
 ## Troubleshooting
 - CORS blocked from web:

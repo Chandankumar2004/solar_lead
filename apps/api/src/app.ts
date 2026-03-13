@@ -47,11 +47,7 @@ function lazyRouter(loader: () => Promise<RouterModule>, exportName: string) {
   };
 }
 
-if (
-  env.NODE_ENV === "production" ||
-  process.env.RENDER === "true" ||
-  process.env.RENDER_EXTERNAL_URL
-) {
+if (env.NODE_ENV === "production") {
   app.set("trust proxy", 1);
 }
 

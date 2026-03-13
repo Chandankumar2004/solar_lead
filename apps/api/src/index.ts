@@ -3,7 +3,7 @@ import { runStartupHealthChecks } from "./lib/startup-health.js";
 import { startSlaOverdueMonitor } from "./services/sla-overdue.service.js";
 
 async function start() {
-  const port = Number(process.env.PORT || 4000);
+  const port = Number(process.env.PORT || 3000);
   app.listen(port, "0.0.0.0", () => {
     console.log(`API running on port ${port}`);
   });

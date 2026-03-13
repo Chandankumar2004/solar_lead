@@ -20,10 +20,7 @@ export const authRouter = Router();
 const accessCookieName = (env.ACCESS_COOKIE_NAME ?? "accessToken").trim() || "accessToken";
 const refreshCookieName = (env.REFRESH_COOKIE_NAME ?? "refreshToken").trim() || "refreshToken";
 
-const isSecureCookieEnv =
-  env.NODE_ENV === "production" ||
-  process.env.RENDER === "true" ||
-  Boolean(process.env.RENDER_EXTERNAL_URL);
+const isSecureCookieEnv = env.NODE_ENV === "production";
 const cookieSameSite = isSecureCookieEnv ? ("none" as const) : ("lax" as const);
 const enforceRecaptchaOnLogin = isSecureCookieEnv;
 
