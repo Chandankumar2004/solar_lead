@@ -15,8 +15,6 @@ services:
         sync: false
       - key: DIRECT_URL
         sync: false
-      - key: DATABASE_URL_SESSION_FALLBACK
-        sync: false
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_ANON_KEY
@@ -82,8 +80,6 @@ services:
       - key: DATABASE_URL
         sync: false
       - key: DIRECT_URL
-        sync: false
-      - key: DATABASE_URL_SESSION_FALLBACK
         sync: false
       - key: SUPABASE_URL
         sync: false

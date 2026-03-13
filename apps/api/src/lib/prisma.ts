@@ -4,6 +4,7 @@ import { env } from "../config/env.js";
 const DEFAULT_CONNECT_ATTEMPTS = 3;
 const DEFAULT_CONNECT_RETRY_DELAY_MS = 1500;
 const runtimeDatabaseUrl = (env.DATABASE_URL ?? "").trim();
+const runtimeDirectUrl = (env.DIRECT_URL ?? "").trim();
 
 type PrismaFailure = {
   at: string;
@@ -15,23 +16,33 @@ type PrismaFailure = {
 function summarizeDatasource(rawUrl: string) {
   try {
     const parsed = new URL(rawUrl);
+    const database = decodeURIComponent(parsed.pathname.replace(/^\/+/, "")) || null;
     return {
       source: "DATABASE_URL" as const,
       host: parsed.hostname,
       port: parsed.port || "5432",
-      schema: parsed.searchParams.get("schema") ?? "public"
+      database,
+      schema: parsed.searchParams.get("schema") ?? "public",
+      hasSslMode: parsed.searchParams.has("sslmode"),
+      hasPgbouncer: parsed.searchParams.has("pgbouncer")
     };
   } catch {
     return {
       source: "DATABASE_URL" as const,
       host: null,
       port: null,
-      schema: null
+      database: null,
+      schema: null,
+      hasSslMode: false,
+      hasPgbouncer: false
     };
   }
 }
 
-const datasourceSummary = summarizeDatasource(runtimeDatabaseUrl);
+const datasourceSummary = {
+  ...summarizeDatasource(runtimeDatabaseUrl),
+  hasDirectUrl: Boolean(runtimeDirectUrl)
+};
 
 console.info("PRISMA_DATASOURCE_SELECTED", datasourceSummary);
 
