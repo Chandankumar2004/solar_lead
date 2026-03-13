@@ -5,6 +5,8 @@ const MAX_ATTEMPTS = 5;
 const BASE_DELAY_MS = 1200;
 const EPERM_RETRY_PATTERN =
   /(EPERM|operation not permitted, rename|query_engine.*\.tmp|Access is denied)/i;
+const ENGINE_DOWNLOAD_RETRY_PATTERN =
+  /(binaries\.prisma\.sh|query_engine.*\.sha256|schema-engine.*\.sha256|ECONNRESET|ECONNREFUSED|ETIMEDOUT)/i;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -72,7 +74,8 @@ async function main() {
       return;
     }
 
-    const isRetryable = EPERM_RETRY_PATTERN.test(output);
+    const isRetryable =
+      EPERM_RETRY_PATTERN.test(output) || ENGINE_DOWNLOAD_RETRY_PATTERN.test(output);
     if (!isRetryable) {
       process.exit(exitCode || 1);
     }
@@ -86,12 +89,12 @@ async function main() {
     await sleep(delay);
   }
 
-  if (EPERM_RETRY_PATTERN.test(lastOutput)) {
+  if (EPERM_RETRY_PATTERN.test(lastOutput) || ENGINE_DOWNLOAD_RETRY_PATTERN.test(lastOutput)) {
     try {
       const exists = require("node:fs").existsSync(existingClientEntry);
       if (exists) {
         console.warn(
-          "PRISMA_GENERATE_RETRY_FALLBACK: using existing generated client due persistent Windows file lock"
+          "PRISMA_GENERATE_RETRY_FALLBACK: using existing generated client due persistent local lock or transient engine download failure"
         );
         return;
       }
