@@ -7,8 +7,10 @@ const DEFAULT_CONNECT_ATTEMPTS = 3;
 const DEFAULT_CONNECT_RETRY_DELAY_MS = 1500;
 const NETWORK_DIAGNOSTIC_TTL_MS = 30_000;
 const TCP_PROBE_TIMEOUT_MS = 4_000;
-const runtimeDatabaseUrl = (env.DATABASE_URL ?? "").trim();
-const runtimeDirectUrl = (env.DIRECT_URL ?? "").trim();
+const rawDatabaseUrl = (env.DATABASE_URL ?? "").trim();
+const rawDirectUrl = (env.DIRECT_URL ?? "").trim();
+
+type DatasourceSource = "DATABASE_URL" | "DIRECT_URL";
 
 type PrismaFailure = {
   at: string;
@@ -25,7 +27,7 @@ type NetworkErrorSummary = {
 
 type PrismaNetworkDiagnostic = {
   at: string;
-  source: "DATABASE_URL";
+  source: DatasourceSource;
   host: string | null;
   port: number | null;
   dns: {
@@ -40,6 +42,49 @@ type PrismaNetworkDiagnostic = {
     error: NetworkErrorSummary | null;
   };
 };
+
+type DatasourceSummary = {
+  source: DatasourceSource;
+  host: string | null;
+  port: string | null;
+  database: string | null;
+  schema: string | null;
+  hasSslMode: boolean;
+  hasPgbouncer: boolean;
+};
+
+function isTruthyEnv(value: string | undefined) {
+  if (typeof value !== "string") {
+    return false;
+  }
+  const normalized = value.trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+}
+
+function ensureSslModeRequire(rawUrl: string, source: DatasourceSource) {
+  if (!rawUrl) {
+    return rawUrl;
+  }
+
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.searchParams.has("sslmode")) {
+      return rawUrl;
+    }
+
+    parsed.searchParams.set("sslmode", "require");
+    const normalized = parsed.toString();
+    console.warn("PRISMA_DATASOURCE_SSLMODE_NORMALIZED", {
+      source,
+      host: parsed.hostname,
+      port: parsed.port || "5432",
+      reason: "ADDED_SSLMODE_REQUIRE"
+    });
+    return normalized;
+  } catch {
+    return rawUrl;
+  }
+}
 
 function logNetworkDiagnostic(diagnostic: PrismaNetworkDiagnostic) {
   console.info("PRISMA_NETWORK_DNS", {
@@ -60,12 +105,12 @@ function logNetworkDiagnostic(diagnostic: PrismaNetworkDiagnostic) {
   });
 }
 
-function summarizeDatasource(rawUrl: string) {
+function summarizeDatasource(rawUrl: string, source: DatasourceSource): DatasourceSummary {
   try {
     const parsed = new URL(rawUrl);
     const database = decodeURIComponent(parsed.pathname.replace(/^\/+/, "")) || null;
     return {
-      source: "DATABASE_URL" as const,
+      source,
       host: parsed.hostname,
       port: parsed.port || "5432",
       database,
@@ -75,7 +120,7 @@ function summarizeDatasource(rawUrl: string) {
     };
   } catch {
     return {
-      source: "DATABASE_URL" as const,
+      source,
       host: null,
       port: null,
       database: null,
@@ -86,17 +131,31 @@ function summarizeDatasource(rawUrl: string) {
   }
 }
 
-const datasourceSummary = {
-  ...summarizeDatasource(runtimeDatabaseUrl),
-  hasDirectUrl: Boolean(runtimeDirectUrl)
-};
+const runtimeDatabaseUrl = ensureSslModeRequire(rawDatabaseUrl, "DATABASE_URL");
+const runtimeDirectUrl = rawDirectUrl;
 
-console.info("PRISMA_DATASOURCE_SELECTED", datasourceSummary);
+const databaseDatasourceSummary = summarizeDatasource(runtimeDatabaseUrl, "DATABASE_URL");
+const directDatasourceSummary = summarizeDatasource(runtimeDirectUrl, "DIRECT_URL");
+const useDirectRuntime = isTruthyEnv(process.env.PRISMA_RUNTIME_USE_DIRECT_URL) && Boolean(runtimeDirectUrl);
+const runtimeDatasourceSource: DatasourceSource = useDirectRuntime ? "DIRECT_URL" : "DATABASE_URL";
+const runtimeDatasourceUrl = useDirectRuntime ? runtimeDirectUrl : runtimeDatabaseUrl;
+const runtimeDatasourceSummary =
+  runtimeDatasourceSource === "DIRECT_URL" ? directDatasourceSummary : databaseDatasourceSummary;
+
+console.info("PRISMA_DATASOURCE_SELECTED", {
+  ...runtimeDatasourceSummary,
+  hasDirectUrl: Boolean(runtimeDirectUrl),
+  runtimeSource: runtimeDatasourceSource
+});
+console.info("PRISMA_DATASOURCE_CANDIDATES", {
+  DATABASE_URL: databaseDatasourceSummary,
+  DIRECT_URL: directDatasourceSummary
+});
 
 export const prisma = new PrismaClient({
   datasources: {
     db: {
-      url: runtimeDatabaseUrl
+      url: runtimeDatasourceUrl
     }
   }
 });
@@ -104,7 +163,14 @@ export const prisma = new PrismaClient({
 let prismaConnected = false;
 let prismaLastFailure: PrismaFailure | null = null;
 let prismaLastNetworkDiagnostic: PrismaNetworkDiagnostic | null = null;
-let prismaLastNetworkDiagnosticAt = 0;
+const prismaLastNetworkDiagnostics: Record<DatasourceSource, PrismaNetworkDiagnostic | null> = {
+  DATABASE_URL: null,
+  DIRECT_URL: null
+};
+const prismaLastNetworkDiagnosticAtBySource: Record<DatasourceSource, number> = {
+  DATABASE_URL: 0,
+  DIRECT_URL: 0
+};
 
 export function isPrismaConnected() {
   return prismaConnected;
@@ -114,7 +180,9 @@ export function getPrismaConnectionState() {
   return {
     connected: prismaConnected,
     lastFailure: prismaLastFailure,
-    networkDiagnostic: prismaLastNetworkDiagnostic
+    networkDiagnostic: prismaLastNetworkDiagnostic,
+    networkDiagnostics: prismaLastNetworkDiagnostics,
+    runtimeSource: runtimeDatasourceSource
   };
 }
 
@@ -182,16 +250,22 @@ function parsePort(rawPort: string | null) {
   return Math.floor(parsed);
 }
 
-async function runDnsAndTcpDiagnostic(options?: { quiet?: boolean; force?: boolean }) {
+async function runDnsAndTcpDiagnostic(
+  source: DatasourceSource,
+  datasourceSummary: DatasourceSummary,
+  options?: { quiet?: boolean; force?: boolean }
+) {
   const quiet = options?.quiet === true;
   const force = options?.force === true;
   const now = Date.now();
 
-  if (!force && prismaLastNetworkDiagnostic && now - prismaLastNetworkDiagnosticAt < NETWORK_DIAGNOSTIC_TTL_MS) {
+  const cachedDiagnostic = prismaLastNetworkDiagnostics[source];
+  const cachedAt = prismaLastNetworkDiagnosticAtBySource[source];
+  if (!force && cachedDiagnostic && now - cachedAt < NETWORK_DIAGNOSTIC_TTL_MS) {
     if (!quiet) {
-      logNetworkDiagnostic(prismaLastNetworkDiagnostic);
+      logNetworkDiagnostic(cachedDiagnostic);
     }
-    return prismaLastNetworkDiagnostic;
+    return cachedDiagnostic;
   }
 
   const host = datasourceSummary.host;
@@ -224,7 +298,7 @@ async function runDnsAndTcpDiagnostic(options?: { quiet?: boolean; force?: boole
     dnsResult.error = {
       code: "EINVALIDHOST",
       name: "InvalidHost",
-      message: "No database host found in DATABASE_URL"
+      message: `No database host found in ${source}`
     };
   }
 
@@ -281,25 +355,38 @@ async function runDnsAndTcpDiagnostic(options?: { quiet?: boolean; force?: boole
     tcpResult.error = {
       code: "EINVALIDPORT",
       name: "InvalidPort",
-      message: "No valid database port found in DATABASE_URL"
+      message: `No valid database port found in ${source}`
     };
   }
 
-  prismaLastNetworkDiagnostic = {
+  const diagnostic: PrismaNetworkDiagnostic = {
     at: new Date().toISOString(),
-    source: "DATABASE_URL",
+    source,
     host,
     port,
     dns: dnsResult,
     tcp: tcpResult
   };
-  prismaLastNetworkDiagnosticAt = now;
-
-  if (!quiet) {
-    logNetworkDiagnostic(prismaLastNetworkDiagnostic);
+  prismaLastNetworkDiagnostics[source] = diagnostic;
+  prismaLastNetworkDiagnosticAtBySource[source] = now;
+  if (source === runtimeDatasourceSource) {
+    prismaLastNetworkDiagnostic = diagnostic;
   }
 
-  return prismaLastNetworkDiagnostic;
+  if (!quiet) {
+    logNetworkDiagnostic(diagnostic);
+  }
+
+  return diagnostic;
+}
+
+async function runAllDatasourceDiagnostics(options?: { quiet?: boolean; force?: boolean }) {
+  const databaseDiagnostic = await runDnsAndTcpDiagnostic("DATABASE_URL", databaseDatasourceSummary, options);
+  const directDiagnostic = await runDnsAndTcpDiagnostic("DIRECT_URL", directDatasourceSummary, options);
+  return {
+    DATABASE_URL: databaseDiagnostic,
+    DIRECT_URL: directDiagnostic
+  } as const;
 }
 
 async function canConnect() {
@@ -321,22 +408,59 @@ async function canConnect() {
 
   return {
     ok: false as const,
-    source: "DATABASE_URL",
+    source: runtimeDatasourceSource,
     error: lastError
   };
 }
 
 export async function runPrismaStartupChecks(options?: { quiet?: boolean }): Promise<boolean> {
   const quiet = options?.quiet === true;
-  const networkDiagnostic = await runDnsAndTcpDiagnostic({ quiet, force: !quiet });
-  if (!quiet && networkDiagnostic.dns.ok && !networkDiagnostic.tcp.ok) {
+  const diagnostics = await runAllDatasourceDiagnostics({ quiet, force: !quiet });
+  const runtimeDiagnostic = diagnostics[runtimeDatasourceSource];
+  prismaLastNetworkDiagnostic = runtimeDiagnostic;
+
+  if (!quiet) {
+    console.info("PRISMA_NETWORK_COMPARISON", {
+      DATABASE_URL: {
+        host: diagnostics.DATABASE_URL.host,
+        port: diagnostics.DATABASE_URL.port,
+        dnsOk: diagnostics.DATABASE_URL.dns.ok,
+        tcpOk: diagnostics.DATABASE_URL.tcp.ok,
+        tcpErrorCode: diagnostics.DATABASE_URL.tcp.error?.code ?? null
+      },
+      DIRECT_URL: {
+        host: diagnostics.DIRECT_URL.host,
+        port: diagnostics.DIRECT_URL.port,
+        dnsOk: diagnostics.DIRECT_URL.dns.ok,
+        tcpOk: diagnostics.DIRECT_URL.tcp.ok,
+        tcpErrorCode: diagnostics.DIRECT_URL.tcp.error?.code ?? null
+      },
+      runtimeSource: runtimeDatasourceSource
+    });
+  }
+
+  if (!quiet && runtimeDiagnostic.dns.ok && !runtimeDiagnostic.tcp.ok) {
     console.error("PRISMA_NETWORK_REACHABILITY_ERROR", {
       reason: "DNS_RESOLVES_BUT_TCP_CONNECT_FAILS",
-      source: "DATABASE_URL",
-      host: networkDiagnostic.host,
-      port: networkDiagnostic.port,
-      dnsAddresses: networkDiagnostic.dns.addresses,
-      tcpError: networkDiagnostic.tcp.error
+      source: runtimeDatasourceSource,
+      host: runtimeDiagnostic.host,
+      port: runtimeDiagnostic.port,
+      dnsAddresses: runtimeDiagnostic.dns.addresses,
+      tcpError: runtimeDiagnostic.tcp.error
+    });
+  }
+
+  if (
+    !quiet &&
+    runtimeDatasourceSource === "DATABASE_URL" &&
+    !diagnostics.DATABASE_URL.tcp.ok &&
+    diagnostics.DIRECT_URL.tcp.ok
+  ) {
+    console.warn("PRISMA_RUNTIME_SWITCH_AVAILABLE", {
+      reason: "POOLER_UNREACHABLE_BUT_DIRECT_REACHABLE",
+      currentRuntimeSource: runtimeDatasourceSource,
+      recommendedRuntimeSource: "DIRECT_URL",
+      enableWith: "PRISMA_RUNTIME_USE_DIRECT_URL=true"
     });
   }
 
@@ -355,7 +479,7 @@ export async function runPrismaStartupChecks(options?: { quiet?: boolean }): Pro
       console.error("PRISMA_INIT_ERROR", {
         reason: "DATABASE_CONNECTION_FAILED",
         source: connectionResult.source,
-        datasource: datasourceSummary,
+        datasource: runtimeDatasourceSummary,
         error: failure
       });
     }
@@ -378,7 +502,7 @@ export async function runPrismaStartupChecks(options?: { quiet?: boolean }): Pro
     `;
     const row = rows[0] ?? null;
     console.info("DB_SCHEMA_CONTEXT", {
-      source: "DATABASE_URL",
+      source: runtimeDatasourceSource,
       currentSchema: row?.currentSchema ?? null,
       searchPath: row?.searchPath ?? null
     });
@@ -386,7 +510,7 @@ export async function runPrismaStartupChecks(options?: { quiet?: boolean }): Pro
     if (!quiet) {
       console.error("DB_METADATA_CHECK_ERROR", {
         reason: "DB_SCHEMA_CONTEXT_READ_FAILED",
-        source: "DATABASE_URL",
+        source: runtimeDatasourceSource,
         error: summarizeConnectionError(error)
       });
     }
