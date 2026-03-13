@@ -20,6 +20,7 @@
     "build:web:with-mapping": "pnpm --filter @solar/api districts:export:web && pnpm --filter @solar/web build",
     "build:web:mapping": "pnpm --filter @solar/api districts:export:web",
     "prisma:generate": "pnpm --filter @solar/api prisma:generate",
+    "prisma:migrate:deploy": "pnpm --filter @solar/api exec prisma migrate deploy --schema ./prisma/schema.prisma",
     "prisma:db:push": "pnpm --filter @solar/api prisma:db:push",
     "prisma:db:push:force": "pnpm --filter @solar/api prisma:db:push:force",
     "deploy:web:vercel": "npx vercel --prod",

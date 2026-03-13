@@ -3,8 +3,8 @@ services:
     name: solar-lead-api
     runtime: node
     rootDir: apps/api
-    buildCommand: pnpm install --frozen-lockfile --prod=false && pnpm build
-    startCommand: NODE_ENV=production pnpm start
+    buildCommand: pnpm install --frozen-lockfile --prod=false && pnpm --filter @solar/api build
+    startCommand: NODE_ENV=production pnpm --filter @solar/api start
     healthCheckPath: /health
     envVars:
       - key: NODE_VERSION
@@ -72,8 +72,8 @@ services:
     name: solar-lead-notification-worker
     runtime: node
     rootDir: apps/api
-    buildCommand: pnpm install --frozen-lockfile --prod=false && pnpm build
-    startCommand: NODE_ENV=production pnpm worker
+    buildCommand: pnpm install --frozen-lockfile --prod=false && pnpm --filter @solar/api build
+    startCommand: NODE_ENV=production pnpm --filter @solar/api worker
     envVars:
       - key: NODE_VERSION
         value: 20

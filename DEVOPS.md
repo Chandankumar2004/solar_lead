@@ -81,7 +81,8 @@ Steps:
 2. Create Blueprint deploy in Render.
 3. Fill all `sync: false` env vars in Render dashboard.
 4. Run Prisma migrations (one-time per release):  
-   `pnpm exec prisma migrate deploy --schema=./apps/api/prisma/schema.prisma`
+   `pnpm --filter @solar/api exec prisma migrate deploy --schema ./prisma/schema.prisma`
+5. Keep Render pre-deploy/release command empty unless explicitly needed; do not run Supabase CLI migration-status/list commands from deployment hooks.
 
 ## Docker Deployment
 

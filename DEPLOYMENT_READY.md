@@ -27,13 +27,13 @@ Last Updated: 2026-03-12
 
 3. Run DB migrations:
 ```bash
-pnpm exec prisma migrate deploy --schema=./apps/api/prisma/schema.prisma
+pnpm --filter @solar/api exec prisma migrate deploy --schema ./prisma/schema.prisma
 ```
 
 4. Deploy services:
-- API service (`pnpm start`)
-- Worker service (`pnpm worker`)
-- Web service (`pnpm start`)
+- API service (`NODE_ENV=production pnpm --filter @solar/api start`)
+- Worker service (`NODE_ENV=production pnpm --filter @solar/api worker`)
+- Web service (`NODE_ENV=production pnpm --filter @solar/web start`)
 
 ## Render Quick Deploy
 

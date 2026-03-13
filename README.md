@@ -256,9 +256,10 @@ Deployment stack (current):
 ## Render Deployment Checklist (Web + API)
 - Pin Node to `20.x` in Render (or rely on repo `.node-version` / `engines`) to avoid Prisma runtime init failures on newer default Node versions.
 - API service root directory: `apps/api`
-- API build command: `pnpm install --frozen-lockfile --prod=false && pnpm build`
-- API start command: `NODE_ENV=production pnpm start`
-- API worker start command: `NODE_ENV=production pnpm worker`
+- API build command: `pnpm install --frozen-lockfile --prod=false && pnpm --filter @solar/api build`
+- API start command: `NODE_ENV=production pnpm --filter @solar/api start`
+- API worker start command: `NODE_ENV=production pnpm --filter @solar/api worker`
+- API pre-deploy / release command: leave empty (do not run Supabase CLI migration-status/list commands)
 - API required env:
   - `PORT=10000` (or use Render default)
   - `DATABASE_URL` (Supabase pooler URL; use `:6543` with `pgbouncer=true&connection_limit=1&sslmode=require`)
@@ -270,7 +271,7 @@ Deployment stack (current):
   - `REDIS_URL`, `BULL_NOTIFICATION_QUEUE`
   - `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`
 - Render note: do not set `NODE_ENV=production` as a build-time env var, otherwise `pnpm install` may skip `devDependencies` needed for TypeScript build.
-- API post-deploy (one-time per migration): `pnpm exec prisma migrate deploy --schema=./apps/api/prisma/schema.prisma`
+- API migration command (manual, when needed): `pnpm --filter @solar/api exec prisma migrate deploy --schema ./prisma/schema.prisma`
 - Web service root directory: `apps/web`
 - Web build command: `pnpm install --frozen-lockfile && pnpm build`
 - Web start command: `pnpm start`

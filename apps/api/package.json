@@ -11,6 +11,7 @@
     "dev:worker": "tsx watch src/worker.ts",
     "build": "pnpm --dir ../../packages/shared build && pnpm run prisma:generate && node scripts/guard-no-supabase-runtime.mjs && tsc -p tsconfig.json",
     "prisma:generate": "node scripts/prisma-generate-retry.cjs",
+    "prisma:migrate:deploy": "prisma migrate deploy --schema ./prisma/schema.prisma",
     "prisma:db:push": "prisma db push --schema ./prisma/schema.prisma",
     "prisma:db:push:force": "prisma db push --schema ./prisma/schema.prisma --accept-data-loss",
     "typecheck": "tsc -p tsconfig.json --noEmit",
