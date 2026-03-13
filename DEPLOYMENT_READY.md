@@ -1,6 +1,6 @@
 # Deployment Ready Checklist
 
-Last Updated: 2026-03-12
+Last Updated: 2026-03-13
 
 ## What Is Ready
 
@@ -42,11 +42,30 @@ pnpm --filter @solar/api exec prisma migrate deploy --schema ./prisma/schema.pri
 
 1. Push repo with `render.yaml`.
 2. Create Blueprint deploy in Render dashboard.
-3. Fill all `sync: false` env vars.
+3. Fill all `sync: false` env vars (paste raw values, no wrapping quotes).
 4. Deploy and check:
 - API health: `/health`
 - Login flow (`/api/auth/login` then `/api/auth/me`)
 - Worker logs for queue startup
+
+### API Render Fields (exact)
+- `Root Directory`: `apps/api`
+- `Build Command`: `pnpm install --frozen-lockfile --prod=false && pnpm --filter @solar/api build`
+- `Pre-Deploy Command`: `pnpm --filter @solar/api exec prisma migrate deploy --schema ./prisma/schema.prisma`
+- `Start Command`: `NODE_ENV=production pnpm --filter @solar/api start`
+
+### Worker Render Fields (exact)
+- `Root Directory`: `apps/api`
+- `Build Command`: `pnpm install --frozen-lockfile --prod=false && pnpm --filter @solar/api build`
+- `Start Command`: `NODE_ENV=production pnpm --filter @solar/api worker`
+
+### Required DB Env (exact format)
+- `DATABASE_URL=postgresql://postgres.onblngbhnigulspucvwg:<PASSWORD>@aws-1-ap-south-1.pooler.supabase.com:6543/postgres?pgbouncer=true&sslmode=require`
+- `DIRECT_URL=postgresql://postgres:<PASSWORD>@db.onblngbhnigulspucvwg.supabase.co:5432/postgres?sslmode=require`
+
+### Important
+- Do not use Supabase CLI migration-status hooks in Render (that is where `supabase_migrations.schema_migrations` errors come from).
+- Use Prisma-only migration flow (`prisma migrate deploy`) in pre-deploy.
 
 ## Docker Quick Deploy
 

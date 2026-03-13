@@ -4,6 +4,7 @@ services:
     runtime: node
     rootDir: apps/api
     buildCommand: pnpm install --frozen-lockfile --prod=false && pnpm --filter @solar/api build
+    preDeployCommand: pnpm --filter @solar/api exec prisma migrate deploy --schema ./prisma/schema.prisma
     startCommand: NODE_ENV=production pnpm --filter @solar/api start
     healthCheckPath: /health
     envVars:

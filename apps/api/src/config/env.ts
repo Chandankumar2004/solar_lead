@@ -2,64 +2,14 @@ import dotenv from "dotenv";
 import { z } from "zod";
 
 dotenv.config();
-const resolvedPort = Number(process.env.PORT) || 10000;
-
-function unquote(value: string | undefined) {
-  if (typeof value !== "string") {
-    return value;
-  }
-  const trimmed = value.trim();
-  if (
-    (trimmed.startsWith("\"") && trimmed.endsWith("\"")) ||
-    (trimmed.startsWith("'") && trimmed.endsWith("'"))
-  ) {
-    return trimmed.slice(1, -1).trim();
-  }
-  return trimmed;
-}
-
-function normalizeEnv(input: NodeJS.ProcessEnv) {
-  const normalizedEntries = Object.entries(input).map(([key, value]) => [key, unquote(value)]);
-  return Object.fromEntries(normalizedEntries);
-}
-
-type DatabaseUrlEnvDebug = {
-  exists: boolean;
-  length: number | null;
-  startsWithPostgresql: boolean;
-  hasStartQuote: boolean;
-  hasEndQuote: boolean;
-  hasNewline: boolean;
-};
-
-function summarizeDatabaseUrlEnv(rawValue: string | undefined, normalizedValue: string | undefined): DatabaseUrlEnvDebug {
-  const trimmedRaw = typeof rawValue === "string" ? rawValue.trim() : "";
-  return {
-    exists: typeof rawValue === "string",
-    length: typeof rawValue === "string" ? rawValue.length : null,
-    startsWithPostgresql:
-      typeof normalizedValue === "string" &&
-      normalizedValue.toLowerCase().startsWith("postgresql://"),
-    hasStartQuote: trimmedRaw.startsWith("\"") || trimmedRaw.startsWith("'"),
-    hasEndQuote: trimmedRaw.endsWith("\"") || trimmedRaw.endsWith("'"),
-    hasNewline: typeof rawValue === "string" && /[\r\n]/.test(rawValue)
-  };
-}
-
-function logDatabaseEnvDiagnostics(input: NodeJS.ProcessEnv, normalized: Record<string, unknown>) {
-  const databaseUrl = typeof normalized.DATABASE_URL === "string" ? normalized.DATABASE_URL : undefined;
-  const directUrl = typeof normalized.DIRECT_URL === "string" ? normalized.DIRECT_URL : undefined;
-  console.info("ENV_DB_URL_DIAGNOSTIC", {
-    DATABASE_URL: summarizeDatabaseUrlEnv(input.DATABASE_URL, databaseUrl),
-    DIRECT_URL: summarizeDatabaseUrlEnv(input.DIRECT_URL, directUrl)
-  });
-}
+const resolvedPort = Number(process.env.PORT) || 4000;
 
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
-  PORT: z.number().default(resolvedPort),
+  PORT: z.coerce.number().int().positive().default(resolvedPort),
   DATABASE_URL: z.string().url(),
-  DIRECT_URL: z.string().url().optional(),
+  DIRECT_URL: z.string().url(),
+  PUBLIC_LEAD_MIN_MONTHLY_BILL_INR: z.coerce.number().int().min(1).default(500),
   SUPABASE_URL: z.string().url(),
   SUPABASE_ANON_KEY: z.string().min(20),
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(20),
@@ -105,10 +55,4 @@ const envSchema = z.object({
   PAYMENT_GST: z.string().min(5).default("")
 });
 
-const normalizedEnv = normalizeEnv(process.env);
-logDatabaseEnvDiagnostics(process.env, normalizedEnv);
-
-export const env = envSchema.parse({
-  ...normalizedEnv,
-  PORT: resolvedPort
-});
+export const env = envSchema.parse(process.env);

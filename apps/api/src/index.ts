@@ -1,5 +1,4 @@
 import { app } from "./app.js";
-import { env } from "./config/env.js";
 import { isPrismaConnected, runPrismaStartupChecks } from "./lib/prisma.js";
 import { runStartupHealthChecks } from "./lib/startup-health.js";
 import { startSlaOverdueMonitor } from "./services/sla-overdue.service.js";
@@ -57,8 +56,9 @@ function startPrismaReconnectLoop() {
 }
 
 async function start() {
-  app.listen(env.PORT, "0.0.0.0", () => {
-    console.log(`API running on port ${env.PORT}`);
+  const port = Number(process.env.PORT || 4000);
+  app.listen(port, "0.0.0.0", () => {
+    console.log(`API running on port ${port}`);
   });
   // Keep startup non-blocking for platform port detection.
   void runStartupHealthChecks().then((connected) => {
