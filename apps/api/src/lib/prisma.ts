@@ -128,31 +128,44 @@ function expandSupabasePoolerVariants(rawUrl: string) {
       return Array.from(results);
     }
 
+    const currentIndex = Number(match[1]);
+    const region = match[2];
+
+    const hostVariants: string[] = [parsed.hostname];
+    for (const index of [0, 1]) {
+      if (index !== currentIndex) {
+        hostVariants.push(`aws-${index}-${region}.pooler.supabase.com`);
+      }
+    }
+
     const portVariants = new Set<string>([parsed.port || "5432"]);
     portVariants.add("5432");
     portVariants.add("6543");
 
-    for (const port of portVariants) {
-      const variant = new URL(rawUrl);
-      variant.port = port;
+    for (const host of hostVariants) {
+      for (const port of portVariants) {
+        const variant = new URL(rawUrl);
+        variant.hostname = host;
+        variant.port = port;
 
-      if (port === "6543") {
-        if (!variant.searchParams.get("pgbouncer")) {
-          variant.searchParams.set("pgbouncer", "true");
+        if (port === "6543") {
+          if (!variant.searchParams.get("pgbouncer")) {
+            variant.searchParams.set("pgbouncer", "true");
+          }
+          if (!variant.searchParams.get("connection_limit")) {
+            variant.searchParams.set("connection_limit", "1");
+          }
+        } else {
+          variant.searchParams.delete("pgbouncer");
+          variant.searchParams.delete("connection_limit");
         }
-        if (!variant.searchParams.get("connection_limit")) {
-          variant.searchParams.set("connection_limit", "1");
+
+        if (!variant.searchParams.get("sslmode")) {
+          variant.searchParams.set("sslmode", "require");
         }
-      } else {
-        variant.searchParams.delete("pgbouncer");
-        variant.searchParams.delete("connection_limit");
-      }
 
-      if (!variant.searchParams.get("sslmode")) {
-        variant.searchParams.set("sslmode", "require");
+        results.add(variant.toString());
       }
-
-      results.add(variant.toString());
     }
   } catch {
     // Keep original URL only.
