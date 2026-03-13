@@ -2,8 +2,12 @@ import "./globals.css";
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "Solar Lead Admin",
-  description: "Solar panel installation lead management"
+  metadataBase: new URL("https://solar-lead.onrender.com"),
+  title: {
+    default: "Solar Lead",
+    template: "%s | Solar Lead"
+  },
+  description: "Solar panel installation lead management and consultation portal"
 };
 
 export default function RootLayout({
@@ -15,4 +19,3 @@ export default function RootLayout({
     </html>
   );
 }
-

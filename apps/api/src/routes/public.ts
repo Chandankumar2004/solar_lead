@@ -5,38 +5,68 @@ import { validateBody, validateQuery } from "../middleware/validate.js";
 import { publicLeadSubmissionRateLimit } from "../middleware/rate-limit.js";
 import { createAuditLog, requestIp } from "../services/audit-log.service.js";
 import { AppError } from "../lib/errors.js";
+import { env } from "../config/env.js";
 import { getPublicDistrictsPayload } from "../services/districts.service.js";
 import { resolveRecaptchaSecret, verifyRecaptchaToken } from "../services/recaptcha.service.js";
 import {
-  countLeadsByPhone,
-  countPublicSubmissionsByPhone,
+  countActiveLeadsByPhone,
   submitPublicLeadWithSms
 } from "../services/public-lead-submission.service.js";
 
 export const publicRouter = Router();
 
+const NAME_REGEX = /^[A-Za-z]+(?: [A-Za-z]+)*$/;
+const INDIAN_MOBILE_REGEX = /^[6-9]\d{9}$/;
+const INSTALLATION_TYPES = ["Residential", "Industrial", "Agricultural", "Other"] as const;
+
+const monthlyBillSchema = z.preprocess(
+  (value) => {
+    if (value === "" || value === null || value === undefined) {
+      return null;
+    }
+    if (typeof value === "string") {
+      const parsed = Number(value);
+      return Number.isNaN(parsed) ? value : parsed;
+    }
+    return value;
+  },
+  z
+    .number({ invalid_type_error: "monthly bill must be a valid number" })
+    .int("monthly bill must be a whole number")
+    .min(
+      env.PUBLIC_LEAD_MIN_MONTHLY_BILL_INR,
+      `monthly bill must be at least INR ${env.PUBLIC_LEAD_MIN_MONTHLY_BILL_INR}`
+    )
+    .max(1_000_000, "monthly bill too large")
+);
+
 const publicLeadSubmissionSchema = z.object({
-  name: z.string().min(2).max(120),
-  phone: z.string().min(8).max(20),
-  email: z.string().email().optional(),
-  monthlyBill: z.number().positive().optional(),
-  monthly_bill: z.number().positive().optional(),
+  name: z
+    .string()
+    .trim()
+    .min(2, "name must be at least 2 characters")
+    .max(120)
+    .regex(NAME_REGEX, "name must contain alphabets and spaces only"),
+  phone: z.string().trim().regex(INDIAN_MOBILE_REGEX, "phone must be a valid 10-digit Indian mobile number"),
+  email: z.string().trim().email("email must be valid"),
+  monthlyBill: monthlyBillSchema.optional(),
+  monthly_bill: monthlyBillSchema.optional(),
   districtId: z.string().uuid().optional(),
   district_id: z.string().uuid().optional(),
-  state: z.string().min(2).max(100).optional(),
-  installationType: z.string().min(2).max(100).optional(),
-  installation_type: z.string().min(2).max(100).optional(),
-  message: z.string().max(1000).optional(),
-  utmSource: z.string().max(100).optional(),
-  utm_source: z.string().max(100).optional(),
-  utmMedium: z.string().max(100).optional(),
-  utm_medium: z.string().max(100).optional(),
-  utmCampaign: z.string().max(100).optional(),
-  utm_campaign: z.string().max(100).optional(),
-  utmTerm: z.string().max(100).optional(),
-  utm_term: z.string().max(100).optional(),
-  utmContent: z.string().max(100).optional(),
-  utm_content: z.string().max(100).optional(),
+  state: z.string().trim().min(2).max(100),
+  installationType: z.enum(INSTALLATION_TYPES).optional(),
+  installation_type: z.enum(INSTALLATION_TYPES).optional(),
+  message: z.string().trim().max(500).optional(),
+  utmSource: z.string().trim().max(100).optional(),
+  utm_source: z.string().trim().max(100).optional(),
+  utmMedium: z.string().trim().max(100).optional(),
+  utm_medium: z.string().trim().max(100).optional(),
+  utmCampaign: z.string().trim().max(100).optional(),
+  utm_campaign: z.string().trim().max(100).optional(),
+  utmTerm: z.string().trim().max(100).optional(),
+  utm_term: z.string().trim().max(100).optional(),
+  utmContent: z.string().trim().max(100).optional(),
+  utm_content: z.string().trim().max(100).optional(),
   recaptchaScore: z.number().min(0).max(1).optional(),
   recaptcha_score: z.number().min(0).max(1).optional(),
   recaptchaToken: z.string().min(10).optional(),
@@ -52,16 +82,37 @@ const publicLeadSubmissionSchema = z.object({
         message: "districtId or district_id is required"
       });
     }
+    if (data.monthlyBill === undefined && data.monthly_bill === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["monthlyBill"],
+        message: "monthly bill is required"
+      });
+    }
+    if (!data.installationType && !data.installation_type) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["installationType"],
+        message: "installation type is required"
+      });
+    }
+    if ((data.consentGiven ?? data.consent_given) !== true) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["consentGiven"],
+        message: "consent must be accepted"
+      });
+    }
   })
   .transform((data) => ({
     name: data.name,
     phone: data.phone,
-    email: data.email,
+    email: data.email.trim(),
     monthlyBill: data.monthlyBill ?? data.monthly_bill,
     districtId: data.districtId ?? data.district_id!,
-    state: data.state,
-    installationType: data.installationType ?? data.installation_type,
-    message: data.message,
+    state: data.state.trim(),
+    installationType: data.installationType ?? data.installation_type!,
+    message: data.message?.trim() || undefined,
     utmSource: data.utmSource ?? data.utm_source,
     utmMedium: data.utmMedium ?? data.utm_medium,
     utmCampaign: data.utmCampaign ?? data.utm_campaign,
@@ -69,11 +120,11 @@ const publicLeadSubmissionSchema = z.object({
     utmContent: data.utmContent ?? data.utm_content,
     recaptchaScore: data.recaptchaScore ?? data.recaptcha_score,
     recaptchaToken: data.recaptchaToken ?? data.recaptcha_token,
-    consentGiven: data.consentGiven ?? data.consent_given ?? false
+    consentGiven: true
   }));
 
 const duplicatePhoneQuerySchema = z.object({
-  phone: z.string().min(8).max(20)
+  phone: z.string().trim().regex(INDIAN_MOBILE_REGEX, "phone must be a valid 10-digit Indian mobile number")
 });
 
 publicRouter.get("/districts", async (_req: Request, res: Response) => {
@@ -91,17 +142,7 @@ publicRouter.get(
   validateQuery(duplicatePhoneQuerySchema),
   async (req: Request, res: Response) => {
     const query = req.query as z.infer<typeof duplicatePhoneQuerySchema>;
-    const leadCount = await countLeadsByPhone(query.phone);
-    let publicSubmissionCount = 0;
-    try {
-      publicSubmissionCount = await countPublicSubmissionsByPhone(query.phone);
-    } catch (error) {
-      console.error("PUBLIC_DUPLICATE_CHECK_FALLBACK", {
-        phone: query.phone,
-        error
-      });
-    }
-    const count = leadCount + publicSubmissionCount;
+    const count = await countActiveLeadsByPhone(query.phone);
 
     return ok(
       res,

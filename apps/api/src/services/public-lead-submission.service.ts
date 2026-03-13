@@ -106,7 +106,16 @@ async function savePublicSubmission(
 
   const id = randomUUID();
   const externalId = randomUUID();
-  const state = (input.state?.trim() || districtState).trim();
+  const submittedState = input.state?.trim() ?? "";
+  if (submittedState && submittedState.toLowerCase() !== districtState.toLowerCase()) {
+    throw new AppError(
+      400,
+      "DISTRICT_STATE_MISMATCH",
+      "Selected district and state do not match"
+    );
+  }
+
+  const state = districtState;
 
   const { error } = await supabase.from("public_lead_submissions").insert({
     id,
@@ -337,28 +346,22 @@ export async function countPublicSubmissionsByPhone(phone: string) {
   return Number(count ?? 0);
 }
 
-export async function countLeadsByPhone(phone: string) {
-  const supabase = getSupabaseAdminClient();
-  if (!supabase) {
-    console.error("lead_duplicate_check_failed", {
+export async function countActiveLeadsByPhone(phone: string) {
+  try {
+    const count = await prisma.lead.count({
+      where: {
+        phone,
+        currentStatus: {
+          isTerminal: false
+        }
+      }
+    });
+    return count;
+  } catch (error) {
+    console.error("active_lead_duplicate_check_failed", {
       phone,
-      error: "SUPABASE_ADMIN_NOT_CONFIGURED"
+      error
     });
     return 0;
   }
-
-  const { count, error } = await supabase
-    .from("leads")
-    .select("id", { head: true, count: "exact" })
-    .eq("phone", phone);
-
-  if (error) {
-    console.error("lead_duplicate_check_failed", {
-      phone,
-      error: error.message
-    });
-    return 0;
-  }
-
-  return Number(count ?? 0);
 }

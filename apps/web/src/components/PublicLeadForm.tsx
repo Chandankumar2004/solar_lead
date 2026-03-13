@@ -5,12 +5,13 @@ import Script from "next/script";
 import { useSearchParams } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { api, getApiErrorMessage } from "@/lib/api";
+import { api } from "@/lib/api";
 import { resolveRecaptchaSiteKey } from "@/lib/recaptcha";
 import {
   type DistrictMappingPayload,
   type PublicLeadFormValues,
   INSTALLATION_TYPES,
+  MIN_MONTHLY_BILL_INR,
   publicLeadFormSchema
 } from "@/lib/landing";
 
@@ -51,6 +52,8 @@ export function PublicLeadForm({ districtMapping }: PublicLeadFormProps) {
     formState: { errors, isSubmitting }
   } = useForm<PublicLeadFormValues>({
     resolver: zodResolver(publicLeadFormSchema),
+    mode: "onBlur",
+    reValidateMode: "onBlur",
     defaultValues: {
       name: "",
       phone: "",
@@ -58,7 +61,7 @@ export function PublicLeadForm({ districtMapping }: PublicLeadFormProps) {
       monthly_bill: undefined,
       district_id: "",
       state: "",
-      installation_type: "Residential Rooftop",
+      installation_type: "Residential",
       message: "",
       consent_given: false
     }
@@ -87,19 +90,9 @@ export function PublicLeadForm({ districtMapping }: PublicLeadFormProps) {
   }, [districtById, selectedDistrictId, setValue]);
 
   useEffect(() => {
-    if (!submitSuccess) {
-      return;
-    }
-    const timer = window.setTimeout(() => {
-      setSubmitSuccess(null);
-    }, 10000);
-    return () => window.clearTimeout(timer);
-  }, [submitSuccess]);
-
-  useEffect(() => {
     setDuplicateWarning(null);
-    const normalizedPhone = phone?.trim() ?? "";
-    if (normalizedPhone.length < 8) {
+    const normalizedPhone = (phone?.trim() ?? "").replace(/\D/g, "");
+    if (normalizedPhone.length !== 10) {
       return;
     }
     let cancelled = false;
@@ -115,17 +108,10 @@ export function PublicLeadForm({ districtMapping }: PublicLeadFormProps) {
         const data = response.data?.data as DuplicateCheckData | undefined;
         if (data?.isDuplicate) {
           setDuplicateWarning(
-            `This phone already exists in ${data.count} lead${data.count > 1 ? "s" : ""}. You can still submit.`
+            `An active lead already exists for this phone (${data.count}). You can still submit this request.`
           );
         }
-      } catch (error: unknown) {
-        const message = getApiErrorMessage(error, "Duplicate check unavailable");
-        if (message.startsWith("Network/CORS error")) {
-          setDuplicateWarning(
-            "Duplicate check is temporarily unavailable due to network/CORS. You can still submit."
-          );
-          return;
-        }
+      } catch {
         setDuplicateWarning(null);
       }
     }, 450);
@@ -205,8 +191,8 @@ export function PublicLeadForm({ districtMapping }: PublicLeadFormProps) {
     try {
       const response = await api.post("/public/leads", {
         name: values.name.trim(),
-        phone: values.phone.trim(),
-        email: values.email?.trim() || undefined,
+        phone: values.phone.trim().replace(/\D/g, ""),
+        email: values.email.trim(),
         monthly_bill: values.monthly_bill,
         district_id: values.district_id,
         state: values.state,
@@ -228,9 +214,31 @@ export function PublicLeadForm({ districtMapping }: PublicLeadFormProps) {
       setDistrictSearch("");
       setDuplicateWarning(null);
     } catch (error: unknown) {
-      setSubmitError(getApiErrorMessage(error, "Lead submission failed. Please try again."));
+      console.error("PUBLIC_LEAD_SUBMIT_FAILED", error);
+      setSubmitError("Something went wrong. Please try again in a moment.");
     }
   });
+
+  if (submitSuccess) {
+    return (
+      <div className="space-y-4 rounded-2xl border border-emerald-200 bg-white p-6 shadow-lg">
+        <h2 className="text-2xl font-semibold text-slate-900">Request Received</h2>
+        <p className="text-sm text-slate-700">
+          Thank you for your interest. A representative will contact you shortly.
+        </p>
+        <p className="text-sm text-emerald-700">
+          Reference ID: <span className="font-semibold">{submitSuccess.externalId}</span>
+        </p>
+        <button
+          type="button"
+          onClick={() => setSubmitSuccess(null)}
+          className="w-full rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50"
+        >
+          Submit another request
+        </button>
+      </div>
+    );
+  }
 
   return (
     <>
@@ -268,9 +276,11 @@ export function PublicLeadForm({ districtMapping }: PublicLeadFormProps) {
           <label className="mb-1 block text-sm font-medium text-slate-700">Phone</label>
           <input
             type="tel"
+            inputMode="numeric"
+            maxLength={10}
             {...register("phone")}
             className="w-full rounded-md border border-slate-300 px-3 py-2 outline-none focus:border-brand-600 focus:ring-2 focus:ring-brand-100"
-            placeholder="Enter phone number"
+            placeholder="Enter 10-digit mobile number"
           />
           {errors.phone ? <p className="mt-1 text-xs text-red-600">{errors.phone.message}</p> : null}
           {duplicateWarning ? (
@@ -279,7 +289,7 @@ export function PublicLeadForm({ districtMapping }: PublicLeadFormProps) {
         </div>
 
         <div>
-          <label className="mb-1 block text-sm font-medium text-slate-700">Email (optional)</label>
+          <label className="mb-1 block text-sm font-medium text-slate-700">Email Address</label>
           <input
             type="email"
             {...register("email")}
@@ -290,14 +300,14 @@ export function PublicLeadForm({ districtMapping }: PublicLeadFormProps) {
         </div>
 
         <div>
-          <label className="mb-1 block text-sm font-medium text-slate-700">Monthly Bill (optional)</label>
+          <label className="mb-1 block text-sm font-medium text-slate-700">Monthly Bill (INR)</label>
           <input
             type="number"
-            min={0}
-            step="0.01"
+            min={MIN_MONTHLY_BILL_INR}
+            step={1}
             {...register("monthly_bill")}
             className="w-full rounded-md border border-slate-300 px-3 py-2 outline-none focus:border-brand-600 focus:ring-2 focus:ring-brand-100"
-            placeholder="e.g. 2500"
+            placeholder={`Minimum ${MIN_MONTHLY_BILL_INR}`}
           />
           {errors.monthly_bill ? (
             <p className="mt-1 text-xs text-red-600">{errors.monthly_bill.message}</p>
@@ -362,13 +372,14 @@ export function PublicLeadForm({ districtMapping }: PublicLeadFormProps) {
         </div>
 
         <div>
-          <label className="mb-1 block text-sm font-medium text-slate-700">Message (optional)</label>
+          <label className="mb-1 block text-sm font-medium text-slate-700">Message / Additional Info</label>
           <textarea
             rows={4}
             {...register("message")}
             className="w-full rounded-md border border-slate-300 px-3 py-2 outline-none focus:border-brand-600 focus:ring-2 focus:ring-brand-100"
             placeholder="Share roof details, preferred callback time, or requirements"
           />
+          <p className="mt-1 text-[11px] text-slate-500">Maximum 500 characters.</p>
           {errors.message ? <p className="mt-1 text-xs text-red-600">{errors.message.message}</p> : null}
         </div>
 
@@ -384,12 +395,6 @@ export function PublicLeadForm({ districtMapping }: PublicLeadFormProps) {
         ) : null}
 
         {submitError ? <p className="text-sm text-red-700">{submitError}</p> : null}
-        {submitSuccess ? (
-          <p className="text-sm text-emerald-700">
-            Request submitted successfully. Reference ID:{" "}
-            <span className="font-semibold">{submitSuccess.externalId}</span>
-          </p>
-        ) : null}
         {recaptchaConfigInvalid ? (
           <p className="text-xs text-amber-700">
             reCAPTCHA site key is invalid. Set a valid `NEXT_PUBLIC_RECAPTCHA_SITE_KEY`.
