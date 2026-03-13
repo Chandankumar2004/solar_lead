@@ -152,6 +152,16 @@ console.info("PRISMA_DATASOURCE_CANDIDATES", {
   DIRECT_URL: directDatasourceSummary
 });
 
+if ((directDatasourceSummary.host ?? "").toLowerCase().includes("pooler.supabase.com")) {
+  console.error("PRISMA_DIRECT_URL_CONFIG_ERROR", {
+    reason: "DIRECT_URL_POINTS_TO_POOLER_HOST",
+    directHost: directDatasourceSummary.host,
+    directPort: directDatasourceSummary.port,
+    expectedHostHint: "db.onblngbhnigulspucvwg.supabase.co",
+    expectedPortHint: "5432"
+  });
+}
+
 export const prisma = new PrismaClient({
   datasources: {
     db: {

@@ -262,8 +262,8 @@ Deployment stack (current):
 - API pre-deploy / release command: leave empty (do not run Supabase CLI migration-status/list commands)
 - API required env:
   - `PORT=10000` (or use Render default)
-  - `DATABASE_URL` (Supabase pooler URL; use `:6543` with `pgbouncer=true&connection_limit=1&sslmode=require`)
-  - `DIRECT_URL` (Supabase direct DB host URL, do not use pooler host/port)
+  - `DATABASE_URL=postgresql://postgres.onblngbhnigulspucvwg:<PASSWORD>@aws-1-ap-south-1.pooler.supabase.com:6543/postgres?pgbouncer=true&sslmode=require`
+  - `DIRECT_URL=postgresql://postgres:<PASSWORD>@db.onblngbhnigulspucvwg.supabase.co:5432/postgres?sslmode=require` (must not use pooler host on `:5432`)
   - `SUPABASE_URL`
   - `SUPABASE_ANON_KEY`
   - `SUPABASE_SERVICE_ROLE_KEY`

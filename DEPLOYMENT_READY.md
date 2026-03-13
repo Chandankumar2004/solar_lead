@@ -18,6 +18,9 @@ Last Updated: 2026-03-12
 1. Set all production environment variables in hosting platform:
 - API env from `apps/api/.env.example`
 - Web env from `apps/web/.env.example`
+- API DB URLs must be:
+  - `DATABASE_URL=postgresql://postgres.onblngbhnigulspucvwg:<PASSWORD>@aws-1-ap-south-1.pooler.supabase.com:6543/postgres?pgbouncer=true&sslmode=require`
+  - `DIRECT_URL=postgresql://postgres:<PASSWORD>@db.onblngbhnigulspucvwg.supabase.co:5432/postgres?sslmode=require`
 
 2. Provision external services:
 - Supabase project + `documents` bucket

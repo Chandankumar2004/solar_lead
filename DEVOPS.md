@@ -36,8 +36,10 @@ Convenience scripts at root:
 ### API required
 - `NODE_ENV=production`
 - `PORT` (usually `10000` on Render)
-- `DATABASE_URL` (Supabase pooler URL)
-- `DIRECT_URL` (Supabase direct DB host URL for migrations)
+- `DATABASE_URL`  
+  `postgresql://postgres.onblngbhnigulspucvwg:<PASSWORD>@aws-1-ap-south-1.pooler.supabase.com:6543/postgres?pgbouncer=true&sslmode=require`
+- `DIRECT_URL`  
+  `postgresql://postgres:<PASSWORD>@db.onblngbhnigulspucvwg.supabase.co:5432/postgres?sslmode=require`
 - `SUPABASE_URL`
 - `SUPABASE_ANON_KEY`
 - `SUPABASE_SERVICE_ROLE_KEY`
@@ -51,7 +53,6 @@ Convenience scripts at root:
 - `RAZORPAY_KEY_SECRET`
 
 ### API optional / recommended
-- `DATABASE_URL_SESSION_FALLBACK`
 - `REDIS_MAX_RETRIES`
 - `RAZORPAY_API_BASE_URL`
 - notification provider credentials (MSG91/SendGrid/Twilio/etc) as needed
