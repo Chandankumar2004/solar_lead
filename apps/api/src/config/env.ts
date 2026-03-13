@@ -28,7 +28,6 @@ const envSchema = z.object({
   PORT: z.number().default(resolvedPort),
   DATABASE_URL: z.string().url(),
   DIRECT_URL: z.string().url().optional(),
-  DATABASE_URL_SESSION_FALLBACK: z.string().url().optional(),
   SUPABASE_URL: z.string().url(),
   SUPABASE_ANON_KEY: z.string().min(20),
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(20),

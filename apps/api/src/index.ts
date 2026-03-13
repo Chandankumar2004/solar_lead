@@ -61,8 +61,7 @@ async function start() {
     console.log(`API running on port ${env.PORT}`);
   });
   // Keep startup non-blocking for platform port detection.
-  void runStartupHealthChecks();
-  void runPrismaStartupChecks({ quiet: false }).then((connected) => {
+  void runStartupHealthChecks().then((connected) => {
     if (!connected) {
       console.warn("PRISMA_DEGRADED_MODE", {
         reason: "DATABASE_UNAVAILABLE_ON_STARTUP"

@@ -1,5 +1,5 @@
 import type { PrismaClient } from "@prisma/client";
-import { prisma, prismaAuthFallback } from "../lib/prisma.js";
+import { prisma } from "../lib/prisma.js";
 import { UserRole } from "../types.js";
 
 type PublicDistrict = {
@@ -24,20 +24,7 @@ async function withReadFallback<T>(
       operation,
       reason: primaryError instanceof Error ? primaryError.message : "UNKNOWN_ERROR"
     });
-
-    if (prismaAuthFallback === prisma) {
-      throw primaryError;
-    }
-
-    try {
-      return await run(prismaAuthFallback);
-    } catch (fallbackError) {
-      console.error("DISTRICTS_READ_FALLBACK_DB_FAILED", {
-        operation,
-        reason: fallbackError instanceof Error ? fallbackError.message : "UNKNOWN_ERROR"
-      });
-      throw fallbackError;
-    }
+    throw primaryError;
   }
 }
 
@@ -106,19 +93,7 @@ async function listPublicDistrictsWithFallback() {
     console.error("PUBLIC_DISTRICTS_PRIMARY_DB_FAILED", {
       reason: primaryError instanceof Error ? primaryError.message : "UNKNOWN_ERROR"
     });
-
-    if (prismaAuthFallback === prisma) {
-      throw primaryError;
-    }
-
-    try {
-      return await listPublicDistricts(prismaAuthFallback);
-    } catch (fallbackError) {
-      console.error("PUBLIC_DISTRICTS_FALLBACK_DB_FAILED", {
-        reason: fallbackError instanceof Error ? fallbackError.message : "UNKNOWN_ERROR"
-      });
-      throw fallbackError;
-    }
+    throw primaryError;
   }
 }
 

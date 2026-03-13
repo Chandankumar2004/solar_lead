@@ -230,6 +230,22 @@ See:
 - `render.yaml` for Render blueprint deploy.
 - `apps/api/Dockerfile` and `apps/web/Dockerfile` for container deploy.
 
+## Vercel Deployment (Web)
+- This repo includes root-level `vercel.json` for deploying `apps/web` from the monorepo.
+- Required Vercel env vars (Project Settings -> Environment Variables):
+  - `NEXT_PUBLIC_API_BASE_URL=https://solar-lead.onrender.com`
+  - `NEXT_PUBLIC_API_URL=https://solar-lead.onrender.com`
+  - `NEXT_PUBLIC_SUPABASE_URL`
+  - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+  - Firebase public keys (`NEXT_PUBLIC_FIREBASE_*`)
+  - `NEXT_PUBLIC_RECAPTCHA_SITE_KEY`
+
+Deploy commands:
+```bash
+npx vercel login
+npx vercel --prod
+```
+
 Deployment stack (current):
 - DB: Supabase PostgreSQL
 - File storage: Supabase Storage (`documents` bucket)
@@ -245,8 +261,7 @@ Deployment stack (current):
 - API worker start command: `NODE_ENV=production pnpm worker`
 - API required env:
   - `PORT=10000` (or use Render default)
-  - `DATABASE_URL` (Supabase pooler URL; prefer `:6543` with `pgbouncer=true&connection_limit=1&sslmode=require`, or use session pooler `:5432` if runtime network blocks `6543`)
-  - Optional runtime fallback: `DATABASE_URL_SESSION_FALLBACK` (explicit session pooler URL from Supabase dashboard, usually `:5432`)
+  - `DATABASE_URL` (Supabase pooler URL; use `:6543` with `pgbouncer=true&connection_limit=1&sslmode=require`)
   - `DIRECT_URL` (Supabase direct DB host URL, do not use pooler host/port)
   - `SUPABASE_URL`
   - `SUPABASE_ANON_KEY`
