@@ -2,6 +2,10 @@ import { PrismaClient } from "@prisma/client";
 import { env } from "../config/env.js";
 
 const DEFAULT_APP_DB_SCHEMA = "public";
+const DEFAULT_CONNECT_TIMEOUT_SECONDS = "15";
+const DEFAULT_POOL_TIMEOUT_SECONDS = "30";
+const DEFAULT_CONNECT_ATTEMPTS = 3;
+const DEFAULT_CONNECT_RETRY_DELAY_MS = 1500;
 
 function normalizeOptionsParam(rawOptions: string) {
   const options = rawOptions.trim();
@@ -30,7 +34,9 @@ function normalizePrismaDatasourceUrl(rawUrl: string) {
       return rawUrl;
     }
 
-    const isSupabasePooler = parsed.hostname.toLowerCase().endsWith(".pooler.supabase.com");
+    const host = parsed.hostname.toLowerCase();
+    const isSupabasePooler = host.endsWith(".pooler.supabase.com");
+    const isSupabaseDirect = host.startsWith("db.") && host.endsWith(".supabase.co");
     if (isSupabasePooler) {
       const configuredPort = parsed.port || "6543";
       // Keep caller-selected pooler mode:
@@ -46,10 +52,20 @@ function normalizePrismaDatasourceUrl(rawUrl: string) {
         if (!parsed.searchParams.get("connection_limit")) {
           parsed.searchParams.set("connection_limit", "1");
         }
+      } else {
+        parsed.searchParams.delete("pgbouncer");
+        parsed.searchParams.delete("connection_limit");
       }
-      if (!parsed.searchParams.get("sslmode")) {
-        parsed.searchParams.set("sslmode", "require");
-      }
+    }
+
+    if ((isSupabasePooler || isSupabaseDirect) && !parsed.searchParams.get("sslmode")) {
+      parsed.searchParams.set("sslmode", "require");
+    }
+    if (!parsed.searchParams.get("connect_timeout")) {
+      parsed.searchParams.set("connect_timeout", DEFAULT_CONNECT_TIMEOUT_SECONDS);
+    }
+    if (!parsed.searchParams.get("pool_timeout")) {
+      parsed.searchParams.set("pool_timeout", DEFAULT_POOL_TIMEOUT_SECONDS);
     }
 
     const configuredSchema = (parsed.searchParams.get("schema") ?? "").trim();
@@ -112,45 +128,31 @@ function expandSupabasePoolerVariants(rawUrl: string) {
       return Array.from(results);
     }
 
-    const currentIndex = Number(match[1]);
-    const region = match[2];
-
-    const hostVariants = new Set<string>([parsed.hostname]);
-    for (const index of [0, 1]) {
-      if (index === currentIndex) {
-        continue;
-      }
-      hostVariants.add(`aws-${index}-${region}.pooler.supabase.com`);
-    }
-
     const portVariants = new Set<string>([parsed.port || "5432"]);
     portVariants.add("5432");
     portVariants.add("6543");
 
-    for (const host of hostVariants) {
-      for (const port of portVariants) {
-        const variant = new URL(rawUrl);
-        variant.hostname = host;
-        variant.port = port;
+    for (const port of portVariants) {
+      const variant = new URL(rawUrl);
+      variant.port = port;
 
-        if (port === "6543") {
-          if (!variant.searchParams.get("pgbouncer")) {
-            variant.searchParams.set("pgbouncer", "true");
-          }
-          if (!variant.searchParams.get("connection_limit")) {
-            variant.searchParams.set("connection_limit", "1");
-          }
-        } else {
-          variant.searchParams.delete("pgbouncer");
-          variant.searchParams.delete("connection_limit");
+      if (port === "6543") {
+        if (!variant.searchParams.get("pgbouncer")) {
+          variant.searchParams.set("pgbouncer", "true");
         }
-
-        if (!variant.searchParams.get("sslmode")) {
-          variant.searchParams.set("sslmode", "require");
+        if (!variant.searchParams.get("connection_limit")) {
+          variant.searchParams.set("connection_limit", "1");
         }
-
-        results.add(variant.toString());
+      } else {
+        variant.searchParams.delete("pgbouncer");
+        variant.searchParams.delete("connection_limit");
       }
+
+      if (!variant.searchParams.get("sslmode")) {
+        variant.searchParams.set("sslmode", "require");
+      }
+
+      results.add(variant.toString());
     }
   } catch {
     // Keep original URL only.
@@ -410,22 +412,85 @@ const prismaAlternateFallbacks = runtimeAlternateCandidates.map((candidate) => (
 
 export let prisma = primaryPrismaClient;
 let prismaConnected = false;
+let prismaLastFailure:
+  | {
+      at: string;
+      reason: string;
+      source: string | null;
+      message: string;
+    }
+  | null = null;
 
 export function isPrismaConnected() {
   return prismaConnected;
+}
+
+export function getPrismaConnectionState() {
+  return {
+    connected: prismaConnected,
+    lastFailure: prismaLastFailure
+  };
+}
+
+function summarizeConnectionError(error: unknown) {
+  if (error && typeof error === "object") {
+    const maybe = error as { name?: unknown; message?: unknown; code?: unknown };
+    const name = typeof maybe.name === "string" ? maybe.name : "Error";
+    const message = typeof maybe.message === "string" ? maybe.message : "Unknown connection error";
+    const code = typeof maybe.code === "string" ? maybe.code : null;
+    return { name, message, code };
+  }
+  return {
+    name: "Error",
+    message: typeof error === "string" ? error : "Unknown connection error",
+    code: null
+  };
 }
 
 type ConnectionCheck =
   | { ok: true }
   | { ok: false; source: string; error: unknown };
 
-async function canConnect(client: PrismaClient, sourceLabel: string): Promise<ConnectionCheck> {
-  try {
-    await client.$queryRaw`SELECT 1`;
-    return { ok: true };
-  } catch (error) {
-    return { ok: false, source: sourceLabel, error };
+function resolveConnectAttempts() {
+  const raw = Number(process.env.PRISMA_CONNECT_ATTEMPTS ?? "");
+  if (Number.isFinite(raw) && raw >= 1 && raw <= 10) {
+    return Math.floor(raw);
   }
+  return DEFAULT_CONNECT_ATTEMPTS;
+}
+
+function resolveConnectRetryDelayMs() {
+  const raw = Number(process.env.PRISMA_CONNECT_RETRY_DELAY_MS ?? "");
+  if (Number.isFinite(raw) && raw >= 0 && raw <= 60_000) {
+    return Math.floor(raw);
+  }
+  return DEFAULT_CONNECT_RETRY_DELAY_MS;
+}
+
+function sleep(ms: number) {
+  return new Promise<void>((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+async function canConnect(client: PrismaClient, sourceLabel: string): Promise<ConnectionCheck> {
+  const maxAttempts = resolveConnectAttempts();
+  const retryDelayMs = resolveConnectRetryDelayMs();
+  let lastError: unknown = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      await client.$queryRaw`SELECT 1`;
+      return { ok: true };
+    } catch (error) {
+      lastError = error;
+      if (attempt < maxAttempts && retryDelayMs > 0) {
+        await sleep(retryDelayMs);
+      }
+    }
+  }
+
+  return { ok: false, source: sourceLabel, error: lastError };
 }
 
 async function checkAppUserTable() {
@@ -472,7 +537,7 @@ export async function runPrismaStartupChecks(options?: { quiet?: boolean }): Pro
           console.error("PRISMA_SESSION_POOLER_FALLBACK_FAILED", {
             primarySource: primaryResult.source,
             source: sessionFallbackResult.source,
-            error: sessionFallbackResult.error
+            error: summarizeConnectionError(sessionFallbackResult.error)
           });
         }
       }
@@ -483,6 +548,14 @@ export async function runPrismaStartupChecks(options?: { quiet?: boolean }): Pro
     } else if (prismaAlternateFallbacks.length > 0) {
       let connectedFallback: (typeof prismaAlternateFallbacks)[number] | null = null;
       let lastFallbackResult: ConnectionCheck | null = null;
+      const attemptedFallbacks: Array<{
+        source: string;
+        host: string | null;
+        port: string | null;
+        schema: string | null;
+        pgbouncer: string | null;
+        error: ReturnType<typeof summarizeConnectionError>;
+      }> = [];
 
       for (const fallback of prismaAlternateFallbacks) {
         if (fallback.client === prisma) {
@@ -495,6 +568,11 @@ export async function runPrismaStartupChecks(options?: { quiet?: boolean }): Pro
           break;
         }
         lastFallbackResult = fallbackResult;
+        attemptedFallbacks.push({
+          source: fallback.source,
+          ...summarizeDatasource(fallback.normalizedUrl),
+          error: summarizeConnectionError(fallbackResult.error)
+        });
       }
 
       if (connectedFallback) {
@@ -506,30 +584,43 @@ export async function runPrismaStartupChecks(options?: { quiet?: boolean }): Pro
         });
       } else {
         prismaConnected = false;
+        prismaLastFailure = {
+          at: new Date().toISOString(),
+          reason: "DATABASE_CONNECTION_FAILED",
+          source: primaryResult.source,
+          message: summarizeConnectionError(primaryResult.error).message
+        };
         if (!quiet) {
           console.error("PRISMA_INIT_ERROR", {
             reason: "DATABASE_CONNECTION_FAILED",
             primary: {
               source: primaryResult.source,
-              error: primaryResult.error
+              error: summarizeConnectionError(primaryResult.error)
             },
             fallback: lastFallbackResult
               ? {
                   source: lastFallbackResult.source,
-                  error: lastFallbackResult.error
+                  error: summarizeConnectionError(lastFallbackResult.error)
                 }
-              : null
+              : null,
+            attemptedFallbacks
           });
         }
         return false;
       }
     } else {
       prismaConnected = false;
+      prismaLastFailure = {
+        at: new Date().toISOString(),
+        reason: "DATABASE_CONNECTION_FAILED",
+        source: primaryResult.source,
+        message: summarizeConnectionError(primaryResult.error).message
+      };
       if (!quiet) {
         console.error("PRISMA_INIT_ERROR", {
           reason: "DATABASE_CONNECTION_FAILED",
           source: primaryResult.source,
-          error: primaryResult.error
+          error: summarizeConnectionError(primaryResult.error)
         });
       }
       return false;
@@ -537,6 +628,7 @@ export async function runPrismaStartupChecks(options?: { quiet?: boolean }): Pro
   }
 
   prismaConnected = true;
+  prismaLastFailure = null;
 
   try {
     const rows = await prisma.$queryRaw<

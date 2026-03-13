@@ -4,6 +4,7 @@ dist
 build
 .expo
 .turbo
+.vercel
 .env
 .env.local
 .env.*
@@ -12,8 +13,8 @@ coverage
 *.tsbuildinfo
 _tmp_*
 tmp-login*.json
-prisma.$disconnect())
 apps/api/tmp-db-probe.cjs
-apps/api/_tmp_public_submit_probe.mjs
+apps/api/_tmp_*
+.tmp/
 
 !*.env.example

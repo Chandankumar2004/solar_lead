@@ -369,7 +369,14 @@ function toCustomerDetailResponse(detail: {
   };
 }
 
-function sanitizeLeadResponseForRole(lead: any, role: string) {
+type CustomerDetailResponseInput = Parameters<typeof toCustomerDetailResponse>[0];
+
+type LeadResponseLike = {
+  customerDetail?: CustomerDetailResponseInput | null;
+  [key: string]: unknown;
+};
+
+function sanitizeLeadResponseForRole<T extends LeadResponseLike | null>(lead: T, role: string): T {
   if (!lead || typeof lead !== "object") {
     return lead;
   }
@@ -380,7 +387,7 @@ function sanitizeLeadResponseForRole(lead: any, role: string) {
     customerDetail: lead.customerDetail
       ? toCustomerDetailResponse(lead.customerDetail, { includeSensitiveFields })
       : null
-  };
+  } as T;
 }
 
 function parseDateBoundary(
