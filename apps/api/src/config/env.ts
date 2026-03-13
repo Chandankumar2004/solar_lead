@@ -8,7 +8,7 @@ const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PORT: z.coerce.number().int().positive().default(resolvedPort),
   DATABASE_URL: z.string().url(),
-  DIRECT_URL: z.string().url(),
+  DIRECT_URL: z.string().url().optional(),
   PUBLIC_LEAD_MIN_MONTHLY_BILL_INR: z.coerce.number().int().min(1).default(500),
   SUPABASE_URL: z.string().url(),
   SUPABASE_ANON_KEY: z.string().min(20),

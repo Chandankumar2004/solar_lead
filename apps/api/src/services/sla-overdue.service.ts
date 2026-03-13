@@ -1,6 +1,6 @@
 import { env } from "../config/env.js";
 import { prisma } from "../lib/prisma.js";
-import { isPrismaConnected, runPrismaStartupChecks } from "../lib/prisma.js";
+import { isPrismaConnected } from "../lib/prisma.js";
 import { createAuditLog } from "./audit-log.service.js";
 import { notifyDistrictManagersAndAdmins } from "./notification.service.js";
 
@@ -157,10 +157,6 @@ export function startSlaOverdueMonitor() {
     if (isRunning) return;
     isRunning = true;
     try {
-      if (!isPrismaConnected()) {
-        await runPrismaStartupChecks({ quiet: true });
-      }
-
       if (!isPrismaConnected()) {
         const now = Date.now();
         if (now - lastDbUnavailableLogAt > 15 * 60 * 1000) {
