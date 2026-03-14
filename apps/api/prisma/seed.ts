@@ -7,10 +7,10 @@ dotenv.config();
 
 const prisma = new PrismaClient();
 
-const DEFAULT_LEAD_STATUSES = [
+const REQUIRED_DEFAULT_LEAD_STATUSES = [
   {
-    name: "New Lead",
-    description: "Newly captured lead",
+    name: "New",
+    description: "Initial state for newly captured lead",
     orderIndex: 1,
     isTerminal: false,
     slaDurationHours: 4,
@@ -21,7 +21,7 @@ const DEFAULT_LEAD_STATUSES = [
   },
   {
     name: "Assigned",
-    description: "Lead has been auto-assigned",
+    description: "Lead assigned to manager / field executive",
     orderIndex: 2,
     isTerminal: false,
     slaDurationHours: 8,
@@ -31,64 +31,163 @@ const DEFAULT_LEAD_STATUSES = [
     notifyCustomer: false
   },
   {
-    name: "Contacted",
-    description: "First call completed",
+    name: "Field Visit Scheduled",
+    description: "Field visit planned with customer",
     orderIndex: 3,
     isTerminal: false,
     slaDurationHours: 24,
-    colorCode: "#7C3AED",
-    requiresNote: true,
-    requiresDocument: false,
-    notifyCustomer: false
-  },
-  {
-    name: "Site Visit Scheduled",
-    description: "Site visit planned",
-    orderIndex: 4,
-    isTerminal: false,
-    slaDurationHours: 72,
     colorCode: "#0891B2",
     requiresNote: true,
     requiresDocument: false,
     notifyCustomer: true
   },
   {
-    name: "Site Visit Completed",
-    description: "Survey done",
+    name: "Field Visit Done",
+    description: "Field visit completed",
+    orderIndex: 4,
+    isTerminal: false,
+    slaDurationHours: 72,
+    colorCode: "#0D9488",
+    requiresNote: true,
+    requiresDocument: false,
+    notifyCustomer: false
+  },
+  {
+    name: "Documents Uploaded by Field Executive",
+    description: "Field executive uploaded required documents",
     orderIndex: 5,
     isTerminal: false,
     slaDurationHours: 120,
-    colorCode: "#0D9488",
+    colorCode: "#7C3AED",
     requiresNote: true,
     requiresDocument: true,
     notifyCustomer: false
   },
   {
-    name: "Quotation Shared",
-    description: "Quote sent to customer",
+    name: "Token Amount Received (INR 1000)",
+    description: "Token amount received from customer",
     orderIndex: 6,
     isTerminal: false,
-    slaDurationHours: 168,
-    colorCode: "#CA8A04",
+    slaDurationHours: 96,
+    colorCode: "#D97706",
     requiresNote: true,
-    requiresDocument: true,
-    notifyCustomer: true
+    requiresDocument: false,
+    notifyCustomer: false
+  },
+  {
+    name: "Token Payment Verification Pending",
+    description: "Token payment verification pending",
+    orderIndex: 7,
+    isTerminal: false,
+    slaDurationHours: 48,
+    colorCode: "#F59E0B",
+    requiresNote: false,
+    requiresDocument: false,
+    notifyCustomer: false
   },
   {
     name: "Token Payment Verified",
-    description: "Token payment verified by admin/manager",
-    orderIndex: 7,
+    description: "Token payment verified",
+    orderIndex: 8,
     isTerminal: false,
-    slaDurationHours: 240,
+    slaDurationHours: 48,
     colorCode: "#15803D",
     requiresNote: false,
     requiresDocument: false,
     notifyCustomer: true
   },
   {
-    name: "Won",
-    description: "Lead converted",
-    orderIndex: 8,
+    name: "Verification Pending",
+    description: "Internal verification pending",
+    orderIndex: 9,
+    isTerminal: false,
+    slaDurationHours: 72,
+    colorCode: "#4F46E5",
+    requiresNote: false,
+    requiresDocument: true,
+    notifyCustomer: false
+  },
+  {
+    name: "Verified",
+    description: "Lead verified for loan stage",
+    orderIndex: 10,
+    isTerminal: false,
+    slaDurationHours: 72,
+    colorCode: "#4338CA",
+    requiresNote: false,
+    requiresDocument: false,
+    notifyCustomer: true
+  },
+  {
+    name: "Loan Application Initiated",
+    description: "Loan application initiated",
+    orderIndex: 11,
+    isTerminal: false,
+    slaDurationHours: 120,
+    colorCode: "#1D4ED8",
+    requiresNote: false,
+    requiresDocument: true,
+    notifyCustomer: false
+  },
+  {
+    name: "Loan Approval Pending",
+    description: "Loan approval pending",
+    orderIndex: 12,
+    isTerminal: false,
+    slaDurationHours: 168,
+    colorCode: "#2563EB",
+    requiresNote: false,
+    requiresDocument: false,
+    notifyCustomer: false
+  },
+  {
+    name: "Loan Disbursed",
+    description: "Loan disbursed",
+    orderIndex: 13,
+    isTerminal: false,
+    slaDurationHours: 240,
+    colorCode: "#0EA5E9",
+    requiresNote: false,
+    requiresDocument: false,
+    notifyCustomer: true
+  },
+  {
+    name: "Loan Rejected",
+    description: "Loan rejected by lender",
+    orderIndex: 14,
+    isTerminal: false,
+    slaDurationHours: 240,
+    colorCode: "#DC2626",
+    requiresNote: true,
+    requiresDocument: false,
+    notifyCustomer: true
+  },
+  {
+    name: "Installation Scheduled",
+    description: "Installation scheduled",
+    orderIndex: 15,
+    isTerminal: false,
+    slaDurationHours: 120,
+    colorCode: "#0F766E",
+    requiresNote: false,
+    requiresDocument: false,
+    notifyCustomer: true
+  },
+  {
+    name: "Installation In Progress",
+    description: "Installation in progress",
+    orderIndex: 16,
+    isTerminal: false,
+    slaDurationHours: 120,
+    colorCode: "#0D9488",
+    requiresNote: false,
+    requiresDocument: false,
+    notifyCustomer: false
+  },
+  {
+    name: "Installation Complete",
+    description: "Installation completed",
+    orderIndex: 17,
     isTerminal: true,
     slaDurationHours: null,
     colorCode: "#16A34A",
@@ -97,9 +196,9 @@ const DEFAULT_LEAD_STATUSES = [
     notifyCustomer: true
   },
   {
-    name: "Lost",
-    description: "Lead dropped",
-    orderIndex: 9,
+    name: "Closed (Lost)",
+    description: "Lead closed as lost",
+    orderIndex: 18,
     isTerminal: true,
     slaDurationHours: null,
     colorCode: "#DC2626",
@@ -110,26 +209,38 @@ const DEFAULT_LEAD_STATUSES = [
 ] as const;
 
 const DEFAULT_TRANSITIONS: Array<[string, string]> = [
-  ["New Lead", "Assigned"],
-  ["New Lead", "Token Payment Verified"],
-  ["Assigned", "Contacted"],
-  ["Assigned", "Token Payment Verified"],
-  ["Contacted", "Site Visit Scheduled"],
-  ["Contacted", "Token Payment Verified"],
-  ["Site Visit Scheduled", "Site Visit Completed"],
-  ["Site Visit Scheduled", "Token Payment Verified"],
-  ["Site Visit Completed", "Quotation Shared"],
-  ["Site Visit Completed", "Token Payment Verified"],
-  ["Quotation Shared", "Token Payment Verified"],
-  ["Token Payment Verified", "Won"],
-  ["Token Payment Verified", "Lost"],
-  ["Quotation Shared", "Won"],
-  ["Quotation Shared", "Lost"],
-  ["Assigned", "Lost"],
-  ["New Lead", "Lost"],
-  ["Contacted", "Lost"],
-  ["Site Visit Scheduled", "Lost"],
-  ["Site Visit Completed", "Lost"]
+  ["New", "Assigned"],
+  ["Assigned", "Field Visit Scheduled"],
+  ["Field Visit Scheduled", "Field Visit Done"],
+  ["Field Visit Done", "Documents Uploaded by Field Executive"],
+  ["Documents Uploaded by Field Executive", "Token Amount Received (INR 1000)"],
+  ["Token Amount Received (INR 1000)", "Token Payment Verification Pending"],
+  ["Token Payment Verification Pending", "Token Payment Verified"],
+  ["Token Payment Verified", "Verification Pending"],
+  ["Verification Pending", "Verified"],
+  ["Verified", "Loan Application Initiated"],
+  ["Loan Application Initiated", "Loan Approval Pending"],
+  ["Loan Approval Pending", "Loan Disbursed"],
+  ["Loan Approval Pending", "Loan Rejected"],
+  ["Loan Disbursed", "Installation Scheduled"],
+  ["Installation Scheduled", "Installation In Progress"],
+  ["Installation In Progress", "Installation Complete"],
+  ["Loan Rejected", "Closed (Lost)"],
+  ["New", "Closed (Lost)"],
+  ["Assigned", "Closed (Lost)"],
+  ["Field Visit Scheduled", "Closed (Lost)"],
+  ["Field Visit Done", "Closed (Lost)"],
+  ["Documents Uploaded by Field Executive", "Closed (Lost)"],
+  ["Token Amount Received (INR 1000)", "Closed (Lost)"],
+  ["Token Payment Verification Pending", "Closed (Lost)"],
+  ["Token Payment Verified", "Closed (Lost)"],
+  ["Verification Pending", "Closed (Lost)"],
+  ["Verified", "Closed (Lost)"],
+  ["Loan Application Initiated", "Closed (Lost)"],
+  ["Loan Approval Pending", "Closed (Lost)"],
+  ["Loan Disbursed", "Closed (Lost)"],
+  ["Installation Scheduled", "Closed (Lost)"],
+  ["Installation In Progress", "Closed (Lost)"]
 ];
 
 type DistrictMappingFile = {
@@ -190,7 +301,7 @@ async function seedDistrictsFromMapping() {
 }
 
 async function seedStatusesAndTransitions() {
-  for (const status of DEFAULT_LEAD_STATUSES) {
+  for (const status of REQUIRED_DEFAULT_LEAD_STATUSES) {
     await prisma.leadStatus.upsert({
       where: { name: status.name },
       update: {
@@ -207,8 +318,36 @@ async function seedStatusesAndTransitions() {
     });
   }
 
+  const requiredOrder = REQUIRED_DEFAULT_LEAD_STATUSES.map((status) => status.name);
+  const requiredNames = new Set(requiredOrder);
+  const allStatuses = await prisma.leadStatus.findMany({
+    select: { id: true, name: true, orderIndex: true, createdAt: true }
+  });
+  const trailingStatuses = allStatuses
+    .filter((status) => !requiredNames.has(status.name))
+    .sort((a, b) => {
+      if (a.orderIndex !== b.orderIndex) return a.orderIndex - b.orderIndex;
+      if (a.createdAt.getTime() !== b.createdAt.getTime()) {
+        return a.createdAt.getTime() - b.createdAt.getTime();
+      }
+      return a.name.localeCompare(b.name);
+    })
+    .map((status) => status.name);
+  const statusIdsByName = new Map(allStatuses.map((status) => [status.name, status.id]));
+  const finalOrderedNames = [...requiredOrder, ...trailingStatuses];
+
+  for (let index = 0; index < finalOrderedNames.length; index += 1) {
+    const statusName = finalOrderedNames[index];
+    const statusId = statusIdsByName.get(statusName);
+    if (!statusId) continue;
+    await prisma.leadStatus.update({
+      where: { id: statusId },
+      data: { orderIndex: index + 1 }
+    });
+  }
+
   const statuses = await prisma.leadStatus.findMany({
-    where: { name: { in: DEFAULT_LEAD_STATUSES.map((s) => s.name) } },
+    where: { name: { in: REQUIRED_DEFAULT_LEAD_STATUSES.map((s) => s.name) } },
     select: { id: true, name: true }
   });
   const byName = Object.fromEntries(statuses.map((s) => [s.name, s.id]));
@@ -300,7 +439,7 @@ async function main() {
   console.log({
     superAdminEmail: superAdmin.email,
     districtsSeeded,
-    statusesSeeded: DEFAULT_LEAD_STATUSES.length,
+    statusesSeeded: REQUIRED_DEFAULT_LEAD_STATUSES.length,
     transitionsSeeded: DEFAULT_TRANSITIONS.length
   });
 }

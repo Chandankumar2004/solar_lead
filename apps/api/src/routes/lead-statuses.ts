@@ -464,11 +464,12 @@ leadStatusesRouter.post(
 
     const statuses = await prisma.leadStatus.findMany({
       where: { id: { in: uniqueStatusIds } },
-      select: { id: true }
+      select: { id: true, name: true, isTerminal: true }
     });
     if (statuses.length !== uniqueStatusIds.length) {
       throw new AppError(400, "INVALID_STATUS_ID", "One or more status IDs are invalid");
     }
+    const statusById = new Map(statuses.map((status) => [status.id, status]));
 
     await prisma.$transaction(async (tx) => {
       for (const mutation of mutations) {
@@ -480,6 +481,15 @@ leadStatusesRouter.post(
             }
           });
           continue;
+        }
+
+        const fromStatus = statusById.get(mutation.fromStatusId);
+        if (fromStatus?.isTerminal) {
+          throw new AppError(
+            400,
+            "TERMINAL_STATUS_TRANSITION_FORBIDDEN",
+            `Cannot add outgoing transitions from terminal status "${fromStatus.name}"`
+          );
         }
 
         await tx.leadStatusTransition.upsert({

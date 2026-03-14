@@ -13,6 +13,7 @@ import {
 } from "../services/lead-status.service.js";
 import {
   notifyActiveAdmins,
+  notifyUsers,
   queueLeadStatusCustomerNotification,
   triggerNewLeadNotification,
   triggerOverdueLeadNotification
@@ -29,6 +30,10 @@ export const leadsRouter = Router();
 
 const leadIdParamSchema = z.object({
   id: z.string().uuid()
+});
+
+const internalNoteBodySchema = z.object({
+  note: z.string().trim().min(3).max(2000)
 });
 
 const leadTransitionSchema = transitionLeadSchema
@@ -59,19 +64,22 @@ const optionalBooleanQuery = z.preprocess(
 const listLeadsQuerySchema = z
   .object({
     page: z.coerce.number().int().min(1).default(1),
-    pageSize: z.coerce.number().int().min(1).max(100).default(20),
+    pageSize: z.coerce.number().int().min(1).max(100).default(10),
     search: z.string().trim().optional(),
     q: z.string().trim().optional(),
     status: z.string().trim().optional(),
     statusIds: z.string().trim().optional(),
     statusId: z.string().uuid().optional(),
     districtId: z.string().uuid().optional(),
+    districtIds: z.string().trim().optional(),
     district: z.string().uuid().optional(),
     state: z.string().trim().optional(),
     execId: z.string().uuid().optional(),
     assignedExecutiveId: z.string().uuid().optional(),
     type: z.string().trim().optional(),
     installationType: z.string().trim().optional(),
+    source: z.string().trim().optional(),
+    utmSource: z.string().trim().optional(),
     isOverdue: optionalBooleanQuery,
     overdue: optionalBooleanQuery,
     dateFrom: z.string().trim().optional(),
@@ -84,9 +92,11 @@ const listLeadsQuerySchema = z
     statusIds: value.statusIds || undefined,
     status: value.statusId || value.status || undefined,
     districtId: value.districtId || value.district || undefined,
+    districtIds: value.districtIds || undefined,
     state: value.state || undefined,
     execId: value.execId || value.assignedExecutiveId || undefined,
     type: value.type || value.installationType || undefined,
+    source: value.source || value.utmSource || undefined,
     isOverdue:
       value.isOverdue !== undefined ? value.isOverdue : value.overdue,
     dateFrom: value.dateFrom,
@@ -376,6 +386,12 @@ type LeadResponseLike = {
   [key: string]: unknown;
 };
 
+const LEAD_INTERNAL_NOTE_ACTION = "LEAD_INTERNAL_NOTE_ADDED";
+
+function canAccessInternalNotes(role: string) {
+  return role === "SUPER_ADMIN" || role === "ADMIN" || role === "MANAGER";
+}
+
 function sanitizeLeadResponseForRole<T extends LeadResponseLike | null>(lead: T, role: string): T {
   if (!lead || typeof lead !== "object") {
     return lead;
@@ -388,6 +404,105 @@ function sanitizeLeadResponseForRole<T extends LeadResponseLike | null>(lead: T,
       ? toCustomerDetailResponse(lead.customerDetail, { includeSensitiveFields })
       : null
   } as T;
+}
+
+function toInternalNoteResponse(entry: {
+  id: string;
+  createdAt: Date;
+  detailsJson: Prisma.JsonValue | null;
+  actorUser: { id: string; fullName: string; email: string } | null;
+}) {
+  const details =
+    entry.detailsJson && typeof entry.detailsJson === "object"
+      ? (entry.detailsJson as Record<string, unknown>)
+      : {};
+  const noteValue = typeof details.note === "string" ? details.note : "";
+  return {
+    id: entry.id,
+    note: noteValue,
+    createdAt: entry.createdAt,
+    actor: entry.actorUser
+      ? {
+          id: entry.actorUser.id,
+          fullName: entry.actorUser.fullName,
+          email: entry.actorUser.email
+        }
+      : null
+  };
+}
+
+async function fetchLeadInternalNotes(leadId: string) {
+  const entries = await prisma.auditLog.findMany({
+    where: {
+      entityType: "lead",
+      entityId: leadId,
+      action: LEAD_INTERNAL_NOTE_ACTION
+    },
+    orderBy: { createdAt: "desc" },
+    include: {
+      actorUser: {
+        select: {
+          id: true,
+          fullName: true,
+          email: true
+        }
+      }
+    }
+  });
+
+  return entries.map(toInternalNoteResponse);
+}
+
+async function fetchLeadActivityLog(leadId: string, role: string) {
+  const activityWhere: Prisma.AuditLogWhereInput = {
+    OR: [
+      { entityType: "lead", entityId: leadId },
+      {
+        detailsJson: {
+          path: ["leadId"],
+          equals: leadId
+        }
+      }
+    ]
+  };
+
+  if (!canAccessInternalNotes(role)) {
+    activityWhere.NOT = {
+      action: LEAD_INTERNAL_NOTE_ACTION
+    };
+  }
+
+  const logs = await prisma.auditLog.findMany({
+    where: activityWhere,
+    orderBy: { createdAt: "desc" },
+    take: 200,
+    include: {
+      actorUser: {
+        select: {
+          id: true,
+          fullName: true,
+          email: true
+        }
+      }
+    }
+  });
+
+  return logs.map((entry) => ({
+    id: entry.id,
+    action: entry.action,
+    entityType: entry.entityType,
+    entityId: entry.entityId,
+    details: entry.detailsJson,
+    ipAddress: entry.ipAddress,
+    createdAt: entry.createdAt,
+    actor: entry.actorUser
+      ? {
+          id: entry.actorUser.id,
+          fullName: entry.actorUser.fullName,
+          email: entry.actorUser.email
+        }
+      : null
+  }));
 }
 
 function parseDateBoundary(
@@ -532,6 +647,12 @@ leadsRouter.get("/", validateQuery(listLeadsQuerySchema), async (req: Request, r
         .map((value) => value.trim())
         .filter(Boolean)
     : [];
+  const districtIds = query.districtIds
+    ? query.districtIds
+        .split(",")
+        .map((value) => value.trim())
+        .filter(Boolean)
+    : [];
 
   if (query.search) {
     whereClauses.push({
@@ -582,8 +703,23 @@ leadsRouter.get("/", validateQuery(listLeadsQuerySchema), async (req: Request, r
     }
   }
 
-  if (query.districtId) {
-    whereClauses.push({ districtId: query.districtId });
+  const requestedDistrictIds = [
+    ...new Set(
+      [query.districtId, ...districtIds].filter(
+        (value): value is string => typeof value === "string" && value.length > 0
+      )
+    )
+  ];
+  if (requestedDistrictIds.length > 0) {
+    const hasInvalidDistrictId = requestedDistrictIds.some((value) => !isUuid(value));
+    if (hasInvalidDistrictId) {
+      throw new AppError(
+        400,
+        "VALIDATION_ERROR",
+        "districtIds must contain UUID values"
+      );
+    }
+    whereClauses.push({ districtId: { in: requestedDistrictIds } });
   }
 
   if (query.state) {
@@ -610,6 +746,12 @@ leadsRouter.get("/", validateQuery(listLeadsQuerySchema), async (req: Request, r
   if (query.type) {
     whereClauses.push({
       installationType: { equals: query.type, mode: "insensitive" }
+    });
+  }
+
+  if (query.source) {
+    whereClauses.push({
+      utmSource: { contains: query.source, mode: "insensitive" }
     });
   }
 
@@ -671,11 +813,112 @@ leadsRouter.get(
       throw new AppError(404, "NOT_FOUND", "Lead not found");
     }
 
+    const canViewNotes = canAccessInternalNotes(req.user!.role);
+    const [internalNotes, activityLog] = await Promise.all([
+      canViewNotes ? fetchLeadInternalNotes(id) : Promise.resolve([]),
+      fetchLeadActivityLog(id, req.user!.role)
+    ]);
+
     return ok(
       res,
-      sanitizeLeadResponseForRole(lead, req.user!.role),
+      sanitizeLeadResponseForRole(
+        {
+          ...lead,
+          internalNotes,
+          activityLog
+        },
+        req.user!.role
+      ),
       "Lead detail fetched"
     );
+  }
+);
+
+leadsRouter.get(
+  "/:id/internal-notes",
+  validateParams(leadIdParamSchema),
+  async (req: Request, res: Response) => {
+    if (!canAccessInternalNotes(req.user!.role)) {
+      throw new AppError(403, "FORBIDDEN", "You cannot view internal notes");
+    }
+
+    const { id } = req.params as z.infer<typeof leadIdParamSchema>;
+    const lead = await prisma.lead.findFirst({
+      where: scopeLeadWhere(req.user!, { id }),
+      select: { id: true }
+    });
+    if (!lead) {
+      throw new AppError(404, "NOT_FOUND", "Lead not found");
+    }
+
+    const notes = await fetchLeadInternalNotes(id);
+    return ok(res, notes, "Internal notes fetched");
+  }
+);
+
+leadsRouter.post(
+  "/:id/internal-notes",
+  validateParams(leadIdParamSchema),
+  validateBody(internalNoteBodySchema),
+  async (req: Request, res: Response) => {
+    if (!canAccessInternalNotes(req.user!.role)) {
+      throw new AppError(403, "FORBIDDEN", "You cannot add internal notes");
+    }
+
+    const { id } = req.params as z.infer<typeof leadIdParamSchema>;
+    const { note } = req.body as z.infer<typeof internalNoteBodySchema>;
+
+    const lead = await prisma.lead.findFirst({
+      where: scopeLeadWhere(req.user!, { id }),
+      select: { id: true }
+    });
+    if (!lead) {
+      throw new AppError(404, "NOT_FOUND", "Lead not found");
+    }
+
+    const createdLog = await prisma.auditLog.create({
+      data: {
+        actorUserId: req.user?.id,
+        action: LEAD_INTERNAL_NOTE_ACTION,
+        entityType: "lead",
+        entityId: id,
+        detailsJson: {
+          leadId: id,
+          note,
+          visibility: "internal"
+        },
+        ipAddress: requestIp(req)
+      },
+      include: {
+        actorUser: {
+          select: {
+            id: true,
+            fullName: true,
+            email: true
+          }
+        }
+      }
+    });
+
+    return created(res, toInternalNoteResponse(createdLog), "Internal note added");
+  }
+);
+
+leadsRouter.get(
+  "/:id/activity-log",
+  validateParams(leadIdParamSchema),
+  async (req: Request, res: Response) => {
+    const { id } = req.params as z.infer<typeof leadIdParamSchema>;
+    const lead = await prisma.lead.findFirst({
+      where: scopeLeadWhere(req.user!, { id }),
+      select: { id: true }
+    });
+    if (!lead) {
+      throw new AppError(404, "NOT_FOUND", "Lead not found");
+    }
+
+    const activityLog = await fetchLeadActivityLog(id, req.user!.role);
+    return ok(res, activityLog, "Lead activity log fetched");
   }
 );
 
@@ -1211,6 +1454,30 @@ leadsRouter.patch(
         },
         ipAddress: requestIp(req)
       });
+
+      const reassignmentRecipients = [
+        existing.assignedExecutiveId,
+        payload.assignedExecutiveId ?? null
+      ].filter((value): value is string => Boolean(value));
+
+      if (reassignmentRecipients.length > 0) {
+        await notifyUsers(
+          reassignmentRecipients,
+          "Lead reassigned",
+          `Lead ${existing.externalId} has been reassigned.${payload.reassignmentReason ? ` Reason: ${payload.reassignmentReason}` : ""}`,
+          {
+            type: "INTERNAL",
+            leadId: id,
+            entityType: "lead",
+            entityId: id,
+            metadata: {
+              fromAssignedExecutiveId: existing.assignedExecutiveId,
+              toAssignedExecutiveId: payload.assignedExecutiveId ?? null,
+              reassignmentReason: payload.reassignmentReason ?? null
+            }
+          }
+        );
+      }
     }
 
     return ok(
@@ -1481,14 +1748,48 @@ leadsRouter.post(
 
       const toStatus = await prisma.leadStatus.findUnique({
         where: { id: parsed.nextStatusId },
-        select: { id: true, name: true, isTerminal: true }
+        select: {
+          id: true,
+          name: true,
+          isTerminal: true,
+          requiresNote: true,
+          requiresDocument: true
+        }
       });
       if (!toStatus) {
         throw new AppError(400, "INVALID_STATUS", "Target status not found");
       }
 
+      if (lead.currentStatusId === parsed.nextStatusId) {
+        throw new AppError(
+          400,
+          "NO_STATUS_CHANGE",
+          "Target status must be different from current status"
+        );
+      }
+
+      const movingFromTerminal = lead.currentStatus.isTerminal;
+      const hasOverrideReason =
+        typeof parsed.overrideReason === "string" &&
+        parsed.overrideReason.trim().length > 0;
+
+      if (movingFromTerminal && req.user.role !== "SUPER_ADMIN") {
+        throw new AppError(
+          403,
+          "TERMINAL_STATUS_LOCKED",
+          "Cannot move a lead out of terminal status without Super Admin override"
+        );
+      }
+      if (movingFromTerminal && !hasOverrideReason) {
+        throw new AppError(
+          400,
+          "OVERRIDE_REASON_REQUIRED",
+          "overrideReason is required when overriding terminal status movement"
+        );
+      }
+
       const isAllowed = await assertValidTransition(lead.currentStatusId, parsed.nextStatusId);
-      if (!isAllowed) {
+      if (!isAllowed && !movingFromTerminal) {
         throw new AppError(
           400,
           "INVALID_STATUS_TRANSITION",
@@ -1496,23 +1797,31 @@ leadsRouter.post(
         );
       }
 
-      const movingOutOfTerminal = lead.currentStatus.isTerminal && !toStatus.isTerminal;
-      if (movingOutOfTerminal && req.user.role !== "SUPER_ADMIN") {
-        throw new AppError(
-          403,
-          "TERMINAL_STATUS_LOCKED",
-          "Cannot move out of terminal status without Super Admin override"
-        );
-      }
-      if (movingOutOfTerminal && !parsed.overrideReason) {
+      if (toStatus.requiresNote && (!parsed.notes || parsed.notes.trim().length === 0)) {
         throw new AppError(
           400,
-          "OVERRIDE_REASON_REQUIRED",
-          "overrideReason is required when overriding terminal status"
+          "TRANSITION_NOTE_REQUIRED",
+          `A note is required when moving to "${toStatus.name}"`
         );
       }
 
-      const historyNotes = movingOutOfTerminal
+      if (toStatus.requiresDocument) {
+        const latestDocumentCount = await prisma.document.count({
+          where: {
+            leadId: lead.id,
+            isLatest: true
+          }
+        });
+        if (latestDocumentCount === 0) {
+          throw new AppError(
+            400,
+            "TRANSITION_DOCUMENT_REQUIRED",
+            `At least one document must be uploaded before moving to "${toStatus.name}"`
+          );
+        }
+      }
+
+      const historyNotes = movingFromTerminal
         ? [parsed.notes, `Override reason: ${parsed.overrideReason}`]
             .filter(Boolean)
             .join(" | ")
@@ -1540,14 +1849,14 @@ leadsRouter.post(
         actorUserId: req.user?.id,
         entityType: "lead",
         entityId: lead.id,
-        action: movingOutOfTerminal
+        action: movingFromTerminal
           ? "LEAD_STATUS_CHANGED_WITH_TERMINAL_OVERRIDE"
           : "LEAD_STATUS_CHANGED",
         detailsJson: {
           leadId: lead.id,
           fromStatusId: lead.currentStatusId,
           toStatusId: parsed.nextStatusId,
-          movingOutOfTerminal,
+          movingOutOfTerminal: movingFromTerminal,
           overrideReason: parsed.overrideReason ?? null
         },
         ipAddress: requestIp(req)
