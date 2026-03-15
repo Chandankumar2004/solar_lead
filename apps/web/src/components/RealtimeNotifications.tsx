@@ -46,13 +46,13 @@ export function RealtimeNotifications() {
   }, [user]);
 
   return (
-    <div className="rounded-xl bg-white p-4 shadow">
-      <h3 className="mb-3 text-lg font-semibold">Realtime Notifications</h3>
+    <div className="rounded-xl bg-white p-3 shadow sm:p-4">
+      <h3 className="mb-3 text-base font-semibold sm:text-lg">Realtime Notifications</h3>
       <div className="space-y-2">
         {items.map((i) => (
           <div key={i.id} className="rounded border border-slate-200 p-2">
             <p className="font-medium">{i.title}</p>
-            <p className="text-sm text-slate-600">{i.body}</p>
+            <p className="break-words text-sm text-slate-600">{i.body}</p>
           </div>
         ))}
       </div>

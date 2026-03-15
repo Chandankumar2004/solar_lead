@@ -19,6 +19,10 @@ const documentIdParamSchema = z.object({
   id: z.string().uuid()
 });
 
+const documentNoteSchema = z.object({
+  note: z.string().trim().min(1).max(500)
+});
+
 const reviewListQuerySchema = z
   .object({
     page: z.coerce.number().int().min(1).default(1),
@@ -39,15 +43,18 @@ const reviewListQuerySchema = z
 
 const reviewActionSchema = z
   .object({
-    action: z.enum(["verify", "reject"]),
+    action: z.enum(["verify", "reject", "request_reupload"]),
     notes: z.union([z.string().trim().max(500), z.literal(""), z.null()]).optional()
   })
   .superRefine((value, ctx) => {
-    if (value.action === "reject" && (!value.notes || value.notes.trim().length < 5)) {
+    if (
+      (value.action === "reject" || value.action === "request_reupload") &&
+      (!value.notes || value.notes.trim().length < 5)
+    ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["notes"],
-        message: "Rejection notes are required (minimum 5 characters)"
+        message: "Reason is required (minimum 5 characters)"
       });
     }
   })
@@ -73,6 +80,22 @@ function parseDateBoundary(
     }
   }
   return date;
+}
+
+function managerDistrictLeadScope(userId: string): Prisma.LeadWhereInput {
+  return {
+    district: {
+      assignments: {
+        some: {
+          userId,
+          user: {
+            role: "MANAGER",
+            status: "ACTIVE"
+          }
+        }
+      }
+    }
+  };
 }
 
 documentsRouter.get(
@@ -160,7 +183,13 @@ documentsRouter.get(
       });
     }
 
-    if (req.user!.role !== "SUPER_ADMIN" && req.user!.role !== "ADMIN") {
+    if (req.user!.role === "MANAGER") {
+      whereClauses.push({
+        lead: {
+          is: managerDistrictLeadScope(req.user!.id)
+        }
+      });
+    } else if (req.user!.role !== "SUPER_ADMIN" && req.user!.role !== "ADMIN") {
       whereClauses.push({
         lead: {
           is: scopeLeadWhere(req.user!, {})
@@ -242,7 +271,17 @@ documentsRouter.post(
     if (!existing) {
       throw new AppError(404, "NOT_FOUND", "Document not found");
     }
-    if (req.user!.role !== "SUPER_ADMIN" && req.user!.role !== "ADMIN") {
+    if (req.user!.role === "MANAGER") {
+      const accessibleLead = await prisma.lead.findFirst({
+        where: {
+          AND: [{ id: existing.leadId }, managerDistrictLeadScope(req.user!.id)]
+        },
+        select: { id: true }
+      });
+      if (!accessibleLead) {
+        throw new AppError(404, "NOT_FOUND", "Document not found");
+      }
+    } else if (req.user!.role !== "SUPER_ADMIN" && req.user!.role !== "ADMIN") {
       const accessibleLead = await prisma.lead.findFirst({
         where: scopeLeadWhere(req.user!, { id: existing.leadId }),
         select: { id: true }
@@ -254,6 +293,18 @@ documentsRouter.post(
 
     const nextStatus: DocumentReviewStatus =
       body.action === "verify" ? "VERIFIED" : "REJECTED";
+    const actionAudit =
+      body.action === "verify"
+        ? "DOCUMENT_VERIFIED"
+        : body.action === "request_reupload"
+          ? "DOCUMENT_REUPLOAD_REQUESTED"
+          : "DOCUMENT_REJECTED";
+    const actionMessage =
+      body.action === "verify"
+        ? "verified"
+        : body.action === "request_reupload"
+          ? "marked for re-upload"
+          : "rejected";
 
     const updated = await prisma.document.update({
       where: { id },
@@ -286,7 +337,7 @@ documentsRouter.post(
 
     await createAuditLog({
       actorUserId: req.user!.id,
-      action: nextStatus === "VERIFIED" ? "DOCUMENT_VERIFIED" : "DOCUMENT_REJECTED",
+      action: actionAudit,
       entityType: "document",
       entityId: updated.id,
       detailsJson: {
@@ -299,23 +350,106 @@ documentsRouter.post(
     });
 
     if (nextStatus === "REJECTED" && updated.lead.assignedExecutiveId) {
+      const notificationTitle =
+        body.action === "request_reupload"
+          ? "Document re-upload requested"
+          : "Document rejected";
+      const notificationMessage =
+        body.action === "request_reupload"
+          ? `Please re-upload document ${updated.fileName} for lead ${updated.lead.externalId}.`
+          : `Document ${updated.fileName} for lead ${updated.lead.externalId} was rejected.`;
       await notifyUsers(
         [updated.lead.assignedExecutiveId],
-        "Document rejected",
-        `Document ${updated.fileName} for lead ${updated.lead.externalId} was rejected.`,
+        notificationTitle,
+        notificationMessage,
         {
           type: "INTERNAL",
           leadId: updated.leadId,
           entityType: "document",
           entityId: updated.id,
           metadata: {
-            reviewNotes: body.notes
+            reviewNotes: body.notes,
+            reviewAction: body.action
           }
         }
       );
     }
 
-    return ok(res, updated, `Document ${body.action === "verify" ? "verified" : "rejected"}`);
+    return ok(res, updated, `Document ${actionMessage}`);
+  }
+);
+
+documentsRouter.post(
+  "/:id/notes",
+  allowRoles("SUPER_ADMIN", "ADMIN", "DISTRICT_MANAGER"),
+  validateParams(documentIdParamSchema),
+  validateBody(documentNoteSchema),
+  async (req, res) => {
+    const { id } = req.params as z.infer<typeof documentIdParamSchema>;
+    const { note } = req.body as z.infer<typeof documentNoteSchema>;
+
+    const existing = await prisma.document.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        leadId: true,
+        reviewStatus: true,
+        reviewNotes: true
+      }
+    });
+    if (!existing) {
+      throw new AppError(404, "NOT_FOUND", "Document not found");
+    }
+
+    if (req.user!.role === "MANAGER") {
+      const accessibleLead = await prisma.lead.findFirst({
+        where: {
+          AND: [{ id: existing.leadId }, managerDistrictLeadScope(req.user!.id)]
+        },
+        select: { id: true }
+      });
+      if (!accessibleLead) {
+        throw new AppError(404, "NOT_FOUND", "Document not found");
+      }
+    } else if (req.user!.role !== "SUPER_ADMIN" && req.user!.role !== "ADMIN") {
+      const accessibleLead = await prisma.lead.findFirst({
+        where: scopeLeadWhere(req.user!, { id: existing.leadId }),
+        select: { id: true }
+      });
+      if (!accessibleLead) {
+        throw new AppError(404, "NOT_FOUND", "Document not found");
+      }
+    }
+
+    const updated = await prisma.document.update({
+      where: { id: existing.id },
+      data: {
+        reviewNotes: note
+      },
+      select: {
+        id: true,
+        leadId: true,
+        reviewStatus: true,
+        reviewNotes: true,
+        reviewedAt: true
+      }
+    });
+
+    await createAuditLog({
+      actorUserId: req.user!.id,
+      action: "DOCUMENT_NOTE_ADDED",
+      entityType: "document",
+      entityId: existing.id,
+      detailsJson: {
+        leadId: existing.leadId,
+        previousReviewStatus: existing.reviewStatus,
+        previousReviewNotes: existing.reviewNotes,
+        reviewNotes: note
+      },
+      ipAddress: requestIp(req)
+    });
+
+    return ok(res, updated, "Document note saved");
   }
 );
 
@@ -339,7 +473,17 @@ documentsRouter.get(
     if (!document) {
       throw new AppError(404, "NOT_FOUND", "Document not found");
     }
-    if (req.user!.role !== "SUPER_ADMIN" && req.user!.role !== "ADMIN") {
+    if (req.user!.role === "MANAGER") {
+      const accessibleLead = await prisma.lead.findFirst({
+        where: {
+          AND: [{ id: document.leadId }, managerDistrictLeadScope(req.user!.id)]
+        },
+        select: { id: true }
+      });
+      if (!accessibleLead) {
+        throw new AppError(404, "NOT_FOUND", "Document not found");
+      }
+    } else if (req.user!.role !== "SUPER_ADMIN" && req.user!.role !== "ADMIN") {
       const accessibleLead = await prisma.lead.findFirst({
         where: scopeLeadWhere(req.user!, { id: document.leadId }),
         select: { id: true }

@@ -5,28 +5,41 @@ import { useForm } from "react-hook-form";
 import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
 import Script from "next/script";
+import axios from "axios";
 import { loginSchema } from "@solar/shared";
 import { api, getApiErrorMessage } from "@/lib/api";
 import { resolveRecaptchaSiteKey } from "@/lib/recaptcha";
 import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/lib/auth-store";
-import { getSupabaseBrowserClient, getSupabaseConfigError } from "@/lib/supabase";
 
 type LoginValues = z.infer<typeof loginSchema>;
 
-function supabaseLoginErrorMessage(rawMessage: string | undefined) {
-  const message = (rawMessage ?? "").trim();
-  const normalized = message.toLowerCase();
-  if (
-    normalized.includes("invalid login credentials") ||
-    normalized.includes("invalid credentials")
-  ) {
-    return "Invalid email/password";
+function extractRecaptchaFailureMeta(error: unknown) {
+  if (!axios.isAxiosError(error)) {
+    return {
+      retryable: false,
+      browserError: false
+    };
   }
-  if (normalized.includes("email not confirmed")) {
-    return "Email is not confirmed";
-  }
-  return message || "Login failed";
+
+  const errorCode = error.response?.data?.error?.code;
+  const reason = error.response?.data?.error?.details?.reason;
+  const rawErrorCodes = error.response?.data?.error?.details?.errorCodes;
+  const errorCodes = Array.isArray(rawErrorCodes)
+    ? rawErrorCodes
+        .filter((value): value is string => typeof value === "string")
+        .map((value) => value.toLowerCase())
+    : [];
+
+  const isTokenInvalid =
+    errorCode === "RECAPTCHA_TOKEN_INVALID" && reason === "TOKEN_INVALID";
+  const browserError = errorCodes.includes("browser-error");
+  const timeoutOrDuplicate = errorCodes.includes("timeout-or-duplicate");
+
+  return {
+    retryable: isTokenInvalid && (browserError || timeoutOrDuplicate),
+    browserError
+  };
 }
 
 export function LoginForm() {
@@ -34,7 +47,6 @@ export function LoginForm() {
   const [recaptchaScriptFailed, setRecaptchaScriptFailed] = useState(false);
   const router = useRouter();
   const setUser = useAuthStore((s) => s.setUser);
-  const supabaseConfigError = getSupabaseConfigError();
   const rawRecaptchaSiteKey =
     process.env.NEXT_PUBLIC_RECAPTCHA_SITE_KEY ??
     process.env.NEXT_PUBLIC_GOOGLE_RECAPTCHA_SITE_KEY ??
@@ -125,7 +137,32 @@ export function LoginForm() {
       }
     };
 
-    const recaptchaToken = await getRecaptchaToken();
+    const submitLoginRequest = async (recaptchaToken: string | null) => {
+      return api.post("/api/auth/login", {
+        email: values.email.trim().toLowerCase(),
+        password: values.password,
+        recaptchaToken: recaptchaToken ?? undefined,
+        recaptchaAction: "admin_login"
+      });
+    };
+
+    const handleLoginSuccess = async (loginResponse: Awaited<ReturnType<typeof submitLoginRequest>>) => {
+      const user = loginResponse.data?.data?.user ?? null;
+      if (!user) {
+        setError("Login failed");
+        return;
+      }
+      if (user.role === "FIELD_EXECUTIVE") {
+        await api.post("/api/auth/logout").catch(() => undefined);
+        setError("This account is restricted to the mobile app and cannot access admin portal.");
+        return;
+      }
+
+      setUser(user);
+      router.push("/dashboard");
+    };
+
+    let recaptchaToken = await getRecaptchaToken();
     if (recaptchaSiteKey && !recaptchaToken) {
       console.warn("RECAPTCHA_EXECUTION_SKIPPED", {
         reason: "TOKEN_NOT_AVAILABLE",
@@ -133,51 +170,36 @@ export function LoginForm() {
       });
     }
 
+    let lastLoginError: unknown = null;
     try {
-      if (supabaseConfigError) {
-        setError(supabaseConfigError);
-        return;
-      }
-
-      const supabase = getSupabaseBrowserClient();
-      if (!supabase) {
-        setError("Supabase Auth is not configured");
-        return;
-      }
-
-      const signedIn = await supabase.auth.signInWithPassword({
-        email: values.email.trim().toLowerCase(),
-        password: values.password
-      });
-
-      if (signedIn.error || !signedIn.data.session?.access_token) {
-        setError(supabaseLoginErrorMessage(signedIn.error?.message));
-        return;
-      }
-
-      const meResponse = await api.get("/api/auth/me", {
-        headers: {
-          Authorization: `Bearer ${signedIn.data.session.access_token}`
-        }
-      });
-
-      const user = meResponse.data?.data?.user ?? null;
-      if (!user) {
-        await supabase.auth.signOut();
-        setError("No app profile is mapped for this account");
-        return;
-      }
-      if (user.role === "FIELD_EXECUTIVE") {
-        await supabase.auth.signOut();
-        setError("This account is restricted to the mobile app and cannot access admin portal.");
-        return;
-      }
-
-      setUser(user);
-      router.push("/dashboard");
+      const loginResponse = await submitLoginRequest(recaptchaToken);
+      await handleLoginSuccess(loginResponse);
+      return;
     } catch (error) {
-      setError(getApiErrorMessage(error, "Login failed"));
+      lastLoginError = error;
     }
+
+    const recaptchaFailure = extractRecaptchaFailureMeta(lastLoginError);
+    if (recaptchaSiteKey && recaptchaFailure.retryable) {
+      recaptchaToken = await getRecaptchaToken();
+      if (recaptchaToken) {
+        try {
+          const retriedLoginResponse = await submitLoginRequest(recaptchaToken);
+          await handleLoginSuccess(retriedLoginResponse);
+          return;
+        } catch (error) {
+          lastLoginError = error;
+        }
+      }
+    }
+
+    const finalRecaptchaFailure = extractRecaptchaFailureMeta(lastLoginError);
+    if (finalRecaptchaFailure.browserError) {
+      setError("reCAPTCHA failed in your browser. Refresh this page and try again.");
+      return;
+    }
+
+    setError(getApiErrorMessage(lastLoginError, "Login failed"));
   });
 
   return (
@@ -196,8 +218,8 @@ export function LoginForm() {
           }}
         />
       ) : null}
-      <form onSubmit={onSubmit} className="space-y-4 rounded-xl bg-white p-6 shadow">
-        <h1 className="text-2xl font-semibold">Admin Login</h1>
+      <form onSubmit={onSubmit} className="space-y-4 rounded-xl bg-white p-4 shadow sm:p-6">
+        <h1 className="text-xl font-semibold sm:text-2xl">Admin Login</h1>
         <div>
           <label className="mb-1 block text-sm font-medium">Email</label>
           <input

@@ -5,7 +5,7 @@ import Script from "next/script";
 import { useSearchParams } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { api } from "@/lib/api";
+import { api, getApiErrorMessage } from "@/lib/api";
 import { resolveRecaptchaSiteKey } from "@/lib/recaptcha";
 import {
   type DistrictMappingPayload,
@@ -215,24 +215,26 @@ export function PublicLeadForm({ districtMapping }: PublicLeadFormProps) {
       setDuplicateWarning(null);
     } catch (error: unknown) {
       console.error("PUBLIC_LEAD_SUBMIT_FAILED", error);
-      setSubmitError("Something went wrong. Please try again in a moment.");
+      setSubmitError(
+        getApiErrorMessage(error, "Something went wrong. Please try again in a moment.")
+      );
     }
   });
 
   if (submitSuccess) {
     return (
-      <div className="space-y-4 rounded-2xl border border-emerald-200 bg-white p-6 shadow-lg">
-        <h2 className="text-2xl font-semibold text-slate-900">Request Received</h2>
-        <p className="text-sm text-slate-700">
+      <div className="space-y-4 rounded-[1.85rem] border border-[#bfe8cf] bg-white/95 p-5 sm:p-7 shadow-[0_26px_56px_-38px_rgba(15,143,79,0.68)]">
+        <h2 className="text-xl font-semibold tracking-tight text-[#111827] sm:text-2xl">Request Received</h2>
+        <p className="text-sm leading-relaxed text-slate-700">
           Thank you for your interest. A representative will contact you shortly.
         </p>
-        <p className="text-sm text-emerald-700">
+        <p className="text-sm text-[#0f8f4f]">
           Reference ID: <span className="font-semibold">{submitSuccess.externalId}</span>
         </p>
         <button
           type="button"
           onClick={() => setSubmitSuccess(null)}
-          className="w-full rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50"
+          className="w-full rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-800 transition duration-200 hover:bg-slate-50"
         >
           Submit another request
         </button>
@@ -255,31 +257,34 @@ export function PublicLeadForm({ districtMapping }: PublicLeadFormProps) {
           }}
         />
       ) : null}
-      <form onSubmit={onSubmit} className="space-y-4 rounded-2xl bg-white p-6 shadow-lg">
-        <h2 className="text-2xl font-semibold text-slate-900">Book Free Solar Consultation</h2>
-        <p className="text-sm text-slate-600">
+      <form
+        onSubmit={onSubmit}
+        className="space-y-4 rounded-[1.9rem] border border-white/90 bg-white/96 p-4 sm:p-6 lg:p-7 shadow-[0_34px_74px_-45px_rgba(17,24,39,0.78)] backdrop-blur"
+      >
+        <h2 className="text-2xl font-semibold tracking-tight text-[#111827] sm:text-3xl">Book Free Solar Consultation</h2>
+        <p className="text-sm leading-relaxed text-slate-600">
           Fill the form and our district team will contact you with a customized proposal.
         </p>
 
         <div>
-          <label className="mb-1 block text-sm font-medium text-slate-700">Full Name</label>
+          <label className="mb-1.5 block text-sm font-medium text-[#1f3555]">Full Name</label>
           <input
             type="text"
             {...register("name")}
-            className="w-full rounded-md border border-slate-300 px-3 py-2 outline-none focus:border-brand-600 focus:ring-2 focus:ring-brand-100"
+            className="w-full rounded-xl border border-[#c4d1de] bg-white px-3.5 py-2.5 text-sm text-slate-800 outline-none transition duration-150 focus:border-[#0f8f4f] focus:ring-4 focus:ring-[#0f8f4f]/15"
             placeholder="Enter your full name"
           />
           {errors.name ? <p className="mt-1 text-xs text-red-600">{errors.name.message}</p> : null}
         </div>
 
         <div>
-          <label className="mb-1 block text-sm font-medium text-slate-700">Phone</label>
+          <label className="mb-1.5 block text-sm font-medium text-[#1f3555]">Phone</label>
           <input
             type="tel"
             inputMode="numeric"
             maxLength={10}
             {...register("phone")}
-            className="w-full rounded-md border border-slate-300 px-3 py-2 outline-none focus:border-brand-600 focus:ring-2 focus:ring-brand-100"
+            className="w-full rounded-xl border border-[#c4d1de] bg-white px-3.5 py-2.5 text-sm text-slate-800 outline-none transition duration-150 focus:border-[#0f8f4f] focus:ring-4 focus:ring-[#0f8f4f]/15"
             placeholder="Enter 10-digit mobile number"
           />
           {errors.phone ? <p className="mt-1 text-xs text-red-600">{errors.phone.message}</p> : null}
@@ -289,24 +294,24 @@ export function PublicLeadForm({ districtMapping }: PublicLeadFormProps) {
         </div>
 
         <div>
-          <label className="mb-1 block text-sm font-medium text-slate-700">Email Address</label>
+          <label className="mb-1.5 block text-sm font-medium text-[#1f3555]">Email Address</label>
           <input
             type="email"
             {...register("email")}
-            className="w-full rounded-md border border-slate-300 px-3 py-2 outline-none focus:border-brand-600 focus:ring-2 focus:ring-brand-100"
+            className="w-full rounded-xl border border-[#c4d1de] bg-white px-3.5 py-2.5 text-sm text-slate-800 outline-none transition duration-150 focus:border-[#0f8f4f] focus:ring-4 focus:ring-[#0f8f4f]/15"
             placeholder="you@example.com"
           />
           {errors.email ? <p className="mt-1 text-xs text-red-600">{errors.email.message}</p> : null}
         </div>
 
         <div>
-          <label className="mb-1 block text-sm font-medium text-slate-700">Monthly Bill (INR)</label>
+          <label className="mb-1.5 block text-sm font-medium text-[#1f3555]">Monthly Bill (INR)</label>
           <input
             type="number"
             min={MIN_MONTHLY_BILL_INR}
             step={1}
             {...register("monthly_bill")}
-            className="w-full rounded-md border border-slate-300 px-3 py-2 outline-none focus:border-brand-600 focus:ring-2 focus:ring-brand-100"
+            className="w-full rounded-xl border border-[#c4d1de] bg-white px-3.5 py-2.5 text-sm text-slate-800 outline-none transition duration-150 focus:border-[#0f8f4f] focus:ring-4 focus:ring-[#0f8f4f]/15"
             placeholder={`Minimum ${MIN_MONTHLY_BILL_INR}`}
           />
           {errors.monthly_bill ? (
@@ -315,20 +320,20 @@ export function PublicLeadForm({ districtMapping }: PublicLeadFormProps) {
         </div>
 
         <div>
-          <label className="mb-1 block text-sm font-medium text-slate-700">Search District</label>
+          <label className="mb-1.5 block text-sm font-medium text-[#1f3555]">Search District</label>
           <input
             value={districtSearch}
             onChange={(event) => setDistrictSearch(event.target.value)}
-            className="w-full rounded-md border border-slate-300 px-3 py-2 outline-none focus:border-brand-600 focus:ring-2 focus:ring-brand-100"
+            className="w-full rounded-xl border border-[#c4d1de] bg-white px-3.5 py-2.5 text-sm text-slate-800 outline-none transition duration-150 focus:border-[#0f8f4f] focus:ring-4 focus:ring-[#0f8f4f]/15"
             placeholder="Type district or state"
           />
         </div>
 
         <div>
-          <label className="mb-1 block text-sm font-medium text-slate-700">District</label>
+          <label className="mb-1.5 block text-sm font-medium text-[#1f3555]">District</label>
           <select
             {...register("district_id")}
-            className="w-full rounded-md border border-slate-300 px-3 py-2 outline-none focus:border-brand-600 focus:ring-2 focus:ring-brand-100"
+            className="w-full rounded-xl border border-[#c4d1de] bg-white px-3.5 py-2.5 text-sm text-slate-800 outline-none transition duration-150 focus:border-[#0f8f4f] focus:ring-4 focus:ring-[#0f8f4f]/15"
           >
             <option value="">Select district</option>
             {filteredDistricts.map((district) => (
@@ -343,22 +348,22 @@ export function PublicLeadForm({ districtMapping }: PublicLeadFormProps) {
         </div>
 
         <div>
-          <label className="mb-1 block text-sm font-medium text-slate-700">State</label>
+          <label className="mb-1.5 block text-sm font-medium text-[#1f3555]">State</label>
           <input
             type="text"
             readOnly
             {...register("state")}
-            className="w-full cursor-not-allowed rounded-md border border-slate-200 bg-slate-100 px-3 py-2 text-slate-700"
+            className="w-full cursor-not-allowed rounded-xl border border-[#d8e2ec] bg-slate-100 px-3.5 py-2.5 text-sm text-slate-700"
             placeholder="State is auto-filled from district"
           />
           {errors.state ? <p className="mt-1 text-xs text-red-600">{errors.state.message}</p> : null}
         </div>
 
         <div>
-          <label className="mb-1 block text-sm font-medium text-slate-700">Installation Type</label>
+          <label className="mb-1.5 block text-sm font-medium text-[#1f3555]">Installation Type</label>
           <select
             {...register("installation_type")}
-            className="w-full rounded-md border border-slate-300 px-3 py-2 outline-none focus:border-brand-600 focus:ring-2 focus:ring-brand-100"
+            className="w-full rounded-xl border border-[#c4d1de] bg-white px-3.5 py-2.5 text-sm text-slate-800 outline-none transition duration-150 focus:border-[#0f8f4f] focus:ring-4 focus:ring-[#0f8f4f]/15"
           >
             {INSTALLATION_TYPES.map((type) => (
               <option key={type} value={type}>
@@ -372,20 +377,20 @@ export function PublicLeadForm({ districtMapping }: PublicLeadFormProps) {
         </div>
 
         <div>
-          <label className="mb-1 block text-sm font-medium text-slate-700">Message / Additional Info</label>
+          <label className="mb-1.5 block text-sm font-medium text-[#1f3555]">Message / Additional Info</label>
           <textarea
             rows={4}
             {...register("message")}
-            className="w-full rounded-md border border-slate-300 px-3 py-2 outline-none focus:border-brand-600 focus:ring-2 focus:ring-brand-100"
+            className="w-full rounded-xl border border-[#c4d1de] bg-white px-3.5 py-2.5 text-sm text-slate-800 outline-none transition duration-150 focus:border-[#0f8f4f] focus:ring-4 focus:ring-[#0f8f4f]/15"
             placeholder="Share roof details, preferred callback time, or requirements"
           />
           <p className="mt-1 text-[11px] text-slate-500">Maximum 500 characters.</p>
           {errors.message ? <p className="mt-1 text-xs text-red-600">{errors.message.message}</p> : null}
         </div>
 
-        <label className="flex items-start gap-2 rounded-md bg-slate-50 p-3">
+        <label className="flex items-start gap-2 rounded-xl border border-[#dbe5ef] bg-slate-50 p-3 sm:p-3.5">
           <input type="checkbox" className="mt-1 h-4 w-4" {...register("consent_given")} />
-          <span className="text-sm text-slate-700">
+          <span className="text-xs text-slate-700 sm:text-sm">
             I consent to be contacted regarding solar installation consultation and agree to
             processing of the details submitted here.
           </span>
@@ -404,7 +409,7 @@ export function PublicLeadForm({ districtMapping }: PublicLeadFormProps) {
         <button
           type="submit"
           disabled={isSubmitting}
-          className="w-full rounded-md bg-brand-600 px-4 py-3 text-sm font-semibold text-white hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-70"
+          className="w-full rounded-xl bg-[#0f8f4f] px-4 py-3 text-sm font-semibold text-white shadow-[0_18px_34px_-22px_rgba(15,143,79,0.85)] transition duration-200 hover:-translate-y-0.5 hover:bg-[#0d7f46] disabled:cursor-not-allowed disabled:opacity-70"
         >
           {isSubmitting ? "Submitting..." : "Submit Lead"}
         </button>

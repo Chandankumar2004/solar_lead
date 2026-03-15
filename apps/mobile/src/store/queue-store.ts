@@ -7,6 +7,15 @@ import type { LeadDocumentUploadFile } from "../services/document-upload";
 
 const KEY = "offline_queue";
 
+type QueueItemBase = {
+  id: string;
+  ownerUserId?: string;
+  dedupeKey?: string;
+  failCount?: number;
+  lastError?: string;
+  retryable?: boolean;
+};
+
 type LeadAttachment = {
   uri: string;
   fileName: string;
@@ -14,8 +23,7 @@ type LeadAttachment = {
   sizeBytes: number;
 };
 
-type CreateLeadWithAttachmentsQueueItem = {
-  id: string;
+type CreateLeadWithAttachmentsQueueItem = QueueItemBase & {
   kind: "CREATE_LEAD_WITH_ATTACHMENTS";
   payload: {
     lead: unknown;
@@ -23,8 +31,7 @@ type CreateLeadWithAttachmentsQueueItem = {
   };
 };
 
-type UploadLeadDocumentQueueItem = {
-  id: string;
+type UploadLeadDocumentQueueItem = QueueItemBase & {
   kind: "UPLOAD_LEAD_DOCUMENT";
   payload: {
     leadId: string;
@@ -33,16 +40,42 @@ type UploadLeadDocumentQueueItem = {
   };
 };
 
+type UpdateLeadStatusQueueItem = QueueItemBase & {
+  kind: "UPDATE_LEAD_STATUS";
+  payload: {
+    leadId: string;
+    nextStatusId: string;
+    notes?: string;
+    overrideReason?: string;
+  };
+};
+
+type UpsertCustomerDetailsQueueItem = QueueItemBase & {
+  kind: "UPSERT_CUSTOMER_DETAILS";
+  payload: {
+    leadId: string;
+    data: unknown;
+  };
+};
+
 export type QueueItem =
   | CreateLeadWithAttachmentsQueueItem
-  | UploadLeadDocumentQueueItem;
+  | UploadLeadDocumentQueueItem
+  | UpdateLeadStatusQueueItem
+  | UpsertCustomerDetailsQueueItem;
+
+type QueueEnqueueOptions = {
+  ownerUserId?: string;
+  dedupeKey?: string;
+};
 
 type QueueState = {
   items: QueueItem[];
   hydrate: () => Promise<void>;
-  enqueue: (item: QueueItem) => Promise<void>;
+  enqueue: (item: QueueItem, options?: QueueEnqueueOptions) => Promise<void>;
   remove: (id: string) => Promise<void>;
-  flush: () => Promise<void>;
+  flush: (ownerUserId?: string) => Promise<void>;
+  clearByOwner: (ownerUserId: string) => Promise<void>;
 };
 
 type QueueLeadPayload = {
@@ -71,6 +104,17 @@ function shouldRetryQueueItem(error: unknown) {
 
   const status = error.response.status;
   return status >= 500 || status === 429 || status === 408;
+}
+
+function extractQueueErrorMessage(error: unknown) {
+  if (!axios.isAxiosError(error)) {
+    return (error as { message?: string })?.message || "Queue sync failed";
+  }
+  const responseMessage = (error.response?.data as { message?: string } | undefined)?.message;
+  if (typeof responseMessage === "string" && responseMessage.trim().length > 0) {
+    return responseMessage.trim();
+  }
+  return error.message || "Queue sync failed";
 }
 
 function isInsufficientRoleError(error: unknown) {
@@ -133,14 +177,66 @@ async function createLeadWithRoleFallback(rawLeadPayload: unknown) {
   }
 }
 
+function normalizeQueueItem(
+  item: QueueItem,
+  options?: QueueEnqueueOptions
+): QueueItem {
+  const ownerUserId =
+    options?.ownerUserId ??
+    item.ownerUserId;
+  const dedupeKey = options?.dedupeKey ?? item.dedupeKey;
+
+  return {
+    ...item,
+    ownerUserId,
+    dedupeKey,
+    failCount: item.failCount ?? 0,
+    lastError: item.lastError,
+    retryable: item.retryable ?? true
+  };
+}
+
 export const useQueueStore = create<QueueState>((set, get) => ({
   items: [],
   hydrate: async () => {
     const raw = await AsyncStorage.getItem(KEY);
-    set({ items: raw ? (JSON.parse(raw) as QueueItem[]) : [] });
+    if (!raw) {
+      set({ items: [] });
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      if (Array.isArray(parsed)) {
+        const items = (parsed as QueueItem[]).map((item) => normalizeQueueItem(item));
+        set({ items });
+        return;
+      }
+      set({ items: [] });
+      await AsyncStorage.removeItem(KEY);
+    } catch {
+      // Corrupted queue should not crash app boot.
+      set({ items: [] });
+      await AsyncStorage.removeItem(KEY);
+    }
   },
-  enqueue: async (item) => {
-    const next = [...get().items, item];
+  enqueue: async (item, options) => {
+    const normalized = normalizeQueueItem(item, options);
+    const nextBase = [...get().items];
+
+    const next =
+      normalized.dedupeKey && normalized.ownerUserId
+        ? nextBase.filter(
+            (existing) =>
+              !(
+                existing.ownerUserId === normalized.ownerUserId &&
+                existing.dedupeKey &&
+                existing.dedupeKey === normalized.dedupeKey
+              )
+          )
+        : nextBase;
+
+    next.push(normalized);
     set({ items: next });
     await AsyncStorage.setItem(KEY, JSON.stringify(next));
   },
@@ -149,10 +245,26 @@ export const useQueueStore = create<QueueState>((set, get) => ({
     set({ items: next });
     await AsyncStorage.setItem(KEY, JSON.stringify(next));
   },
-  flush: async () => {
+  flush: async (ownerUserId) => {
+    if (!ownerUserId) {
+      return;
+    }
+
     const pending = [...get().items];
+    const untouched: QueueItem[] = [];
     const failed: QueueItem[] = [];
+
     for (const item of pending) {
+      if (item.ownerUserId && item.ownerUserId !== ownerUserId) {
+        untouched.push(item);
+        continue;
+      }
+
+      if (item.retryable === false) {
+        failed.push(item);
+        continue;
+      }
+
       try {
         if (item.kind === "CREATE_LEAD_WITH_ATTACHMENTS") {
           const leadId = await createLeadWithRoleFallback(item.payload.lead);
@@ -180,14 +292,33 @@ export const useQueueStore = create<QueueState>((set, get) => ({
             file: item.payload.file,
             maxAttempts: 2
           });
+        } else if (item.kind === "UPDATE_LEAD_STATUS") {
+          await api.post(`/api/leads/${item.payload.leadId}/transition`, {
+            nextStatusId: item.payload.nextStatusId,
+            notes: item.payload.notes,
+            overrideReason: item.payload.overrideReason
+          });
+        } else if (item.kind === "UPSERT_CUSTOMER_DETAILS") {
+          await api.put(`/api/leads/${item.payload.leadId}/customer-details`, item.payload.data);
         }
       } catch (error) {
-        if (shouldRetryQueueItem(error)) {
-          failed.push(item);
-        }
+        const retryable = shouldRetryQueueItem(error);
+        failed.push({
+          ...item,
+          failCount: (item.failCount ?? 0) + 1,
+          lastError: extractQueueErrorMessage(error),
+          retryable
+        });
       }
     }
-    set({ items: failed });
-    await AsyncStorage.setItem(KEY, JSON.stringify(failed));
+
+    const next = [...untouched, ...failed];
+    set({ items: next });
+    await AsyncStorage.setItem(KEY, JSON.stringify(next));
+  },
+  clearByOwner: async (ownerUserId) => {
+    const next = get().items.filter((item) => item.ownerUserId !== ownerUserId);
+    set({ items: next });
+    await AsyncStorage.setItem(KEY, JSON.stringify(next));
   }
 }));

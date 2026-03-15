@@ -47,6 +47,8 @@ export function LoginScreen() {
   const colors = useAppPalette();
   const textInputStyle = useTextInputStyle();
   const login = useAuthStore((s) => s.login);
+  const authNotice = useAuthStore((s) => s.authNotice);
+  const clearAuthNotice = useAuthStore((s) => s.clearAuthNotice);
   const hasLoggedInOnce = useAuthStore((s) => s.hasLoggedInOnce);
   const setBiometricEnabled = useAuthStore((s) => s.setBiometricEnabled);
 
@@ -111,6 +113,8 @@ export function LoginScreen() {
       </Card>
 
       <Card style={styles.formCard}>
+        {authNotice ? <Text style={[styles.notice, { color: colors.warning }]}>{authNotice}</Text> : null}
+
         <View style={styles.field}>
           <Text style={[styles.label, { color: colors.text }]}>Email</Text>
           <Controller
@@ -157,6 +161,16 @@ export function LoginScreen() {
           onPress={() => void onSubmit()}
           busy={isSubmitting}
         />
+
+        {authNotice ? (
+          <AppButton
+            title="Dismiss Message"
+            kind="ghost"
+            onPress={() => {
+              void clearAuthNotice();
+            }}
+          />
+        ) : null}
       </Card>
 
       <Text style={[styles.meta, { color: colors.textMuted }]}>API: {resolvedApiBaseUrl}</Text>
@@ -182,6 +196,10 @@ const styles = StyleSheet.create({
   },
   error: {
     fontSize: 12
+  },
+  notice: {
+    fontSize: 13,
+    fontWeight: "700"
   },
   meta: {
     marginTop: 4,

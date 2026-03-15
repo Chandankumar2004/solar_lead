@@ -12,6 +12,7 @@ import { createAuditLog, requestIp } from "../services/audit-log.service.js";
 import {
   sendUserPendingApprovalEmail,
   sendUserRoleChangedEmail,
+  sendUserSetupPasswordEmail,
   sendUserStatusChangedEmail
 } from "../services/email.service.js";
 import {
@@ -19,12 +20,24 @@ import {
   removeSupabaseAuthUser,
   revokeAllUserRefreshSessions
 } from "../services/supabase-auth.service.js";
+import {
+  buildSetupPasswordLink,
+  generateSetupPasswordToken,
+  hashSetupPasswordToken,
+  setupPasswordExpiresAt
+} from "../services/setup-password.service.js";
 
 export const usersRouter = Router();
 
 const BCRYPT_WORK_FACTOR = 12;
 const FIELD_ROLES: UserRole[] = ["MANAGER", "EXECUTIVE"];
 const ELEVATED_ROLES: UserRole[] = ["SUPER_ADMIN", "ADMIN"];
+const ROLE_PRIORITY: Record<UserRole, number> = {
+  SUPER_ADMIN: 4,
+  ADMIN: 3,
+  MANAGER: 2,
+  EXECUTIVE: 1
+};
 
 const userIdParamSchema = z.object({
   id: z.string().uuid()
@@ -42,7 +55,6 @@ const listUsersQuerySchema = z.object({
 const createUserSchema = z
   .object({
     email: z.string().trim().email(),
-    password: z.string().min(12),
     fullName: z.string().trim().min(2).max(120),
     phone: z.union([z.string().trim().min(8).max(20), z.literal(""), z.null()]).optional(),
     role: z.nativeEnum(UserRole).default("EXECUTIVE"),
@@ -53,7 +65,6 @@ const createUserSchema = z
   })
   .transform((value) => ({
     email: value.email.toLowerCase(),
-    password: value.password,
     fullName: value.fullName,
     phone: value.phone === "" ? null : value.phone ?? null,
     role: value.role,
@@ -70,7 +81,8 @@ const updateUserSchema = z
     employeeId: z
       .union([z.string().trim().min(2).max(50), z.literal(""), z.null()])
       .optional(),
-    districtIds: z.array(z.string().uuid()).optional()
+    districtIds: z.array(z.string().uuid()).optional(),
+    confirmRoleDowngrade: z.boolean().optional()
   })
   .superRefine((value, ctx) => {
     if (
@@ -99,7 +111,8 @@ const updateUserSchema = z
         : value.employeeId === ""
           ? null
           : value.employeeId,
-    districtIds: value.districtIds ? [...new Set(value.districtIds)] : undefined
+    districtIds: value.districtIds ? [...new Set(value.districtIds)] : undefined,
+    confirmRoleDowngrade: value.confirmRoleDowngrade ?? false
   }));
 
 const statusActionSchema = z.object({
@@ -140,11 +153,16 @@ function roleLabel(role: UserRole) {
 function statusLabel(status: UserStatus) {
   if (status === "ACTIVE") return "Active";
   if (status === "PENDING") return "Pending";
+  if (status === "DEACTIVATED") return "Deactivated";
   return "Suspended";
 }
 
 function isFieldRole(role: UserRole) {
   return FIELD_ROLES.includes(role);
+}
+
+function isRoleDowngrade(currentRole: UserRole, nextRole: UserRole) {
+  return ROLE_PRIORITY[nextRole] < ROLE_PRIORITY[currentRole];
 }
 
 function ensureCanManageRole(actorRole: UserRole, roleToManage: UserRole) {
@@ -168,6 +186,10 @@ function parseReason(value: string | null | undefined) {
   if (value === undefined || value === null) return null;
   const trimmed = value.trim();
   return trimmed.length ? trimmed : null;
+}
+
+function generateTemporaryPassword() {
+  return `Tmp@${randomUUID()}A1`;
 }
 
 function mapUser(
@@ -237,6 +259,12 @@ async function collectRoleChangeWarnings(input: {
     `Role changed from ${roleLabel(input.currentRole)} to ${roleLabel(input.nextRole)}.`
   );
 
+  if (isRoleDowngrade(input.currentRole, input.nextRole)) {
+    warnings.push(
+      `Role downgrade detected: ${roleLabel(input.currentRole)} -> ${roleLabel(input.nextRole)}.`
+    );
+  }
+
   if (ELEVATED_ROLES.includes(input.nextRole)) {
     warnings.push(
       `${roleLabel(input.nextRole)} has elevated permissions. Verify authorization before continuing.`
@@ -293,6 +321,149 @@ async function getUserOrFail(userId: string) {
     throw new AppError(404, "NOT_FOUND", "User not found");
   }
   return user;
+}
+
+async function buildExecutiveProfile(userId: string) {
+  const [
+    totalAssignedLeads,
+    activeAssignedLeads,
+    completedAssignedLeads,
+    totalTokenCollections,
+    verifiedTokenCollectionsAggregate,
+    totalDocumentUploads,
+    pendingDocumentUploads,
+    verifiedDocumentUploads,
+    rejectedDocumentUploads,
+    assignedLeads
+  ] = await Promise.all([
+    prisma.lead.count({
+      where: {
+        assignedExecutiveId: userId
+      }
+    }),
+    prisma.lead.count({
+      where: {
+        assignedExecutiveId: userId,
+        currentStatus: {
+          isTerminal: false
+        }
+      }
+    }),
+    prisma.lead.count({
+      where: {
+        assignedExecutiveId: userId,
+        currentStatus: {
+          isTerminal: true
+        }
+      }
+    }),
+    prisma.payment.count({
+      where: {
+        collectedByUserId: userId
+      }
+    }),
+    prisma.payment.aggregate({
+      where: {
+        collectedByUserId: userId,
+        status: "VERIFIED"
+      },
+      _count: {
+        _all: true
+      },
+      _sum: {
+        amount: true
+      }
+    }),
+    prisma.document.count({
+      where: {
+        uploadedByUserId: userId
+      }
+    }),
+    prisma.document.count({
+      where: {
+        uploadedByUserId: userId,
+        reviewStatus: "PENDING"
+      }
+    }),
+    prisma.document.count({
+      where: {
+        uploadedByUserId: userId,
+        reviewStatus: "VERIFIED"
+      }
+    }),
+    prisma.document.count({
+      where: {
+        uploadedByUserId: userId,
+        reviewStatus: "REJECTED"
+      }
+    }),
+    prisma.lead.findMany({
+      where: {
+        assignedExecutiveId: userId
+      },
+      select: {
+        id: true,
+        externalId: true,
+        name: true,
+        phone: true,
+        createdAt: true,
+        updatedAt: true,
+        district: {
+          select: {
+            id: true,
+            name: true,
+            state: true
+          }
+        },
+        currentStatus: {
+          select: {
+            id: true,
+            name: true,
+            isTerminal: true
+          }
+        }
+      },
+      orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }]
+    })
+  ]);
+
+  const completionRate =
+    totalAssignedLeads === 0
+      ? 0
+      : Number(((completedAssignedLeads / totalAssignedLeads) * 100).toFixed(2));
+
+  const verifiedTokenAmount = verifiedTokenCollectionsAggregate._sum.amount;
+
+  return {
+    summary: {
+      totalAssignedLeads,
+      activeAssignedLeads,
+      completedAssignedLeads,
+      completionRate
+    },
+    tokenCollections: {
+      totalCollections: totalTokenCollections,
+      verifiedCollections: verifiedTokenCollectionsAggregate._count._all,
+      verifiedAmount: verifiedTokenAmount ? Number(verifiedTokenAmount) : 0
+    },
+    documentSubmissions: {
+      totalUploads: totalDocumentUploads,
+      pendingReview: pendingDocumentUploads,
+      verified: verifiedDocumentUploads,
+      rejected: rejectedDocumentUploads
+    },
+    assignedLeads: assignedLeads.map((lead) => ({
+      id: lead.id,
+      externalId: lead.externalId,
+      name: lead.name,
+      phone: lead.phone,
+      district: lead.district,
+      status: lead.currentStatus,
+      isActive: !lead.currentStatus.isTerminal,
+      createdAt: lead.createdAt,
+      updatedAt: lead.updatedAt
+    }))
+  };
 }
 
 usersRouter.use(allowRoles("SUPER_ADMIN", "ADMIN"));
@@ -392,12 +563,13 @@ usersRouter.post("/", validateBody(createUserSchema), async (req: Request, res: 
   }
 
   const appUserId = randomUUID();
-  const passwordHash = await bcrypt.hash(body.password, BCRYPT_WORK_FACTOR);
+  const temporaryPassword = generateTemporaryPassword();
+  const passwordHash = await bcrypt.hash(temporaryPassword, BCRYPT_WORK_FACTOR);
   const supabaseProvision = await ensureSupabaseAuthUserForAppUser({
     appUserId,
     email: body.email,
     fullName: body.fullName,
-    password: body.password,
+    password: temporaryPassword,
     createIfMissing: true
   });
 
@@ -415,6 +587,10 @@ usersRouter.post("/", validateBody(createUserSchema), async (req: Request, res: 
   }
 
   try {
+    const setupToken = generateSetupPasswordToken();
+    const setupTokenHash = hashSetupPasswordToken(setupToken);
+    const setupTokenExpiresAt = setupPasswordExpiresAt();
+
     const createdUser = await prisma.$transaction(async (tx) => {
       const user = await tx.user.create({
         data: {
@@ -439,6 +615,15 @@ usersRouter.post("/", validateBody(createUserSchema), async (req: Request, res: 
         });
       }
 
+      await tx.userSetupPasswordToken.create({
+        data: {
+          userId: user.id,
+          issuedByUserId: actor.id,
+          tokenHash: setupTokenHash,
+          expiresAt: setupTokenExpiresAt
+        }
+      });
+
       return tx.user.findUniqueOrThrow({
         where: { id: user.id },
         include: userInclude
@@ -460,10 +645,36 @@ usersRouter.post("/", validateBody(createUserSchema), async (req: Request, res: 
       ipAddress: requestIp(req)
     });
 
-    await sendUserPendingApprovalEmail({
+    const pendingApprovalEmail = await sendUserPendingApprovalEmail({
       to: createdUser.email,
       fullName: createdUser.fullName,
       role: createdUser.role
+    });
+    if (!pendingApprovalEmail) {
+      warnings.push("Pending approval email could not be delivered.");
+    }
+
+    const setupLink = buildSetupPasswordLink(setupToken);
+    const setupPasswordEmail = await sendUserSetupPasswordEmail({
+      to: createdUser.email,
+      fullName: createdUser.fullName,
+      role: createdUser.role,
+      setupLink,
+      expiresAt: setupTokenExpiresAt
+    });
+    if (!setupPasswordEmail) {
+      warnings.push("Setup password email could not be delivered.");
+    }
+
+    await createAuditLog({
+      actorUserId: actor.id,
+      action: "USER_SETUP_PASSWORD_LINK_ISSUED",
+      entityType: "user",
+      entityId: createdUser.id,
+      detailsJson: {
+        expiresAt: setupTokenExpiresAt.toISOString()
+      },
+      ipAddress: requestIp(req)
     });
 
     return created(
@@ -493,7 +704,7 @@ usersRouter.get("/:id", validateParams(userIdParamSchema), async (req: Request, 
   const user = await getUserOrFail(id);
   ensureCanManageRole(req.user!.role, user.role);
 
-  const [activeExecutiveLeadCount, activeManagerLeadCount] = await Promise.all([
+  const [activeExecutiveLeadCount, activeManagerLeadCount, executiveProfile] = await Promise.all([
     prisma.lead.count({
       where: {
         assignedExecutiveId: id,
@@ -509,7 +720,8 @@ usersRouter.get("/:id", validateParams(userIdParamSchema), async (req: Request, 
           isTerminal: false
         }
       }
-    })
+    }),
+    user.role === "EXECUTIVE" ? buildExecutiveProfile(id) : Promise.resolve(null)
   ]);
 
   return ok(res, {
@@ -517,7 +729,8 @@ usersRouter.get("/:id", validateParams(userIdParamSchema), async (req: Request, 
     workload: {
       activeExecutiveLeadCount,
       activeManagerLeadCount
-    }
+    },
+    executiveProfile
   });
 });
 
@@ -542,6 +755,18 @@ usersRouter.patch(
     }
 
     const nextRole = body.role ?? existing.role;
+    const roleDowngrade = isRoleDowngrade(existing.role, nextRole);
+    if (roleDowngrade && body.confirmRoleDowngrade !== true) {
+      throw new AppError(
+        400,
+        "ROLE_DOWNGRADE_CONFIRMATION_REQUIRED",
+        "Role downgrade requires explicit confirmation",
+        {
+          fromRole: existing.role,
+          toRole: nextRole
+        }
+      );
+    }
     const warnings = await collectRoleChangeWarnings({
       userId: existing.id,
       currentRole: existing.role,
@@ -600,6 +825,20 @@ usersRouter.patch(
       }
 
       if (existing.role !== nextRole) {
+        if (roleDowngrade) {
+          await createAuditLog({
+            actorUserId: actor.id,
+            action: "USER_ROLE_DOWNGRADE_CONFIRMED",
+            entityType: "user",
+            entityId: updated.id,
+            detailsJson: {
+              fromRole: existing.role,
+              toRole: nextRole
+            },
+            ipAddress: requestIp(req)
+          });
+        }
+
         await createAuditLog({
           actorUserId: actor.id,
           action: "USER_ROLE_CHANGED",
@@ -712,6 +951,42 @@ async function changeUserStatus(input: {
   }
 
   const statusReason = parseReason(input.reason);
+
+  if (input.status === "DEACTIVATED") {
+    const [activeExecutiveLeadCount, activeManagerLeadCount] = await Promise.all([
+      prisma.lead.count({
+        where: {
+          assignedExecutiveId: target.id,
+          currentStatus: {
+            isTerminal: false
+          }
+        }
+      }),
+      prisma.lead.count({
+        where: {
+          assignedManagerId: target.id,
+          currentStatus: {
+            isTerminal: false
+          }
+        }
+      })
+    ]);
+
+    const totalActiveLeadAssignments = activeExecutiveLeadCount + activeManagerLeadCount;
+    if (totalActiveLeadAssignments > 0) {
+      throw new AppError(
+        409,
+        "ACTIVE_LEAD_ASSIGNMENTS_EXIST",
+        "Cannot deactivate user with active lead assignments. Reassign active leads first.",
+        {
+          activeExecutiveLeadCount,
+          activeManagerLeadCount,
+          totalActiveLeadAssignments
+        }
+      );
+    }
+  }
+
   const updated = await prisma.user.update({
     where: { id: target.id },
     data: { status: input.status }
@@ -808,7 +1083,7 @@ usersRouter.post(
 
     const updated = await changeUserStatus({
       targetUserId: id,
-      status: "SUSPENDED",
+      status: "DEACTIVATED",
       actorUserId: req.user!.id,
       actorRole: req.user!.role,
       reason,
@@ -816,13 +1091,6 @@ usersRouter.post(
       reqIp: requestIp(req)
     });
 
-    return ok(
-      res,
-      {
-        user: mapUser(updated),
-        warning: "Deactivation is mapped to suspended status in current workflow."
-      },
-      "User deactivated"
-    );
+    return ok(res, { user: mapUser(updated) }, "User deactivated");
   }
 );

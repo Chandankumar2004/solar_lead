@@ -11,7 +11,7 @@ import { api } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth-store";
 
 type Role = "SUPER_ADMIN" | "ADMIN" | "MANAGER" | "EXECUTIVE";
-type Status = "ACTIVE" | "PENDING" | "SUSPENDED";
+type Status = "ACTIVE" | "PENDING" | "SUSPENDED" | "DEACTIVATED";
 
 type District = {
   id: string;
@@ -53,6 +53,44 @@ type UserDetailEnvelope = {
       activeExecutiveLeadCount: number;
       activeManagerLeadCount: number;
     };
+    executiveProfile?: {
+      summary: {
+        totalAssignedLeads: number;
+        activeAssignedLeads: number;
+        completedAssignedLeads: number;
+        completionRate: number;
+      };
+      tokenCollections: {
+        totalCollections: number;
+        verifiedCollections: number;
+        verifiedAmount: number;
+      };
+      documentSubmissions: {
+        totalUploads: number;
+        pendingReview: number;
+        verified: number;
+        rejected: number;
+      };
+      assignedLeads: Array<{
+        id: string;
+        externalId: string;
+        name: string;
+        phone: string;
+        district: {
+          id: string;
+          name: string;
+          state: string;
+        };
+        status: {
+          id: string;
+          name: string;
+          isTerminal: boolean;
+        };
+        isActive: boolean;
+        createdAt: string;
+        updatedAt: string;
+      }>;
+    } | null;
   };
 };
 
@@ -80,9 +118,38 @@ function isDistrictRole(role: Role) {
   return role === "MANAGER" || role === "EXECUTIVE";
 }
 
-function extractApiMessage(error: unknown) {
-  const maybe = error as { response?: { data?: { message?: string } } };
-  return maybe.response?.data?.message ?? "Operation failed";
+function extractApiError(error: unknown) {
+  const maybe = error as {
+    response?: {
+      data?: {
+        message?: string;
+        error?: {
+          code?: string;
+          details?: {
+            activeExecutiveLeadCount?: number;
+            activeManagerLeadCount?: number;
+            totalActiveLeadAssignments?: number;
+          };
+        };
+      };
+    };
+  };
+  return {
+    message: maybe.response?.data?.message ?? "Operation failed",
+    code: maybe.response?.data?.error?.code ?? null,
+    details: maybe.response?.data?.error?.details ?? null
+  };
+}
+
+const ROLE_PRIORITY: Record<Role, number> = {
+  SUPER_ADMIN: 4,
+  ADMIN: 3,
+  MANAGER: 2,
+  EXECUTIVE: 1
+};
+
+function isRoleDowngrade(currentRole: Role, nextRole: Role) {
+  return ROLE_PRIORITY[nextRole] < ROLE_PRIORITY[currentRole];
 }
 
 export default function UserDetailPage() {
@@ -105,6 +172,7 @@ export default function UserDetailPage() {
   const userEnvelope = data as UserDetailEnvelope | undefined;
   const user = userEnvelope?.data?.user ?? null;
   const workload = userEnvelope?.data?.workload ?? null;
+  const executiveProfile = userEnvelope?.data?.executiveProfile ?? null;
 
   const districts = useMemo(
     () =>
@@ -157,8 +225,33 @@ export default function UserDetailPage() {
     const actionKey = `${user.id}:${action}`;
     setActionMessage(null);
 
+    const actionLabel =
+      action === "approve" ? "approve" : action === "suspend" ? "suspend" : "deactivate";
+    const confirmed = window.confirm(`Are you sure you want to ${actionLabel} ${user.fullName}?`);
+    if (!confirmed) {
+      return;
+    }
+
     let payload: Record<string, string> = {};
     if (action === "suspend" || action === "deactivate") {
+      if (action === "deactivate") {
+        const totalActiveLeadAssignments =
+          (workload?.activeExecutiveLeadCount ?? 0) + (workload?.activeManagerLeadCount ?? 0);
+        if (totalActiveLeadAssignments > 0) {
+          const openLeads = window.confirm(
+            `${user.fullName} has ${totalActiveLeadAssignments} active assigned lead(s). Reassign them before deactivation. Click OK to open Leads now.`
+          );
+          if (openLeads) {
+            router.push("/leads");
+          }
+          setActionMessage({
+            type: "error",
+            text: `Reassign ${totalActiveLeadAssignments} active lead(s) before deactivation.`
+          });
+          return;
+        }
+      }
+
       const reason = window.prompt(
         `${action === "suspend" ? "Suspension" : "Deactivation"} reason (min 5 characters):`,
         ""
@@ -188,9 +281,19 @@ export default function UserDetailPage() {
       });
       await mutate();
     } catch (error) {
+      const apiError = extractApiError(error);
+      if (apiError.code === "ACTIVE_LEAD_ASSIGNMENTS_EXIST") {
+        const totalActiveLeadAssignments = apiError.details?.totalActiveLeadAssignments ?? 0;
+        const openLeads = window.confirm(
+          `${user.fullName} still has ${totalActiveLeadAssignments} active assigned lead(s). Reassign first. Click OK to open Leads.`
+        );
+        if (openLeads) {
+          router.push("/leads");
+        }
+      }
       setActionMessage({
         type: "error",
-        text: extractApiMessage(error)
+        text: apiError.message
       });
     } finally {
       setActionLoading(null);
@@ -202,6 +305,19 @@ export default function UserDetailPage() {
     setSubmitError(null);
     setSubmitWarnings([]);
 
+    const roleDowngrade = isRoleDowngrade(user.role, values.role);
+    let confirmRoleDowngrade = false;
+    if (roleDowngrade) {
+      const confirmed = window.confirm(
+        `Role downgrade detected (${user.role} -> ${values.role}). Do you want to continue?`
+      );
+      if (!confirmed) {
+        setSubmitError("Role downgrade cancelled.");
+        return;
+      }
+      confirmRoleDowngrade = true;
+    }
+
     try {
       const response = await api.patch(`/api/users/${user.id}`, {
         fullName: values.fullName,
@@ -209,7 +325,8 @@ export default function UserDetailPage() {
         phone: values.phone?.trim() ? values.phone.trim() : null,
         employeeId: values.employeeId?.trim() ? values.employeeId.trim() : null,
         role: values.role,
-        districtIds: canAssignDistricts ? values.districtIds : []
+        districtIds: canAssignDistricts ? values.districtIds : [],
+        confirmRoleDowngrade
       });
       setSubmitWarnings((response.data?.data?.warnings ?? []) as string[]);
       setActionMessage({
@@ -218,7 +335,7 @@ export default function UserDetailPage() {
       });
       await mutate();
     } catch (error) {
-      setSubmitError(extractApiMessage(error));
+      setSubmitError(extractApiError(error).message);
     }
   });
 
@@ -245,7 +362,7 @@ export default function UserDetailPage() {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="min-w-0 space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-lg font-semibold">{user.fullName}</h2>
@@ -258,8 +375,8 @@ export default function UserDetailPage() {
         </Link>
       </div>
 
-      <section className="rounded-xl bg-white p-4 shadow-sm">
-        <div className="grid gap-3 md:grid-cols-2">
+      <section className="rounded-xl bg-white p-3 shadow-sm sm:p-4">
+        <div className="grid gap-3 sm:grid-cols-2">
           <div className="rounded-md border border-slate-200 p-3 text-sm">
             <p className="text-slate-500">Created</p>
             <p>{new Date(user.createdAt).toLocaleString()}</p>
@@ -279,6 +396,96 @@ export default function UserDetailPage() {
         </div>
       </section>
 
+      {user.role === "EXECUTIVE" && executiveProfile ? (
+        <section className="space-y-3 rounded-xl bg-white p-3 shadow-sm sm:p-4">
+          <h3 className="text-base font-semibold">Field Executive Profile</h3>
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            <div className="rounded-md border border-slate-200 p-3 text-sm">
+              <p className="text-slate-500">Assigned Leads</p>
+              <p>{executiveProfile.summary.totalAssignedLeads}</p>
+            </div>
+            <div className="rounded-md border border-slate-200 p-3 text-sm">
+              <p className="text-slate-500">Active Leads</p>
+              <p>{executiveProfile.summary.activeAssignedLeads}</p>
+            </div>
+            <div className="rounded-md border border-slate-200 p-3 text-sm">
+              <p className="text-slate-500">Completion Rate</p>
+              <p>{executiveProfile.summary.completionRate}%</p>
+            </div>
+            <div className="rounded-md border border-slate-200 p-3 text-sm">
+              <p className="text-slate-500">Completed Leads</p>
+              <p>{executiveProfile.summary.completedAssignedLeads}</p>
+            </div>
+            <div className="rounded-md border border-slate-200 p-3 text-sm">
+              <p className="text-slate-500">Token Collections (Verified/Total)</p>
+              <p>
+                {executiveProfile.tokenCollections.verifiedCollections}/
+                {executiveProfile.tokenCollections.totalCollections}
+              </p>
+              <p className="text-xs text-slate-500">
+                Verified Amount: {executiveProfile.tokenCollections.verifiedAmount}
+              </p>
+            </div>
+            <div className="rounded-md border border-slate-200 p-3 text-sm">
+              <p className="text-slate-500">Document Submissions</p>
+              <p>Total: {executiveProfile.documentSubmissions.totalUploads}</p>
+              <p className="text-xs text-slate-500">
+                Pending: {executiveProfile.documentSubmissions.pendingReview} | Verified:{" "}
+                {executiveProfile.documentSubmissions.verified} | Rejected:{" "}
+                {executiveProfile.documentSubmissions.rejected}
+              </p>
+            </div>
+          </div>
+
+          <div className="overflow-x-auto rounded-lg border border-slate-200">
+            <table className="min-w-full text-sm">
+              <thead className="bg-slate-100 text-left text-xs uppercase text-slate-600">
+                <tr>
+                  <th className="px-3 py-2">Lead</th>
+                  <th className="px-3 py-2">District</th>
+                  <th className="px-3 py-2">Status</th>
+                  <th className="px-3 py-2">Updated</th>
+                </tr>
+              </thead>
+              <tbody>
+                {executiveProfile.assignedLeads.length === 0 ? (
+                  <tr>
+                    <td className="px-3 py-3 text-slate-500" colSpan={4}>
+                      No assigned leads yet.
+                    </td>
+                  </tr>
+                ) : (
+                  executiveProfile.assignedLeads.map((lead) => (
+                    <tr key={lead.id} className="border-t border-slate-100">
+                      <td className="px-3 py-2">
+                        <p className="font-medium">{lead.name}</p>
+                        <p className="text-xs text-slate-500">{lead.phone}</p>
+                        <p className="text-xs text-slate-500">{lead.externalId}</p>
+                      </td>
+                      <td className="px-3 py-2">
+                        {lead.district.name} ({lead.district.state})
+                      </td>
+                      <td className="px-3 py-2">
+                        <span
+                          className={`rounded-full px-2 py-1 text-xs font-medium ${
+                            lead.isActive
+                              ? "bg-emerald-100 text-emerald-800"
+                              : "bg-slate-200 text-slate-800"
+                          }`}
+                        >
+                          {lead.status.name}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2">{new Date(lead.updatedAt).toLocaleString()}</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      ) : null}
+
       {actionMessage ? (
         <section
           className={`rounded-md border px-3 py-2 text-sm ${
@@ -291,9 +498,9 @@ export default function UserDetailPage() {
         </section>
       ) : null}
 
-      <form onSubmit={onSubmit} className="rounded-xl bg-white p-4 shadow-sm">
+      <form onSubmit={onSubmit} className="rounded-xl bg-white p-3 shadow-sm sm:p-4">
         <h3 className="text-base font-semibold">Edit User</h3>
-        <div className="mt-3 grid gap-3 md:grid-cols-2">
+        <div className="mt-3 grid gap-3 sm:grid-cols-2">
           <div>
             <label className="mb-1 block text-sm font-medium">Full Name</label>
             <input

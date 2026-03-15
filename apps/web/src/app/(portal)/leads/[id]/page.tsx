@@ -125,6 +125,22 @@ type LeadDetail = {
     lastAttemptedAt?: string | null;
     template?: { name: string; channel: string } | null;
   }>;
+  internalNotes?: Array<{
+    id: string;
+    note: string;
+    createdAt: string;
+    actor?: { id: string; fullName: string; email: string } | null;
+  }>;
+  activityLog?: Array<{
+    id: string;
+    action: string;
+    entityType: string;
+    entityId?: string | null;
+    details?: unknown;
+    ipAddress?: string | null;
+    createdAt: string;
+    actor?: { id: string; fullName: string; email: string } | null;
+  }>;
 };
 
 type DashboardSummaryEnvelope = {
@@ -157,16 +173,20 @@ type TabId =
   | "documents"
   | "payments"
   | "loan"
-  | "communications";
+  | "communications"
+  | "notes"
+  | "activity";
 
-const tabs: Array<{ id: TabId; label: string }> = [
+const baseTabs: Array<{ id: TabId; label: string }> = [
   { id: "overview", label: "Overview" },
   { id: "timeline", label: "Status Timeline" },
   { id: "customer", label: "Customer Information" },
   { id: "documents", label: "Documents" },
   { id: "payments", label: "Payments" },
   { id: "loan", label: "Loan Details" },
-  { id: "communications", label: "Communications Log" }
+  { id: "communications", label: "Communications Log" },
+  { id: "notes", label: "Internal Notes" },
+  { id: "activity", label: "Activity Log" }
 ];
 
 const fetcher = (url: string) => api.get(url).then((response) => response.data);
@@ -200,8 +220,16 @@ export default function LeadDetailPage() {
   const user = useAuthStore((state) => state.user);
   const isSuperAdmin = user?.role === "SUPER_ADMIN";
   const canWebUploadDocument = user?.role === "SUPER_ADMIN" || user?.role === "ADMIN";
+  const canViewInternalNotes =
+    user?.role === "SUPER_ADMIN" ||
+    user?.role === "ADMIN" ||
+    user?.role === "DISTRICT_MANAGER";
   const canReassign =
     user?.role === "SUPER_ADMIN" || user?.role === "ADMIN" || user?.role === "DISTRICT_MANAGER";
+  const visibleTabs = useMemo(
+    () => baseTabs.filter((tab) => (tab.id === "notes" ? canViewInternalNotes : true)),
+    [canViewInternalNotes]
+  );
 
   const [activeTab, setActiveTab] = useState<TabId>("overview");
   const [assignmentExecutiveId, setAssignmentExecutiveId] = useState("");
@@ -231,6 +259,12 @@ export default function LeadDetailPage() {
     type: "success" | "error";
     text: string;
   } | null>(null);
+  const [internalNoteDraft, setInternalNoteDraft] = useState("");
+  const [noteSubmitting, setNoteSubmitting] = useState(false);
+  const [noteMessage, setNoteMessage] = useState<{
+    type: "success" | "error";
+    text: string;
+  } | null>(null);
 
   const { data: lead, isLoading, mutate } = useSWR(
     leadId ? `/api/leads/${leadId}` : null,
@@ -252,6 +286,12 @@ export default function LeadDetailPage() {
   useEffect(() => {
     setAssignmentExecutiveId(lead?.assignedExecutive?.id ?? "");
   }, [lead?.assignedExecutive?.id]);
+
+  useEffect(() => {
+    if (activeTab === "notes" && !canViewInternalNotes) {
+      setActiveTab("overview");
+    }
+  }, [activeTab, canViewInternalNotes]);
 
   const currentExecutiveId = lead?.assignedExecutive?.id ?? "";
   const canSubmitReassignment =
@@ -411,6 +451,37 @@ export default function LeadDetailPage() {
     }
   };
 
+  const addInternalNote = async () => {
+    if (!lead || !canViewInternalNotes) return;
+    const note = internalNoteDraft.trim();
+    if (note.length < 3) {
+      setNoteMessage({
+        type: "error",
+        text: "Internal note must be at least 3 characters."
+      });
+      return;
+    }
+
+    setNoteSubmitting(true);
+    setNoteMessage(null);
+    try {
+      await api.post(`/api/leads/${lead.id}/internal-notes`, { note });
+      setInternalNoteDraft("");
+      setNoteMessage({
+        type: "success",
+        text: "Internal note added."
+      });
+      await mutate();
+    } catch (error) {
+      setNoteMessage({
+        type: "error",
+        text: extractApiMessage(error)
+      });
+    } finally {
+      setNoteSubmitting(false);
+    }
+  };
+
   const deleteLead = async () => {
     if (!lead || !isSuperAdmin) return;
     const confirmed = window.confirm(
@@ -442,17 +513,17 @@ export default function LeadDetailPage() {
   }
 
   return (
-    <div className="space-y-4">
-      <section className="rounded-xl bg-white p-4 shadow-sm">
-        <div className="flex items-start justify-between gap-3">
-          <div>
+    <div className="min-w-0 space-y-4">
+      <section className="rounded-xl bg-white p-3 shadow-sm sm:p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
             <p className="text-xs uppercase tracking-wide text-slate-500">{lead.externalId}</p>
-            <h1 className="text-xl font-semibold">{lead.name}</h1>
-            <p className="text-sm text-slate-600">
+            <h1 className="break-words text-lg font-semibold sm:text-xl">{lead.name}</h1>
+            <p className="break-words text-sm text-slate-600">
               {lead.phone} {lead.email ? `• ${lead.email}` : ""}
             </p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             {isSuperAdmin ? (
               <button
                 onClick={() => void deleteLead()}
@@ -466,7 +537,7 @@ export default function LeadDetailPage() {
             </Link>
           </div>
         </div>
-        <div className="mt-4 grid gap-3 text-sm md:grid-cols-4">
+        <div className="mt-4 grid gap-3 text-sm sm:grid-cols-2 xl:grid-cols-4">
           {renderField("Current Status", lead.currentStatus?.name)}
           {renderField("District", lead.district?.name)}
           {renderField("State", lead.state ?? lead.district?.state)}
@@ -478,9 +549,9 @@ export default function LeadDetailPage() {
         </div>
       </section>
 
-      <section className="rounded-xl bg-white p-4 shadow-sm">
+      <section className="rounded-xl bg-white p-3 shadow-sm sm:p-4">
         <h2 className="text-base font-semibold">Assignment Panel</h2>
-        <div className="mt-3 grid gap-4 lg:grid-cols-[360px_1fr]">
+        <div className="mt-3 grid gap-4 xl:grid-cols-[360px_1fr]">
           <div className="space-y-2">
             <label className="block text-xs font-medium text-slate-600">Assign Executive</label>
             <select
@@ -565,9 +636,9 @@ export default function LeadDetailPage() {
         </div>
       </section>
 
-      <section className="rounded-xl bg-white p-4 shadow-sm">
-        <nav className="flex flex-wrap gap-2 border-b border-slate-200 pb-3">
-          {tabs.map((tab) => {
+      <section className="rounded-xl bg-white p-3 shadow-sm sm:p-4">
+        <nav className="flex gap-2 overflow-x-auto border-b border-slate-200 pb-3">
+          {visibleTabs.map((tab) => {
             const active = tab.id === activeTab;
             return (
               <button
@@ -586,10 +657,10 @@ export default function LeadDetailPage() {
         </nav>
 
         {activeTab === "overview" ? (
-          <div className="mt-4 grid gap-4 lg:grid-cols-2">
+          <div className="mt-4 grid gap-4 xl:grid-cols-2">
             <div className="space-y-3 rounded-md border border-slate-200 p-3">
               <h3 className="text-sm font-semibold">Lead Information</h3>
-              <div className="grid gap-3 md:grid-cols-2">
+              <div className="grid gap-3 sm:grid-cols-2">
                 {renderField("Monthly Bill", lead.monthlyBill)}
                 {renderField("Message", lead.message)}
                 {renderField("Source IP", lead.sourceIp)}
@@ -603,7 +674,7 @@ export default function LeadDetailPage() {
             </div>
             <div className="space-y-3 rounded-md border border-slate-200 p-3">
               <h3 className="text-sm font-semibold">UTM Attribution</h3>
-              <div className="grid gap-3 md:grid-cols-2">
+              <div className="grid gap-3 sm:grid-cols-2">
                 {renderField("utm_source", lead.utmSource)}
                 {renderField("utm_medium", lead.utmMedium)}
                 {renderField("utm_campaign", lead.utmCampaign)}
@@ -642,7 +713,7 @@ export default function LeadDetailPage() {
         ) : null}
 
         {activeTab === "customer" ? (
-          <div className="mt-4 grid gap-3 md:grid-cols-3">
+          <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
             {renderField("Full Name", lead.customerDetail?.fullName ?? lead.name)}
             {renderField(
               "Date of Birth",
@@ -680,7 +751,7 @@ export default function LeadDetailPage() {
             {canWebUploadDocument ? (
               <div className="rounded-md border border-slate-200 p-3">
                 <h3 className="text-sm font-semibold">Upload Document</h3>
-                <div className="mt-3 grid gap-3 md:grid-cols-3">
+                <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                   <input
                     value={uploadCategory}
                     onChange={(event) => setUploadCategory(event.target.value)}
@@ -744,7 +815,7 @@ export default function LeadDetailPage() {
                         {new Date(document.createdAt).toLocaleString()}
                       </td>
                       <td className="px-3 py-2">
-                        <div className="flex gap-2">
+                        <div className="flex flex-wrap gap-2">
                           <button
                             onClick={() => void handlePreview(document.id)}
                             disabled={previewLoadingDocId === document.id}
@@ -776,13 +847,13 @@ export default function LeadDetailPage() {
                     width={1200}
                     height={800}
                     unoptimized
-                    className="max-h-[420px] w-auto rounded-md border border-slate-200"
+                    className="max-h-[420px] w-full max-w-full rounded-md border border-slate-200 object-contain"
                   />
                 ) : (
                   <iframe
                     src={previewUrl}
                     title={previewName ?? "Document preview"}
-                    className="h-[460px] w-full rounded-md border border-slate-200"
+                    className="h-[360px] w-full rounded-md border border-slate-200 sm:h-[460px]"
                   />
                 )}
               </div>
@@ -794,7 +865,7 @@ export default function LeadDetailPage() {
           <div className="mt-4 space-y-4">
             <div className="rounded-md border border-slate-200 p-3">
               <h3 className="text-sm font-semibold">Create QR-UTR Payment</h3>
-              <div className="mt-3 grid gap-3 md:grid-cols-3">
+              <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 <input
                   type="number"
                   min="0"
@@ -866,7 +937,7 @@ export default function LeadDetailPage() {
         ) : null}
 
         {activeTab === "loan" ? (
-          <div className="mt-4 grid gap-3 md:grid-cols-3">
+          <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
             {renderField("Lender Name", lead.loanDetails?.lenderName)}
             {renderField("Application Number", lead.loanDetails?.applicationNumber)}
             {renderField("Application Status", lead.loanDetails?.applicationStatus)}
@@ -923,6 +994,118 @@ export default function LeadDetailPage() {
                     </td>
                   </tr>
                 ))}
+              </tbody>
+            </table>
+          </div>
+        ) : null}
+
+        {activeTab === "notes" ? (
+          <div className="mt-4 space-y-4">
+            {canViewInternalNotes ? (
+              <div className="rounded-md border border-slate-200 p-3">
+                <h3 className="text-sm font-semibold">Add Internal Note</h3>
+                <textarea
+                  value={internalNoteDraft}
+                  onChange={(event) => setInternalNoteDraft(event.target.value)}
+                  rows={4}
+                  placeholder="Add internal note (visible to admin and district manager roles only)"
+                  className="mt-2 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                />
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <button
+                    onClick={() => void addInternalNote()}
+                    disabled={noteSubmitting}
+                    className="rounded-md bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-700 disabled:opacity-60"
+                  >
+                    {noteSubmitting ? "Saving..." : "Save Note"}
+                  </button>
+                  {noteMessage ? (
+                    <p
+                      className={`text-sm ${
+                        noteMessage.type === "success" ? "text-emerald-700" : "text-rose-700"
+                      }`}
+                    >
+                      {noteMessage.text}
+                    </p>
+                  ) : null}
+                </div>
+              </div>
+            ) : (
+              <p className="text-sm text-slate-500">You do not have access to internal notes.</p>
+            )}
+
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-sm">
+                <thead className="bg-slate-100 text-left text-xs uppercase text-slate-600">
+                  <tr>
+                    <th className="px-3 py-2">When</th>
+                    <th className="px-3 py-2">By</th>
+                    <th className="px-3 py-2">Note</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(lead.internalNotes ?? []).length === 0 ? (
+                    <tr>
+                      <td className="px-3 py-3 text-slate-500" colSpan={3}>
+                        No internal notes yet.
+                      </td>
+                    </tr>
+                  ) : (
+                    (lead.internalNotes ?? []).map((note) => (
+                      <tr key={note.id} className="border-t border-slate-100">
+                        <td className="px-3 py-2">{new Date(note.createdAt).toLocaleString()}</td>
+                        <td className="px-3 py-2">
+                          {note.actor?.fullName ?? "-"}
+                          <p className="text-xs text-slate-500">{note.actor?.email ?? ""}</p>
+                        </td>
+                        <td className="px-3 py-2 whitespace-pre-wrap break-words">{note.note}</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        ) : null}
+
+        {activeTab === "activity" ? (
+          <div className="mt-4 overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead className="bg-slate-100 text-left text-xs uppercase text-slate-600">
+                <tr>
+                  <th className="px-3 py-2">When</th>
+                  <th className="px-3 py-2">Action</th>
+                  <th className="px-3 py-2">Actor</th>
+                  <th className="px-3 py-2">Entity</th>
+                  <th className="px-3 py-2">Details</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(lead.activityLog ?? []).length === 0 ? (
+                  <tr>
+                    <td className="px-3 py-3 text-slate-500" colSpan={5}>
+                      No activity logs available.
+                    </td>
+                  </tr>
+                ) : (
+                  (lead.activityLog ?? []).map((entry) => (
+                    <tr key={entry.id} className="border-t border-slate-100 align-top">
+                      <td className="px-3 py-2">{new Date(entry.createdAt).toLocaleString()}</td>
+                      <td className="px-3 py-2">{entry.action}</td>
+                      <td className="px-3 py-2">
+                        {entry.actor?.fullName ?? "-"}
+                        <p className="text-xs text-slate-500">{entry.actor?.email ?? ""}</p>
+                      </td>
+                      <td className="px-3 py-2">
+                        <p>{entry.entityType}</p>
+                        <p className="text-xs text-slate-500">{entry.entityId ?? "-"}</p>
+                      </td>
+                      <td className="px-3 py-2 max-w-[420px] whitespace-pre-wrap break-words text-xs">
+                        {entry.details ? JSON.stringify(entry.details, null, 2) : "-"}
+                      </td>
+                    </tr>
+                  ))
+                )}
               </tbody>
             </table>
           </div>

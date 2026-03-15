@@ -29,7 +29,8 @@ export const ADMIN_NAV_ITEMS: NavItem[] = [
     label: "Payments Verification",
     roles: ["SUPER_ADMIN", "ADMIN", "DISTRICT_MANAGER"]
   },
-  { href: "/notifications", label: "Notifications", roles: ["SUPER_ADMIN", "ADMIN"] }
+  { href: "/notifications", label: "Notifications", roles: ALL_ADMIN_ROLES },
+  { href: "/reports", label: "Reports", roles: ALL_ADMIN_ROLES }
 ];
 
 const ROUTE_ACCESS = [
@@ -48,7 +49,11 @@ const ROUTE_ACCESS = [
   },
   {
     pattern: /^\/notifications$/,
-    roles: ["SUPER_ADMIN", "ADMIN"] as AdminRole[]
+    roles: ALL_ADMIN_ROLES
+  },
+  {
+    pattern: /^\/reports$/,
+    roles: ALL_ADMIN_ROLES
   }
 ];
 

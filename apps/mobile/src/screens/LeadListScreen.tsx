@@ -12,6 +12,7 @@ import { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { useNavigation } from "@react-navigation/native";
 import { api } from "../services/api";
 import { useAuthStore } from "../store/auth-store";
+import { readOfflineCache, writeOfflineCache } from "../services/offline-cache";
 import { AppScreen, Badge, Card, SectionTitle, useAppPalette } from "../ui/primitives";
 import { spacing } from "../ui/theme";
 
@@ -42,6 +43,9 @@ type LeadsStackParamList = {
 };
 
 const ALL_STATUSES = "ALL_STATUSES";
+const SORT_NEWEST = "NEWEST";
+const SORT_OLDEST = "OLDEST";
+const LEAD_LIST_CACHE_KEY = "lead-list";
 
 export function LeadListScreen() {
   const colors = useAppPalette();
@@ -50,6 +54,9 @@ export function LeadListScreen() {
 
   const [leads, setLeads] = useState<Lead[]>([]);
   const [selectedStatus, setSelectedStatus] = useState<string>(ALL_STATUSES);
+  const [sortOrder, setSortOrder] = useState<typeof SORT_NEWEST | typeof SORT_OLDEST>(
+    SORT_NEWEST
+  );
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -62,28 +69,44 @@ export function LeadListScreen() {
         params: {
           page: 1,
           pageSize: 100,
-          execId: user.id,
-          ...(selectedStatus !== ALL_STATUSES ? { status: selectedStatus } : {})
+          execId: user.id
         }
       });
       const rows = Array.isArray(response.data?.data) ? (response.data.data as Lead[]) : [];
       setLeads(rows);
+      await writeOfflineCache(user.id, LEAD_LIST_CACHE_KEY, rows);
     } catch {
-      setError("Failed to load leads.");
-      setLeads([]);
+      const cached = await readOfflineCache<Lead[]>(user.id, LEAD_LIST_CACHE_KEY);
+      if (cached && cached.length > 0) {
+        setLeads(cached);
+        setError("Offline mode: showing cached leads.");
+      } else {
+        setError("Failed to load leads.");
+        setLeads([]);
+      }
     } finally {
       setRefreshing(false);
     }
-  }, [selectedStatus, user?.id]);
+  }, [user?.id]);
+
+  const filteredLeads = useMemo(() => {
+    if (selectedStatus === ALL_STATUSES) {
+      return leads;
+    }
+    return leads.filter((lead) => lead.currentStatus?.name === selectedStatus);
+  }, [leads, selectedStatus]);
 
   const sortedLeads = useMemo(
     () =>
-      [...leads].sort((a, b) => {
+      [...filteredLeads].sort((a, b) => {
         const aTs = new Date(a.updatedAt).getTime();
         const bTs = new Date(b.updatedAt).getTime();
+        if (sortOrder === SORT_OLDEST) {
+          return aTs - bTs;
+        }
         return bTs - aTs;
       }),
-    [leads]
+    [filteredLeads, sortOrder]
   );
 
   useEffect(() => {
@@ -137,8 +160,60 @@ export function LeadListScreen() {
   return (
     <AppScreen style={{ paddingBottom: 0 }}>
       <Card>
-        <SectionTitle title="Assigned Leads" subtitle="Sorted by last updated activity" />
+        <SectionTitle
+          title="Assigned Leads"
+          subtitle={sortOrder === SORT_OLDEST ? "Sorted by oldest update first" : "Sorted by newest update first"}
+        />
       </Card>
+
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={{ gap: 8, marginBottom: 10 }}
+      >
+        <Pressable
+          onPress={() => setSortOrder(SORT_NEWEST)}
+          style={[
+            styles.filterChip,
+            { borderColor: colors.border, backgroundColor: colors.surface },
+            sortOrder === SORT_NEWEST && {
+              borderColor: colors.primary,
+              backgroundColor: colors.accent
+            }
+          ]}
+        >
+          <Text
+            style={[
+              styles.filterLabel,
+              { color: colors.text },
+              sortOrder === SORT_NEWEST && { color: colors.primary }
+            ]}
+          >
+            Newest
+          </Text>
+        </Pressable>
+        <Pressable
+          onPress={() => setSortOrder(SORT_OLDEST)}
+          style={[
+            styles.filterChip,
+            { borderColor: colors.border, backgroundColor: colors.surface },
+            sortOrder === SORT_OLDEST && {
+              borderColor: colors.primary,
+              backgroundColor: colors.accent
+            }
+          ]}
+        >
+          <Text
+            style={[
+              styles.filterLabel,
+              { color: colors.text },
+              sortOrder === SORT_OLDEST && { color: colors.primary }
+            ]}
+          >
+            Oldest
+          </Text>
+        </Pressable>
+      </ScrollView>
 
       <ScrollView
         horizontal

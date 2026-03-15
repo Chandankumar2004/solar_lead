@@ -59,9 +59,9 @@ export function DashboardCharts({ summary }: { summary: DashboardChartPayload })
   const installationPie = summary.leadsByInstallationType.filter((item) => item.count > 0);
 
   return (
-    <div className="grid gap-6 lg:grid-cols-2">
-      <div className="h-80 rounded-xl bg-white p-4 shadow">
-        <h3 className="mb-4 text-lg font-semibold">Leads by Status (Bar)</h3>
+    <div className="grid gap-4 lg:grid-cols-2">
+      <div className="h-[22rem] rounded-xl bg-white p-3 shadow sm:h-80 sm:p-4">
+        <h3 className="mb-4 text-base font-semibold sm:text-lg">Leads by Status (Bar)</h3>
         <ResponsiveContainer width="100%" height="88%">
           <BarChart data={statusBars}>
             <XAxis dataKey="name" interval={0} angle={-18} textAnchor="end" height={56} />
@@ -71,8 +71,8 @@ export function DashboardCharts({ summary }: { summary: DashboardChartPayload })
           </BarChart>
         </ResponsiveContainer>
       </div>
-      <div className="h-80 rounded-xl bg-white p-4 shadow">
-        <h3 className="mb-4 text-lg font-semibold">Leads by Status (Funnel)</h3>
+      <div className="h-[22rem] rounded-xl bg-white p-3 shadow sm:h-80 sm:p-4">
+        <h3 className="mb-4 text-base font-semibold sm:text-lg">Leads by Status (Funnel)</h3>
         <ResponsiveContainer width="100%" height="88%">
           <FunnelChart>
             <Tooltip />
@@ -82,8 +82,8 @@ export function DashboardCharts({ summary }: { summary: DashboardChartPayload })
           </FunnelChart>
         </ResponsiveContainer>
       </div>
-      <div className="h-80 rounded-xl bg-white p-4 shadow">
-        <h3 className="mb-4 text-lg font-semibold">Leads by District</h3>
+      <div className="h-[22rem] rounded-xl bg-white p-3 shadow sm:h-80 sm:p-4">
+        <h3 className="mb-4 text-base font-semibold sm:text-lg">Leads by District</h3>
         <ResponsiveContainer width="100%" height="88%">
           <BarChart data={districtBars}>
             <XAxis dataKey="districtName" interval={0} angle={-18} textAnchor="end" height={56} />
@@ -93,8 +93,8 @@ export function DashboardCharts({ summary }: { summary: DashboardChartPayload })
           </BarChart>
         </ResponsiveContainer>
       </div>
-      <div className="h-80 rounded-xl bg-white p-4 shadow">
-        <h3 className="mb-4 text-lg font-semibold">Leads by Installation Type</h3>
+      <div className="h-[22rem] rounded-xl bg-white p-3 shadow sm:h-80 sm:p-4">
+        <h3 className="mb-4 text-base font-semibold sm:text-lg">Leads by Installation Type</h3>
         <ResponsiveContainer width="100%" height="88%">
           <PieChart>
             <Pie

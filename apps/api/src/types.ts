@@ -1,5 +1,5 @@
 export type UserRole = "SUPER_ADMIN" | "ADMIN" | "MANAGER" | "EXECUTIVE";
-export type UserStatus = "ACTIVE" | "PENDING" | "SUSPENDED";
+export type UserStatus = "ACTIVE" | "PENDING" | "SUSPENDED" | "DEACTIVATED";
 
 export interface AuthUser {
   id: string;

@@ -21,6 +21,8 @@ import { uploadLeadDocument } from "../services/document-upload";
 import type { LeadDocumentUploadFile } from "../services/document-upload";
 import { useQueueStore } from "../store/queue-store";
 import type { QueueItem } from "../store/queue-store";
+import { useAuthStore } from "../store/auth-store";
+import { readOfflineCache, writeOfflineCache } from "../services/offline-cache";
 
 type LeadsStackParamList = {
   LeadList: undefined;
@@ -115,6 +117,17 @@ type LeadDocumentSummary = {
   createdAt: string;
 };
 
+type InternalNote = {
+  id: string;
+  note: string;
+  createdAt: string;
+  actor?: {
+    id: string;
+    fullName: string;
+    email: string;
+  } | null;
+};
+
 type UploadSource = "camera" | "gallery" | "document";
 type UploadState = "pending" | "uploading" | "queued" | "failed" | "uploaded";
 
@@ -127,6 +140,22 @@ type UploadUiItem = {
   progress: number;
   error?: string;
 };
+
+type CachedLeadDetailPayload = {
+  lead: LeadDetail;
+  nextStatuses: WorkflowStatus[];
+  documents: LeadDocumentSummary[];
+  merchantDetails: PaymentMerchantDetails | null;
+  internalNotes: InternalNote[];
+};
+
+const MAX_UPLOAD_SIZE_BYTES = 10 * 1024 * 1024;
+const ALLOWED_UPLOAD_MIME_TYPES = new Set([
+  "application/pdf",
+  "image/jpeg",
+  "image/png"
+]);
+const LEAD_DETAIL_CACHE_PREFIX = "lead-detail";
 
 function formatDateTime(value: string) {
   const date = new Date(value);
@@ -182,14 +211,26 @@ function normalizeCategory(value: string) {
 }
 
 function inferMimeType(fileName: string, fallback?: string | null) {
-  if (fallback && fallback.trim().length > 0) return fallback;
+  if (fallback && fallback.trim().length > 0) {
+    const normalized = fallback.trim().toLowerCase();
+    if (normalized === "image/jpg") return "image/jpeg";
+    return normalized;
+  }
   const lower = fileName.toLowerCase();
   if (lower.endsWith(".pdf")) return "application/pdf";
   if (lower.endsWith(".png")) return "image/png";
-  if (lower.endsWith(".webp")) return "image/webp";
-  if (lower.endsWith(".heic")) return "image/heic";
-  if (lower.endsWith(".heif")) return "image/heif";
+  if (lower.endsWith(".jpg")) return "image/jpeg";
   return "image/jpeg";
+}
+
+function validatePickedUploadFile(file: LeadDocumentUploadFile) {
+  if (!ALLOWED_UPLOAD_MIME_TYPES.has(file.fileType)) {
+    return "Unsupported file type. Only JPEG, PNG, and PDF are allowed.";
+  }
+  if (file.fileSize > 0 && file.fileSize > MAX_UPLOAD_SIZE_BYTES) {
+    return "File size must be 10 MB or smaller.";
+  }
+  return null;
 }
 
 function createUploadId() {
@@ -228,6 +269,7 @@ export function LeadDetailScreen({ route, navigation }: LeadDetailScreenProps) {
   const colors = useAppPalette();
   const textInputStyle = useTextInputStyle();
   const { leadId } = route.params;
+  const user = useAuthStore((s) => s.user);
   const companyUpiId = process.env.EXPO_PUBLIC_COMPANY_UPI_ID?.trim() || "";
   const companyUpiName =
     process.env.EXPO_PUBLIC_COMPANY_UPI_NAME?.trim() || "Solar Payments";
@@ -242,9 +284,13 @@ export function LeadDetailScreen({ route, navigation }: LeadDetailScreenProps) {
     null
   );
   const [notes, setNotes] = useState("");
+  const [internalNotes, setInternalNotes] = useState<InternalNote[]>([]);
+  const [internalNoteText, setInternalNoteText] = useState("");
+  const [internalNoteSubmitting, setInternalNoteSubmitting] = useState(false);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [offlineNotice, setOfflineNotice] = useState<string | null>(null);
 
   const [uploadCategory, setUploadCategory] = useState("site_photo");
   const [uploadItems, setUploadItems] = useState<UploadUiItem[]>([]);
@@ -268,22 +314,48 @@ export function LeadDetailScreen({ route, navigation }: LeadDetailScreenProps) {
       queueItems.filter(
         (item: QueueItem) =>
           item.kind === "UPLOAD_LEAD_DOCUMENT" &&
-          item.payload.leadId === leadId
+          item.payload.leadId === leadId &&
+          (!item.ownerUserId || item.ownerUserId === user?.id)
       ).length,
-    [queueItems, leadId]
+    [queueItems, leadId, user?.id]
   );
+
+  const cacheKey = useMemo(() => `${LEAD_DETAIL_CACHE_PREFIX}:${leadId}`, [leadId]);
+
+  const applyLoadedData = useCallback((payload: CachedLeadDetailPayload) => {
+    setLead(payload.lead);
+    setNextStatuses(Array.isArray(payload.nextStatuses) ? payload.nextStatuses : []);
+    setDocuments(Array.isArray(payload.documents) ? payload.documents : []);
+    setMerchantDetails(payload.merchantDetails ?? null);
+    setInternalNotes(Array.isArray(payload.internalNotes) ? payload.internalNotes : []);
+
+    setPaymentAmount((current) => {
+      if (current.trim().length > 0) return current;
+      if (!Array.isArray(payload.lead.payments) || payload.lead.payments.length === 0) {
+        return current;
+      }
+      const latestAmount = payload.lead.payments[0]?.amount;
+      if (latestAmount === undefined || latestAmount === null) return current;
+      return String(latestAmount);
+    });
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
+    setOfflineNotice(null);
     try {
-      const [detailResp, workflowResp, docsResp, merchantResp] = await Promise.all([
+      const internalNotesPromise = api
+        .get(`/api/leads/${leadId}/internal-notes`)
+        .catch(() => ({ data: { data: [] as InternalNote[] } }));
+      const [detailResp, workflowResp, docsResp, merchantResp, internalNotesResp] = await Promise.all([
         api.get(`/api/leads/${leadId}`),
         api.get(`/api/leads/${leadId}/allowed-next-statuses`),
         api.get(`/api/leads/${leadId}/documents`, {
           params: { latestOnly: true }
         }),
-        api.get("/api/payments/merchant-details")
+        api.get("/api/payments/merchant-details"),
+        internalNotesPromise
       ]);
 
       const leadDetail = detailResp.data?.data as LeadDetail;
@@ -293,31 +365,41 @@ export function LeadDetailScreen({ route, navigation }: LeadDetailScreenProps) {
       };
       const docs = docsResp.data?.data as LeadDocumentSummary[] | undefined;
       const merchant = merchantResp.data?.data as PaymentMerchantDetails | undefined;
+      const notesList = internalNotesResp.data?.data as InternalNote[] | undefined;
 
-      setLead(leadDetail);
-      setNextStatuses(Array.isArray(workflow?.nextStatuses) ? workflow.nextStatuses : []);
-      setDocuments(Array.isArray(docs) ? docs : []);
-      setMerchantDetails(merchant ?? null);
+      const loadedPayload: CachedLeadDetailPayload = {
+        lead: leadDetail,
+        nextStatuses: Array.isArray(workflow?.nextStatuses) ? workflow.nextStatuses : [],
+        documents: Array.isArray(docs) ? docs : [],
+        merchantDetails: merchant ?? null,
+        internalNotes: Array.isArray(notesList) ? notesList : []
+      };
 
-      setPaymentAmount((current) => {
-        if (current.trim().length > 0) return current;
-        if (!Array.isArray(leadDetail.payments) || leadDetail.payments.length === 0) {
-          return current;
-        }
-        const latestAmount = leadDetail.payments[0]?.amount;
-        if (latestAmount === undefined || latestAmount === null) return current;
-        return String(latestAmount);
-      });
+      applyLoadedData(loadedPayload);
+      if (user?.id) {
+        await writeOfflineCache(user.id, cacheKey, loadedPayload);
+      }
     } catch (err) {
+      if (user?.id) {
+        const cached = await readOfflineCache<CachedLeadDetailPayload>(user.id, cacheKey);
+        if (cached) {
+          applyLoadedData(cached);
+          setOfflineNotice("Offline mode: showing cached lead detail.");
+          setLoading(false);
+          return;
+        }
+      }
+
       setError(extractErrorMessage(err, "Failed to load lead detail."));
       setLead(null);
       setNextStatuses([]);
       setDocuments([]);
       setMerchantDetails(null);
+      setInternalNotes([]);
     } finally {
       setLoading(false);
     }
-  }, [leadId]);
+  }, [applyLoadedData, cacheKey, leadId, user?.id]);
 
   useEffect(() => {
     void load();
@@ -388,6 +470,8 @@ export function LeadDetailScreen({ route, navigation }: LeadDetailScreenProps) {
   );
 
   const isNotesRequired = selectedStatus?.requiresNote ?? false;
+  const isDocumentRequired = selectedStatus?.requiresDocument ?? false;
+  const hasAnyUploadedDocument = documents.length > 0;
   const canSubmitTransition =
     !submitting &&
     !!selectedNextStatusId &&
@@ -454,6 +538,9 @@ export function LeadDetailScreen({ route, navigation }: LeadDetailScreenProps) {
           category,
           file
         }
+      }, {
+        ownerUserId: user?.id,
+        dedupeKey: `upload:${leadId}:${category}:${file.fileName}:${file.fileSize}`
       });
       updateUploadItem(uploadId, {
         state: "queued",
@@ -461,7 +548,7 @@ export function LeadDetailScreen({ route, navigation }: LeadDetailScreenProps) {
         error: "Queued for auto-upload when internet reconnects."
       });
     },
-    [enqueue, leadId, updateUploadItem]
+    [enqueue, leadId, updateUploadItem, user?.id]
   );
 
   const runUpload = useCallback(
@@ -512,6 +599,12 @@ export function LeadDetailScreen({ route, navigation }: LeadDetailScreenProps) {
       const category = normalizeCategory(uploadCategory);
 
       for (const file of files) {
+        const validationError = validatePickedUploadFile(file);
+        if (validationError) {
+          Alert.alert("File not supported", validationError);
+          continue;
+        }
+
         const uploadId = createUploadId();
         setUploadItems((prev) => [
           {
@@ -577,7 +670,7 @@ export function LeadDetailScreen({ route, navigation }: LeadDetailScreenProps) {
     const result = await DocumentPicker.getDocumentAsync({
       multiple: true,
       copyToCacheDirectory: true,
-      type: ["application/pdf", "image/*"]
+      type: ["application/pdf", "image/jpeg", "image/png"]
     });
     if (result.canceled || !result.assets?.length) return;
 
@@ -593,7 +686,7 @@ export function LeadDetailScreen({ route, navigation }: LeadDetailScreenProps) {
   };
 
   const retryQueuedUploads = async () => {
-    await flushQueue();
+    await flushQueue(user?.id);
     await load();
   };
 
@@ -737,30 +830,124 @@ export function LeadDetailScreen({ route, navigation }: LeadDetailScreenProps) {
     }
   };
 
-  const submitTransition = async () => {
-    if (!selectedNextStatusId) return;
-    if (isNotesRequired && !notes.trim()) {
-      Alert.alert("Notes required", "Please enter notes before changing status.");
-      return;
-    }
+  const queueStatusTransitionForLater = useCallback(
+    async (nextStatusId: string, transitionNotes?: string) => {
+      await enqueue(
+        {
+          id: `${Date.now()}-status-${leadId}`,
+          kind: "UPDATE_LEAD_STATUS",
+          payload: {
+            leadId,
+            nextStatusId,
+            notes: transitionNotes
+          }
+        },
+        {
+          ownerUserId: user?.id,
+          dedupeKey: `status-transition:${leadId}`
+        }
+      );
 
+      Alert.alert(
+        "Saved offline",
+        "Status change is queued and will sync when internet reconnects."
+      );
+      setSelectedNextStatusId(null);
+      setNotes("");
+    },
+    [enqueue, leadId, user?.id]
+  );
+
+  const performTransition = async () => {
+    if (!selectedNextStatusId) return;
     setSubmitting(true);
+    const transitionNotes = notes.trim() ? notes.trim() : undefined;
     try {
+      const netState = await NetInfo.fetch();
+      const connected = Boolean(netState.isConnected) && netState.isInternetReachable !== false;
+      if (!connected) {
+        await queueStatusTransitionForLater(selectedNextStatusId, transitionNotes);
+        return;
+      }
+
       await api.post(`/api/leads/${leadId}/transition`, {
         nextStatusId: selectedNextStatusId,
-        notes: notes.trim() ? notes.trim() : undefined
+        notes: transitionNotes
       });
       Alert.alert("Status updated", "Lead status has been updated.");
       setSelectedNextStatusId(null);
       setNotes("");
       await load();
     } catch (err) {
+      const netState = await NetInfo.fetch();
+      const connected = Boolean(netState.isConnected) && netState.isInternetReachable !== false;
+      const hasHttpResponse = Boolean((err as { response?: unknown })?.response);
+      if (!connected || !hasHttpResponse) {
+        await queueStatusTransitionForLater(selectedNextStatusId, transitionNotes);
+        return;
+      }
+
       Alert.alert(
         "Update failed",
         extractErrorMessage(err, "Unable to update lead status.")
       );
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const submitTransition = async () => {
+    if (!selectedNextStatusId || !selectedStatus) return;
+    if (isNotesRequired && !notes.trim()) {
+      Alert.alert("Notes required", "Please enter notes before changing status.");
+      return;
+    }
+
+    if (isDocumentRequired && !hasAnyUploadedDocument) {
+      Alert.alert(
+        "Document required",
+        `Status "${selectedStatus.name}" requires at least one uploaded document. Upload a document first.`
+      );
+      return;
+    }
+
+    Alert.alert(
+      "Confirm status update",
+      `Move lead to "${selectedStatus.name}"?`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Confirm",
+          style: "default",
+          onPress: () => {
+            void performTransition();
+          }
+        }
+      ]
+    );
+  };
+
+  const submitInternalNote = async () => {
+    const trimmedNote = internalNoteText.trim();
+    if (trimmedNote.length < 3) {
+      Alert.alert("Note required", "Please enter at least 3 characters.");
+      return;
+    }
+
+    setInternalNoteSubmitting(true);
+    try {
+      await api.post(`/api/leads/${leadId}/internal-notes`, {
+        note: trimmedNote
+      });
+      setInternalNoteText("");
+      await load();
+    } catch (err) {
+      Alert.alert(
+        "Note save failed",
+        extractErrorMessage(err, "Unable to save internal note.")
+      );
+    } finally {
+      setInternalNoteSubmitting(false);
     }
   };
 
@@ -773,7 +960,7 @@ export function LeadDetailScreen({ route, navigation }: LeadDetailScreenProps) {
     );
   }
 
-  if (error || !lead) {
+  if (!lead) {
     return (
       <View style={{ flex: 1, padding: 16, gap: 12 }}>
         <Text style={{ color: colors.danger }}>{error ?? "Lead detail is unavailable."}</Text>
@@ -803,6 +990,9 @@ export function LeadDetailScreen({ route, navigation }: LeadDetailScreenProps) {
           gap: 6
         }}
       >
+        {offlineNotice ? (
+          <Text style={{ color: colors.warning, fontWeight: "700" }}>{offlineNotice}</Text>
+        ) : null}
         <Text style={{ fontSize: 20, fontWeight: "700" }}>{lead.name}</Text>
         <Text>ID: {lead.externalId}</Text>
         <Text>{lead.phone}</Text>
@@ -1306,6 +1496,19 @@ export function LeadDetailScreen({ route, navigation }: LeadDetailScreenProps) {
           )}
         </View>
 
+        {selectedStatus ? (
+          <Text style={{ color: colors.textMuted }}>
+            Requirements:
+            {selectedStatus.requiresNote ? " note required;" : " note optional;"}
+            {selectedStatus.requiresDocument ? " document required." : " document optional."}
+          </Text>
+        ) : null}
+        {isDocumentRequired && !hasAnyUploadedDocument ? (
+          <Text style={{ color: colors.warning }}>
+            Upload at least one document before this transition.
+          </Text>
+        ) : null}
+
         <Text style={{ fontWeight: "700", marginTop: 4 }}>
           Notes {isNotesRequired ? "(required)" : "(optional)"}
         </Text>
@@ -1332,6 +1535,63 @@ export function LeadDetailScreen({ route, navigation }: LeadDetailScreenProps) {
             {submitting ? "Updating..." : "Update Status"}
           </Text>
         </Pressable>
+      </View>
+
+      <View
+        style={{
+          backgroundColor: colors.surface,
+          borderRadius: 10,
+          padding: 12,
+          borderWidth: 1,
+          borderColor: colors.border,
+          gap: 8
+        }}
+      >
+        <Text style={{ fontSize: 16, fontWeight: "700" }}>Internal Notes</Text>
+
+        <TextInput
+          value={internalNoteText}
+          onChangeText={setInternalNoteText}
+          placeholder="Add internal note for admin + executive"
+          multiline
+          style={[textInputStyle, { minHeight: 80, textAlignVertical: "top" }]}
+        />
+
+        <Pressable
+          onPress={() => {
+            void submitInternalNote();
+          }}
+          disabled={internalNoteSubmitting}
+          style={{
+            backgroundColor: internalNoteSubmitting ? colors.textMuted : colors.primaryDark,
+            borderRadius: 8,
+            padding: 12
+          }}
+        >
+          <Text style={{ color: "#fff", textAlign: "center", fontWeight: "700" }}>
+            {internalNoteSubmitting ? "Saving..." : "Add Internal Note"}
+          </Text>
+        </Pressable>
+
+        {internalNotes.length === 0 ? (
+          <Text style={{ color: colors.textMuted }}>No internal notes yet.</Text>
+        ) : (
+          internalNotes.slice(0, 12).map((entry) => (
+            <View
+              key={entry.id}
+              style={{
+                borderBottomWidth: 1,
+                borderBottomColor: colors.border,
+                paddingBottom: 8
+              }}
+            >
+              <Text style={{ fontWeight: "700", color: colors.text }}>{entry.note}</Text>
+              <Text style={{ color: colors.textMuted, fontSize: 12 }}>
+                {entry.actor?.fullName ?? "Unknown"} | {formatDateTime(entry.createdAt)}
+              </Text>
+            </View>
+          ))
+        )}
       </View>
 
       <View

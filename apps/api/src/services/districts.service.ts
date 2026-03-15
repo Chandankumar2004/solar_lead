@@ -167,6 +167,23 @@ export async function replaceDistrictAssignments(
     throw new Error("Same user cannot be both manager and executive in the same request.");
   }
 
+  const district = await prisma.district.findUnique({
+    where: { id: districtId },
+    select: {
+      id: true,
+      isActive: true
+    }
+  });
+  if (!district) {
+    throw new Error("District not found");
+  }
+
+  if (district.isActive && uniqueManagerIds.length === 0) {
+    throw new Error(
+      "At least one active District Manager assignment is required for an active district."
+    );
+  }
+
   const allIds = [...uniqueManagerIds, ...uniqueExecutiveIds];
   if (!allIds.length) {
     await prisma.userDistrictAssignment.deleteMany({

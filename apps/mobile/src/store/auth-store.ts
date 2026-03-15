@@ -1,10 +1,14 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as LocalAuthentication from "expo-local-authentication";
+import axios from "axios";
 import { create } from "zustand";
-import { api, setAuthFailureHandler } from "../services/api";
+import { api, setAuthFailureHandler, type AuthFailureInfo } from "../services/api";
+import { useQueueStore } from "./queue-store";
+import { clearOfflineCacheForOwner } from "../services/offline-cache";
 
 const BIOMETRIC_ENABLED_KEY = "auth.biometric_enabled";
 const HAS_LOGGED_IN_ONCE_KEY = "auth.has_logged_in_once";
+const AUTH_NOTICE_KEY = "auth.notice";
 const MOBILE_ALLOWED_ROLE = "FIELD_EXECUTIVE";
 
 class MobileRoleError extends Error {
@@ -29,14 +33,58 @@ type AuthState = {
   biometricEnabled: boolean;
   hasLoggedInOnce: boolean;
   isBiometricUnlocked: boolean;
+  authNotice: string | null;
   bootstrap: () => Promise<void>;
   login: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   setBiometricEnabled: (enabled: boolean) => Promise<void>;
   unlockWithBiometric: () => Promise<boolean>;
   lockBiometric: () => void;
-  handleAuthFailure: () => void;
+  clearAuthNotice: () => Promise<void>;
+  handleAuthFailure: (info?: AuthFailureInfo) => void;
 };
+
+function toApiErrorInfo(error: unknown): AuthFailureInfo | undefined {
+  if (!axios.isAxiosError(error)) {
+    return undefined;
+  }
+  const payload = (error.response?.data ?? {}) as {
+    code?: unknown;
+    message?: unknown;
+    error?: unknown;
+  };
+  return {
+    code: typeof payload.code === "string" ? payload.code : undefined,
+    message:
+      typeof payload.message === "string"
+        ? payload.message
+        : typeof payload.error === "string"
+          ? payload.error
+          : undefined
+  };
+}
+
+function blockedAccountNotice(info?: AuthFailureInfo): string | null {
+  const code = (info?.code ?? "").trim().toUpperCase();
+  if (code === "ACCOUNT_PENDING") {
+    return "Your account is pending approval. Please contact your admin.";
+  }
+  if (code === "ACCOUNT_SUSPENDED") {
+    return "Your account has been suspended. Contact your admin to restore access.";
+  }
+  if (code === "ACCOUNT_DEACTIVATED") {
+    return "Your account has been deactivated. Contact your admin.";
+  }
+  return null;
+}
+
+async function persistAuthNotice(notice: string | null) {
+  if (notice) {
+    await AsyncStorage.setItem(AUTH_NOTICE_KEY, notice);
+    return;
+  }
+  await AsyncStorage.removeItem(AUTH_NOTICE_KEY);
+}
 
 function toUser(value: unknown): User | null {
   if (!value || typeof value !== "object") {
@@ -82,13 +130,15 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   biometricEnabled: false,
   hasLoggedInOnce: false,
   isBiometricUnlocked: false,
+  authNotice: null,
 
   bootstrap: async () => {
     set({ isBootstrapping: true });
 
-    const [biometricRaw, loggedInRaw] = await Promise.all([
+    const [biometricRaw, loggedInRaw, authNoticeRaw] = await Promise.all([
       AsyncStorage.getItem(BIOMETRIC_ENABLED_KEY),
-      AsyncStorage.getItem(HAS_LOGGED_IN_ONCE_KEY)
+      AsyncStorage.getItem(HAS_LOGGED_IN_ONCE_KEY),
+      AsyncStorage.getItem(AUTH_NOTICE_KEY)
     ]);
 
     const biometricEnabled = biometricRaw === "1";
@@ -96,12 +146,18 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     set({
       biometricEnabled,
       hasLoggedInOnce: loggedInRaw === "1",
-      isBiometricUnlocked: !biometricEnabled
+      isBiometricUnlocked: !biometricEnabled,
+      authNotice: authNoticeRaw?.trim() ? authNoticeRaw : null
     });
 
     try {
       const user = await fetchAuthenticatedUser();
-      set({ user, isBiometricUnlocked: !biometricEnabled });
+      await persistAuthNotice(null);
+      set({
+        user,
+        isBiometricUnlocked: !biometricEnabled,
+        authNotice: null
+      });
     } catch (error) {
       if (error instanceof MobileRoleError) {
         try {
@@ -109,20 +165,44 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         } catch {
           // Ignore server errors and clear local state.
         }
+        await persistAuthNotice(error.message);
         set({
           user: null,
-          isBiometricUnlocked: false
+          isBiometricUnlocked: false,
+          authNotice: error.message
         });
         return;
       }
+
+      const blockedNotice = blockedAccountNotice(toApiErrorInfo(error));
+      if (blockedNotice) {
+        await persistAuthNotice(blockedNotice);
+        set({
+          user: null,
+          isBiometricUnlocked: false,
+          authNotice: blockedNotice
+        });
+        return;
+      }
+
       try {
         await api.post("/api/auth/refresh");
         const user = await fetchAuthenticatedUser();
-        set({ user, isBiometricUnlocked: !biometricEnabled });
-      } catch {
+        await persistAuthNotice(null);
+        set({
+          user,
+          isBiometricUnlocked: !biometricEnabled,
+          authNotice: null
+        });
+      } catch (refreshError) {
+        const refreshNotice = blockedAccountNotice(toApiErrorInfo(refreshError));
+        if (refreshNotice) {
+          await persistAuthNotice(refreshNotice);
+        }
         set({
           user: null,
-          isBiometricUnlocked: false
+          isBiometricUnlocked: false,
+          authNotice: refreshNotice ?? get().authNotice
         });
       }
     } finally {
@@ -143,19 +223,29 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     assertMobileRoleAllowed(user);
 
     await AsyncStorage.setItem(HAS_LOGGED_IN_ONCE_KEY, "1");
+    await persistAuthNotice(null);
 
     set({
       user,
       hasLoggedInOnce: true,
-      isBiometricUnlocked: !get().biometricEnabled
+      isBiometricUnlocked: !get().biometricEnabled,
+      authNotice: null
     });
   },
 
   logout: async () => {
+    const currentUserId = get().user?.id;
     try {
       await api.post("/api/auth/logout");
     } catch {
       // Intentionally ignore server errors and clear local session.
+    }
+
+    if (currentUserId) {
+      await Promise.all([
+        useQueueStore.getState().clearByOwner(currentUserId),
+        clearOfflineCacheForOwner(currentUserId)
+      ]);
     }
 
     set({
@@ -212,14 +302,28 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
   },
 
-  handleAuthFailure: () => {
+  clearAuthNotice: async () => {
+    await persistAuthNotice(null);
+    set({ authNotice: null });
+  },
+
+  handleAuthFailure: (info) => {
+    const currentUserId = get().user?.id;
+    if (currentUserId) {
+      void useQueueStore.getState().clearByOwner(currentUserId);
+      void clearOfflineCacheForOwner(currentUserId);
+    }
+
+    const notice = blockedAccountNotice(info) ?? null;
+    void persistAuthNotice(notice);
     set({
       user: null,
-      isBiometricUnlocked: false
+      isBiometricUnlocked: false,
+      authNotice: notice
     });
   }
 }));
 
-setAuthFailureHandler(() => {
-  useAuthStore.getState().handleAuthFailure();
+setAuthFailureHandler((info) => {
+  useAuthStore.getState().handleAuthFailure(info);
 });

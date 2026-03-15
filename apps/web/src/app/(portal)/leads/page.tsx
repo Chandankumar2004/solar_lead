@@ -12,9 +12,11 @@ type LeadRow = {
   name: string;
   phone: string;
   email?: string | null;
+  utmSource?: string | null;
   state?: string | null;
   installationType?: string | null;
   createdAt: string;
+  updatedAt: string;
   isOverdue?: boolean;
   district?: { id: string; name: string; state: string } | null;
   currentStatus?: { id: string; name: string } | null;
@@ -71,10 +73,11 @@ export default function LeadsPage() {
 
   const [search, setSearch] = useState("");
   const [statusIds, setStatusIds] = useState<string[]>([]);
-  const [districtId, setDistrictId] = useState("");
+  const [districtIds, setDistrictIds] = useState<string[]>([]);
   const [stateFilter, setStateFilter] = useState("");
   const [executiveId, setExecutiveId] = useState("");
   const [type, setType] = useState("");
+  const [sourceFilter, setSourceFilter] = useState("");
   const [overdueFilter, setOverdueFilter] = useState<"" | "true" | "false">("");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
@@ -94,10 +97,11 @@ export default function LeadsPage() {
     params.set("pageSize", String(pageSize));
     if (search.trim()) params.set("search", search.trim());
     if (statusIds.length > 0) params.set("statusIds", statusIds.join(","));
-    if (districtId) params.set("districtId", districtId);
+    if (districtIds.length > 0) params.set("districtIds", districtIds.join(","));
     if (stateFilter.trim()) params.set("state", stateFilter.trim());
     if (executiveId) params.set("execId", executiveId);
     if (type.trim()) params.set("type", type.trim());
+    if (sourceFilter.trim()) params.set("source", sourceFilter.trim());
     if (overdueFilter) params.set("isOverdue", overdueFilter);
     if (dateFrom) params.set("dateFrom", dateFrom);
     if (dateTo) params.set("dateTo", dateTo);
@@ -105,23 +109,24 @@ export default function LeadsPage() {
   }, [
     dateFrom,
     dateTo,
-    districtId,
+    districtIds,
     executiveId,
     overdueFilter,
     page,
     pageSize,
     search,
+    sourceFilter,
     stateFilter,
     statusIds,
     type
   ]);
 
   const dashboardOptionsKey = useMemo(() => {
-    if (!districtId) return "/api/dashboard/summary";
+    if (districtIds.length !== 1) return "/api/dashboard/summary";
     const params = new URLSearchParams();
-    params.set("districtId", districtId);
+    params.set("districtId", districtIds[0]);
     return `/api/dashboard/summary?${params.toString()}`;
-  }, [districtId]);
+  }, [districtIds]);
 
   const { data, isLoading, mutate } = useSWR(query, fetcher);
   const { data: districtsData } = useSWR("/public/districts", fetcher);
@@ -178,10 +183,11 @@ export default function LeadsPage() {
   }, [
     search,
     statusIds,
-    districtId,
+    districtIds,
     stateFilter,
     executiveId,
     type,
+    sourceFilter,
     overdueFilter,
     dateFrom,
     dateTo,
@@ -191,6 +197,11 @@ export default function LeadsPage() {
   const onStatusMultiChange = (event: ChangeEvent<HTMLSelectElement>) => {
     const selected = Array.from(event.target.selectedOptions).map((option) => option.value);
     setStatusIds(selected);
+  };
+
+  const onDistrictMultiChange = (event: ChangeEvent<HTMLSelectElement>) => {
+    const selected = Array.from(event.target.selectedOptions).map((option) => option.value);
+    setDistrictIds(selected);
   };
 
   const onAssign = async (lead: LeadRow) => {
@@ -271,8 +282,8 @@ export default function LeadsPage() {
 
   return (
     <div className="space-y-4">
-      <section className="rounded-xl bg-white p-4 shadow-sm">
-        <div className="grid gap-3 lg:grid-cols-4">
+      <section className="rounded-xl bg-white p-3 shadow-sm sm:p-4">
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <input
             value={search}
             onChange={(event) => setSearch(event.target.value)}
@@ -292,11 +303,11 @@ export default function LeadsPage() {
             ))}
           </select>
           <select
-            value={districtId}
-            onChange={(event) => setDistrictId(event.target.value)}
-            className="rounded-md border border-slate-300 px-3 py-2 text-sm"
+            multiple
+            value={districtIds}
+            onChange={onDistrictMultiChange}
+            className="min-h-24 rounded-md border border-slate-300 px-3 py-2 text-sm"
           >
-            <option value="">All districts</option>
             {districts.map((district) => (
               <option key={district.id} value={district.id}>
                 {district.name} ({district.state})
@@ -333,6 +344,12 @@ export default function LeadsPage() {
             placeholder="Installation type"
             className="rounded-md border border-slate-300 px-3 py-2 text-sm"
           />
+          <input
+            value={sourceFilter}
+            onChange={(event) => setSourceFilter(event.target.value)}
+            placeholder="UTM source"
+            className="rounded-md border border-slate-300 px-3 py-2 text-sm"
+          />
           <select
             value={overdueFilter}
             onChange={(event) =>
@@ -357,18 +374,19 @@ export default function LeadsPage() {
             className="rounded-md border border-slate-300 px-3 py-2 text-sm"
           />
         </div>
-        <div className="mt-3 flex items-center justify-between">
+        <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-xs text-slate-500">
-            Hold Ctrl/Cmd to select multiple statuses.
+            Hold Ctrl/Cmd to select multiple statuses and districts.
           </p>
           <button
             onClick={() => {
               setSearch("");
               setStatusIds([]);
-              setDistrictId("");
+              setDistrictIds([]);
               setStateFilter("");
               setExecutiveId("");
               setType("");
+              setSourceFilter("");
               setOverdueFilter("");
               setDateFrom("");
               setDateTo("");
@@ -397,15 +415,15 @@ export default function LeadsPage() {
           <table className="min-w-full text-sm">
             <thead className="bg-slate-100 text-left text-xs uppercase text-slate-600">
               <tr>
-                <th className="px-4 py-3">Lead</th>
-                <th className="px-4 py-3">Contact</th>
+                <th className="px-4 py-3">Lead ID</th>
+                <th className="px-4 py-3">Name</th>
+                <th className="px-4 py-3">Phone</th>
                 <th className="px-4 py-3">District</th>
-                <th className="px-4 py-3">State</th>
                 <th className="px-4 py-3">Status</th>
-                <th className="px-4 py-3">SLA</th>
                 <th className="px-4 py-3">Executive</th>
-                <th className="px-4 py-3">Type</th>
+                <th className="px-4 py-3">Source</th>
                 <th className="px-4 py-3">Created</th>
+                <th className="px-4 py-3">Updated</th>
                 <th className="px-4 py-3">Quick Actions</th>
               </tr>
             </thead>
@@ -438,32 +456,28 @@ export default function LeadsPage() {
                   return (
                     <tr key={lead.id} className="border-t border-slate-100 align-top">
                       <td className="px-4 py-3">
+                        <p className="text-xs text-slate-700">{lead.externalId}</p>
+                      </td>
+                      <td className="px-4 py-3">
                         <Link href={`/leads/${lead.id}`} className="font-medium text-brand-700 hover:underline">
                           {lead.name}
                         </Link>
-                        <p className="text-xs text-slate-500">{lead.externalId}</p>
                       </td>
                       <td className="px-4 py-3">
                         <p>{lead.phone}</p>
                         <p className="text-xs text-slate-500">{lead.email ?? "-"}</p>
                       </td>
                       <td className="px-4 py-3">{lead.district?.name ?? "-"}</td>
-                      <td className="px-4 py-3">{lead.state ?? lead.district?.state ?? "-"}</td>
-                      <td className="px-4 py-3">{lead.currentStatus?.name ?? "-"}</td>
                       <td className="px-4 py-3">
-                        {lead.isOverdue ? (
-                          <span className="rounded-full bg-rose-100 px-2 py-0.5 text-xs font-medium text-rose-700">
-                            Overdue
-                          </span>
-                        ) : (
-                          <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700">
-                            On time
-                          </span>
-                        )}
+                        <p>{lead.currentStatus?.name ?? "-"}</p>
+                        <p className="mt-1 text-xs text-slate-500">
+                          {lead.isOverdue ? "SLA: Overdue" : "SLA: On time"}
+                        </p>
                       </td>
                       <td className="px-4 py-3">{lead.assignedExecutive?.fullName ?? "-"}</td>
-                      <td className="px-4 py-3">{lead.installationType ?? "-"}</td>
+                      <td className="px-4 py-3">{lead.utmSource ?? "-"}</td>
                       <td className="px-4 py-3">{new Date(lead.createdAt).toLocaleDateString()}</td>
+                      <td className="px-4 py-3">{new Date(lead.updatedAt).toLocaleDateString()}</td>
                       <td className="px-4 py-3">
                         <div className="min-w-[220px] space-y-2">
                           <Link
@@ -553,51 +567,53 @@ export default function LeadsPage() {
         </div>
       </section>
 
-      <section className="flex items-center justify-between rounded-xl bg-white px-4 py-3 shadow-sm">
-        <div className="flex items-center gap-3">
-          <p className="text-sm text-slate-600">Total: {pagination?.total ?? 0}</p>
-          <select
-            value={pageSize}
-            onChange={(event) => {
-              const next = Number(event.target.value);
-              setPageSize(next);
-              setPage(1);
-            }}
-            className="rounded border border-slate-300 px-2 py-1 text-sm"
-          >
-            <option value={10}>10 / page</option>
-            <option value={20}>20 / page</option>
-            <option value={50}>50 / page</option>
-          </select>
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setPage((current) => Math.max(1, current - 1))}
-            disabled={(pagination?.page ?? 1) <= 1}
-            className="rounded border border-slate-300 px-3 py-1 text-sm disabled:opacity-50"
-          >
-            Previous
-          </button>
-          <span className="text-sm text-slate-600">
-            Page {pagination?.page ?? 1} / {pagination?.totalPages ?? 1}
-          </span>
-          <button
-            onClick={() =>
-              setPage((current) =>
-                Math.min(pagination?.totalPages ?? 1, current + 1)
-              )
-            }
-            disabled={(pagination?.page ?? 1) >= (pagination?.totalPages ?? 1)}
-            className="rounded border border-slate-300 px-3 py-1 text-sm disabled:opacity-50"
-          >
-            Next
-          </button>
-          <button
-            onClick={() => void mutate()}
-            className="rounded border border-brand-300 bg-brand-50 px-3 py-1 text-sm text-brand-700 hover:bg-brand-100"
-          >
-            Refresh
-          </button>
+      <section className="rounded-xl bg-white px-3 py-3 shadow-sm sm:px-4">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex flex-wrap items-center gap-3">
+            <p className="text-sm text-slate-600">Total: {pagination?.total ?? 0}</p>
+            <select
+              value={pageSize}
+              onChange={(event) => {
+                const next = Number(event.target.value);
+                setPageSize(next);
+                setPage(1);
+              }}
+              className="rounded border border-slate-300 px-2 py-1 text-sm"
+            >
+              <option value={10}>10 / page</option>
+              <option value={20}>20 / page</option>
+              <option value={50}>50 / page</option>
+            </select>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              onClick={() => setPage((current) => Math.max(1, current - 1))}
+              disabled={(pagination?.page ?? 1) <= 1}
+              className="rounded border border-slate-300 px-3 py-1 text-sm disabled:opacity-50"
+            >
+              Previous
+            </button>
+            <span className="text-sm text-slate-600">
+              Page {pagination?.page ?? 1} / {pagination?.totalPages ?? 1}
+            </span>
+            <button
+              onClick={() =>
+                setPage((current) =>
+                  Math.min(pagination?.totalPages ?? 1, current + 1)
+                )
+              }
+              disabled={(pagination?.page ?? 1) >= (pagination?.totalPages ?? 1)}
+              className="rounded border border-slate-300 px-3 py-1 text-sm disabled:opacity-50"
+            >
+              Next
+            </button>
+            <button
+              onClick={() => void mutate()}
+              className="rounded border border-brand-300 bg-brand-50 px-3 py-1 text-sm text-brand-700 hover:bg-brand-100"
+            >
+              Refresh
+            </button>
+          </div>
         </div>
       </section>
     </div>

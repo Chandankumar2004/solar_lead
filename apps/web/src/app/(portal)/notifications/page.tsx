@@ -60,10 +60,15 @@ function extractApiMessage(error: unknown) {
 export default function NotificationsPage() {
   const user = useAuthStore((state) => state.user);
   const canManageTemplates = user?.role === "SUPER_ADMIN" || user?.role === "ADMIN";
-  const canViewAdminData = user?.role === "SUPER_ADMIN" || user?.role === "ADMIN";
+  const canViewTemplates = user?.role === "SUPER_ADMIN" || user?.role === "ADMIN";
+  const canViewLogs =
+    user?.role === "SUPER_ADMIN" ||
+    user?.role === "ADMIN" ||
+    user?.role === "DISTRICT_MANAGER";
+  const canPublishInternal = user?.role === "SUPER_ADMIN" || user?.role === "ADMIN";
 
   const [tab, setTab] = useState<"templates" | "logs" | "internal">(
-    canViewAdminData ? "templates" : "internal"
+    canViewTemplates ? "templates" : canViewLogs ? "logs" : "internal"
   );
 
   const [templateSearch, setTemplateSearch] = useState("");
@@ -83,7 +88,7 @@ export default function NotificationsPage() {
     data: templatesResponse,
     mutate: mutateTemplates,
     isLoading: templatesLoading
-  } = useSWR(canViewAdminData ? templatesQuery : null, fetcher);
+  } = useSWR(canViewTemplates ? templatesQuery : null, fetcher);
   const templates = (templatesResponse?.data ?? []) as NotificationTemplate[];
 
   const [editingTemplateId, setEditingTemplateId] = useState<string | null>(null);
@@ -108,6 +113,10 @@ export default function NotificationsPage() {
   const [logsChannel, setLogsChannel] = useState<"" | TemplateChannel | "PUSH">("");
   const [logsStatus, setLogsStatus] = useState("");
   const [logsSearch, setLogsSearch] = useState("");
+  const [logsLeadId, setLogsLeadId] = useState("");
+  const [logsTemplateId, setLogsTemplateId] = useState("");
+  const [logsDateFrom, setLogsDateFrom] = useState("");
+  const [logsDateTo, setLogsDateTo] = useState("");
   const logsQuery = useMemo(() => {
     const params = new URLSearchParams();
     params.set("page", String(logsPage));
@@ -115,10 +124,24 @@ export default function NotificationsPage() {
     if (logsChannel) params.set("channel", logsChannel);
     if (logsStatus.trim()) params.set("status", logsStatus.trim());
     if (logsSearch.trim()) params.set("search", logsSearch.trim());
+    if (logsLeadId.trim()) params.set("leadId", logsLeadId.trim());
+    if (logsTemplateId.trim()) params.set("templateId", logsTemplateId.trim());
+    if (logsDateFrom) params.set("dateFrom", logsDateFrom);
+    if (logsDateTo) params.set("dateTo", logsDateTo);
     return `/api/notifications/logs?${params.toString()}`;
-  }, [logsChannel, logsPage, logsPageSize, logsSearch, logsStatus]);
+  }, [
+    logsChannel,
+    logsDateFrom,
+    logsDateTo,
+    logsLeadId,
+    logsPage,
+    logsPageSize,
+    logsSearch,
+    logsStatus,
+    logsTemplateId
+  ]);
   const { data: logsResponse, mutate: mutateLogs, isLoading: logsLoading } = useSWR(
-    canViewAdminData ? logsQuery : null,
+    canViewLogs ? logsQuery : null,
     fetcher
   );
   const logs = (logsResponse?.data ?? []) as NotificationLog[];
@@ -268,10 +291,10 @@ export default function NotificationsPage() {
   };
 
   return (
-    <div className="space-y-4">
+    <div className="min-w-0 space-y-4">
       <section className="rounded-xl bg-white p-3 shadow-sm">
         <div className="flex flex-wrap gap-2">
-          {canViewAdminData ? (
+          {canViewTemplates ? (
             <>
               <button
                 onClick={() => setTab("templates")}
@@ -283,17 +306,19 @@ export default function NotificationsPage() {
               >
                 Templates
               </button>
-              <button
-                onClick={() => setTab("logs")}
-                className={`rounded-md px-3 py-1.5 text-sm ${
-                  tab === "logs"
-                    ? "bg-brand-50 font-medium text-brand-700"
-                    : "text-slate-700 hover:bg-slate-100"
-                }`}
-              >
-                Logs
-              </button>
             </>
+          ) : null}
+          {canViewLogs ? (
+            <button
+              onClick={() => setTab("logs")}
+              className={`rounded-md px-3 py-1.5 text-sm ${
+                tab === "logs"
+                  ? "bg-brand-50 font-medium text-brand-700"
+                  : "text-slate-700 hover:bg-slate-100"
+              }`}
+            >
+              Logs
+            </button>
           ) : null}
           <button
             onClick={() => setTab("internal")}
@@ -308,11 +333,11 @@ export default function NotificationsPage() {
         </div>
       </section>
 
-      {tab === "templates" && canViewAdminData ? (
+      {tab === "templates" && canViewTemplates ? (
         <div className="grid gap-4 xl:grid-cols-[1.2fr_1fr]">
-          <section className="rounded-xl bg-white p-4 shadow-sm">
+          <section className="rounded-xl bg-white p-3 shadow-sm sm:p-4">
             <h2 className="text-base font-semibold">Notification Templates</h2>
-            <div className="mt-3 grid gap-3 md:grid-cols-3">
+            <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               <input
                 value={templateSearch}
                 onChange={(event) => setTemplateSearch(event.target.value)}
@@ -405,7 +430,7 @@ export default function NotificationsPage() {
             </div>
           </section>
 
-          <aside className="space-y-3 rounded-xl bg-white p-4 shadow-sm">
+          <aside className="space-y-3 rounded-xl bg-white p-3 shadow-sm sm:p-4">
             <h3 className="text-base font-semibold">
               {editingTemplateId ? "Edit Template" : "Create Template"}
             </h3>
@@ -525,11 +550,11 @@ export default function NotificationsPage() {
         </div>
       ) : null}
 
-      {tab === "logs" && canViewAdminData ? (
+      {tab === "logs" && canViewLogs ? (
         <div className="space-y-4">
-          <section className="rounded-xl bg-white p-4 shadow-sm">
+          <section className="rounded-xl bg-white p-3 shadow-sm sm:p-4">
             <h2 className="text-base font-semibold">Notification Logs</h2>
-            <div className="mt-3 grid gap-3 lg:grid-cols-4">
+            <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
               <select
                 value={logsChannel}
                 onChange={(event) =>
@@ -553,6 +578,30 @@ export default function NotificationsPage() {
                 value={logsSearch}
                 onChange={(event) => setLogsSearch(event.target.value)}
                 placeholder="Search recipient/content"
+                className="rounded-md border border-slate-300 px-3 py-2 text-sm"
+              />
+              <input
+                value={logsLeadId}
+                onChange={(event) => setLogsLeadId(event.target.value)}
+                placeholder="Lead ID (UUID)"
+                className="rounded-md border border-slate-300 px-3 py-2 text-sm"
+              />
+              <input
+                value={logsTemplateId}
+                onChange={(event) => setLogsTemplateId(event.target.value)}
+                placeholder="Template ID (UUID)"
+                className="rounded-md border border-slate-300 px-3 py-2 text-sm"
+              />
+              <input
+                type="date"
+                value={logsDateFrom}
+                onChange={(event) => setLogsDateFrom(event.target.value)}
+                className="rounded-md border border-slate-300 px-3 py-2 text-sm"
+              />
+              <input
+                type="date"
+                value={logsDateTo}
+                onChange={(event) => setLogsDateTo(event.target.value)}
                 className="rounded-md border border-slate-300 px-3 py-2 text-sm"
               />
               <button
@@ -615,44 +664,46 @@ export default function NotificationsPage() {
             </div>
           </section>
 
-          <section className="flex items-center justify-between rounded-xl bg-white px-4 py-3 shadow-sm">
-            <div className="flex items-center gap-3">
-              <p className="text-sm text-slate-600">Total: {logsPagination?.total ?? 0}</p>
-              <select
-                value={logsPageSize}
-                onChange={(event) => {
-                  setLogsPageSize(Number(event.target.value));
-                  setLogsPage(1);
-                }}
-                className="rounded border border-slate-300 px-2 py-1 text-sm"
-              >
-                <option value={10}>10 / page</option>
-                <option value={20}>20 / page</option>
-                <option value={50}>50 / page</option>
-              </select>
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => setLogsPage((current) => Math.max(1, current - 1))}
-                disabled={(logsPagination?.page ?? 1) <= 1}
-                className="rounded border border-slate-300 px-3 py-1 text-sm disabled:opacity-50"
-              >
-                Previous
-              </button>
-              <span className="text-sm text-slate-600">
-                Page {logsPagination?.page ?? 1} / {logsPagination?.totalPages ?? 1}
-              </span>
-              <button
-                onClick={() =>
-                  setLogsPage((current) =>
-                    Math.min(logsPagination?.totalPages ?? 1, current + 1)
-                  )
-                }
-                disabled={(logsPagination?.page ?? 1) >= (logsPagination?.totalPages ?? 1)}
-                className="rounded border border-slate-300 px-3 py-1 text-sm disabled:opacity-50"
-              >
-                Next
-              </button>
+          <section className="rounded-xl bg-white px-3 py-3 shadow-sm sm:px-4">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex flex-wrap items-center gap-3">
+                <p className="text-sm text-slate-600">Total: {logsPagination?.total ?? 0}</p>
+                <select
+                  value={logsPageSize}
+                  onChange={(event) => {
+                    setLogsPageSize(Number(event.target.value));
+                    setLogsPage(1);
+                  }}
+                  className="rounded border border-slate-300 px-2 py-1 text-sm"
+                >
+                  <option value={10}>10 / page</option>
+                  <option value={20}>20 / page</option>
+                  <option value={50}>50 / page</option>
+                </select>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  onClick={() => setLogsPage((current) => Math.max(1, current - 1))}
+                  disabled={(logsPagination?.page ?? 1) <= 1}
+                  className="rounded border border-slate-300 px-3 py-1 text-sm disabled:opacity-50"
+                >
+                  Previous
+                </button>
+                <span className="text-sm text-slate-600">
+                  Page {logsPagination?.page ?? 1} / {logsPagination?.totalPages ?? 1}
+                </span>
+                <button
+                  onClick={() =>
+                    setLogsPage((current) =>
+                      Math.min(logsPagination?.totalPages ?? 1, current + 1)
+                    )
+                  }
+                  disabled={(logsPagination?.page ?? 1) >= (logsPagination?.totalPages ?? 1)}
+                  className="rounded border border-slate-300 px-3 py-1 text-sm disabled:opacity-50"
+                >
+                  Next
+                </button>
+              </div>
             </div>
           </section>
         </div>
@@ -660,7 +711,7 @@ export default function NotificationsPage() {
 
       {tab === "internal" ? (
         <div className="grid gap-4 lg:grid-cols-[1.2fr_1fr]">
-          <section className="rounded-xl bg-white p-4 shadow-sm">
+          <section className="rounded-xl bg-white p-3 shadow-sm sm:p-4">
             <h2 className="text-base font-semibold">My Notification Feed</h2>
             <div className="mt-3 space-y-2">
               {feedLogs.length === 0 ? (
@@ -680,32 +731,38 @@ export default function NotificationsPage() {
           </section>
 
           <div className="space-y-4">
-            <section className="rounded-xl bg-white p-4 shadow-sm">
+            <section className="rounded-xl bg-white p-3 shadow-sm sm:p-4">
               <h2 className="text-base font-semibold">Publish Internal Notification</h2>
-              <form onSubmit={onInternalSubmit} className="mt-3 space-y-3">
-                <input
-                  value={feedTitle}
-                  onChange={(event) => setFeedTitle(event.target.value)}
-                  placeholder="Title"
-                  className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
-                  required
-                />
-                <textarea
-                  value={feedBody}
-                  onChange={(event) => setFeedBody(event.target.value)}
-                  placeholder="Body"
-                  rows={4}
-                  className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
-                  required
-                />
-                {feedError ? <p className="text-sm text-rose-600">{feedError}</p> : null}
-                <button
-                  disabled={feedSubmitting}
-                  className="rounded-md bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-700 disabled:opacity-70"
-                >
-                  {feedSubmitting ? "Sending..." : "Send Notification"}
-                </button>
-              </form>
+              {canPublishInternal ? (
+                <form onSubmit={onInternalSubmit} className="mt-3 space-y-3">
+                  <input
+                    value={feedTitle}
+                    onChange={(event) => setFeedTitle(event.target.value)}
+                    placeholder="Title"
+                    className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                    required
+                  />
+                  <textarea
+                    value={feedBody}
+                    onChange={(event) => setFeedBody(event.target.value)}
+                    placeholder="Body"
+                    rows={4}
+                    className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                    required
+                  />
+                  {feedError ? <p className="text-sm text-rose-600">{feedError}</p> : null}
+                  <button
+                    disabled={feedSubmitting}
+                    className="rounded-md bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-700 disabled:opacity-70"
+                  >
+                    {feedSubmitting ? "Sending..." : "Send Notification"}
+                  </button>
+                </form>
+              ) : (
+                <p className="mt-3 text-sm text-slate-600">
+                  Internal publish is restricted to Super Admin and Admin.
+                </p>
+              )}
             </section>
             <RealtimeNotifications />
           </div>

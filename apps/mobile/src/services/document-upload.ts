@@ -17,6 +17,13 @@ type UploadLeadDocumentInput = {
   maxAttempts?: number;
 };
 
+const MAX_DOCUMENT_SIZE_BYTES = 10 * 1024 * 1024;
+const ALLOWED_MIME_TYPES = new Set([
+  "application/pdf",
+  "image/jpeg",
+  "image/png"
+]);
+
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -31,15 +38,15 @@ function normalizeCategory(category: string) {
 
 function inferMimeType(fileName: string, fileType?: string) {
   if (fileType && fileType !== "application/octet-stream") {
-    return fileType;
+    const normalized = fileType.toLowerCase();
+    if (ALLOWED_MIME_TYPES.has(normalized)) {
+      return normalized;
+    }
   }
 
   const lower = fileName.toLowerCase();
   if (lower.endsWith(".pdf")) return "application/pdf";
   if (lower.endsWith(".png")) return "image/png";
-  if (lower.endsWith(".webp")) return "image/webp";
-  if (lower.endsWith(".heic")) return "image/heic";
-  if (lower.endsWith(".heif")) return "image/heif";
   return "image/jpeg";
 }
 
@@ -59,7 +66,16 @@ async function readBlobFromUri(uri: string) {
   return response.blob();
 }
 
-async function uploadBlobToS3(
+function validateUploadFile(fileType: string, fileSize: number) {
+  if (!ALLOWED_MIME_TYPES.has(fileType)) {
+    throw new Error("Unsupported file type. Only JPEG, PNG, and PDF are allowed.");
+  }
+  if (fileSize > MAX_DOCUMENT_SIZE_BYTES) {
+    throw new Error("File size must be 10 MB or smaller.");
+  }
+}
+
+async function uploadBlobToSignedUrl(
   uploadUrl: string,
   fileType: string,
   blob: Blob,
@@ -82,15 +98,15 @@ async function uploadBlobToS3(
         resolve();
         return;
       }
-      reject(new Error(`S3 upload failed (${xhr.status})`));
+      reject(new Error(`Storage upload failed (${xhr.status})`));
     };
 
     xhr.onerror = () => {
-      reject(new Error("S3 upload failed due to network error."));
+      reject(new Error("Storage upload failed due to network error."));
     };
 
     xhr.onabort = () => {
-      reject(new Error("S3 upload was aborted."));
+      reject(new Error("Storage upload was aborted."));
     };
 
     xhr.send(blob);
@@ -110,6 +126,7 @@ export async function uploadLeadDocument(input: UploadLeadDocumentInput) {
       const blob = await readBlobFromUri(input.file.uri);
       const resolvedFileSize =
         input.file.fileSize && input.file.fileSize > 0 ? input.file.fileSize : blob.size;
+      validateUploadFile(fileType, resolvedFileSize);
 
       const presignResp = await api.post(`/api/leads/${input.leadId}/documents/presign`, {
         category,
@@ -119,16 +136,19 @@ export async function uploadLeadDocument(input: UploadLeadDocumentInput) {
       });
 
       const uploadUrl = presignResp.data?.data?.uploadUrl as string | undefined;
-      const s3Key = presignResp.data?.data?.s3Key as string | undefined;
-      if (!uploadUrl || !s3Key) {
+      const storagePath =
+        (presignResp.data?.data?.storagePath as string | undefined) ??
+        (presignResp.data?.data?.s3Key as string | undefined);
+      if (!uploadUrl || !storagePath) {
         throw new Error("Invalid presign response from server.");
       }
 
-      await uploadBlobToS3(uploadUrl, fileType, blob, input.onProgress);
+      await uploadBlobToSignedUrl(uploadUrl, fileType, blob, input.onProgress);
 
       const completeResp = await api.post(`/api/leads/${input.leadId}/documents/complete`, {
         category,
-        s3Key,
+        storagePath,
+        s3Key: storagePath,
         fileName: input.file.fileName,
         fileType,
         fileSize: resolvedFileSize

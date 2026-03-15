@@ -8,9 +8,16 @@ import {
   View
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import * as DocumentPicker from "expo-document-picker";
+import * as ImagePicker from "expo-image-picker";
+import NetInfo from "@react-native-community/netinfo";
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { Controller, useForm, useWatch } from "react-hook-form";
 import { api } from "../services/api";
+import { uploadLeadDocument } from "../services/document-upload";
+import { useQueueStore } from "../store/queue-store";
+import { useAuthStore } from "../store/auth-store";
+import { readOfflineCache, writeOfflineCache } from "../services/offline-cache";
 import {
   AppButton,
   AppScreen,
@@ -70,6 +77,17 @@ type ApiCustomerDetailsResponse = {
     isTerminal: boolean;
   };
   isEditable: boolean;
+  leadPrefill?: {
+    districtId?: string | null;
+    districtName?: string | null;
+    state?: string | null;
+    installationType?: string | null;
+  };
+  sitePhotographs?: {
+    count: number;
+    minRequired: number;
+    maxAllowed: number;
+  };
   customerDetail: ApiCustomerDetail | null;
 };
 
@@ -85,6 +103,7 @@ type FormValues = {
   villageLocality: string;
   pincode: string;
   alternatePhone: string;
+  installationType: string;
   propertyOwnership: string;
   roofArea: string;
   recommendedCapacity: string;
@@ -115,6 +134,14 @@ const PAN_REGEX = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
 const IFSC_REGEX = /^[A-Z]{4}0[A-Z0-9]{6}$/;
 const DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
 const DRAFT_KEY_PREFIX = "customer_details_draft:";
+const CUSTOMER_DETAILS_CACHE_PREFIX = "customer-details";
+const ALLOWED_INSTALLATION_TYPES = ["Residential", "Industrial", "Agricultural", "Other"] as const;
+const ALLOWED_GENDERS = ["Male", "Female", "Other"] as const;
+const ALLOWED_PROPERTY_OWNERSHIP = ["Owned", "Rented", "Leased"] as const;
+const ALLOWED_SHADOW_FREE = ["Yes", "Partial", "No"] as const;
+const ALLOWED_ROOF_TYPE = ["RCC", "Tin", "Other"] as const;
+const ALLOWED_CONNECTION_TYPE = ["Single Phase", "Three Phase"] as const;
+const MAX_UPLOAD_SIZE_BYTES = 10 * 1024 * 1024;
 
 const defaultFormValues: FormValues = {
   fullName: "",
@@ -128,6 +155,7 @@ const defaultFormValues: FormValues = {
   villageLocality: "",
   pincode: "",
   alternatePhone: "",
+  installationType: "",
   propertyOwnership: "",
   roofArea: "",
   recommendedCapacity: "",
@@ -171,6 +199,40 @@ function sanitizeAadhaar(input: string) {
   return input.replace(/\D/g, "").slice(0, 12);
 }
 
+function normalizeCaseInsensitiveOption(
+  input: string,
+  allowed: readonly string[]
+) {
+  const normalized = normalizeText(input);
+  if (!normalized) return "";
+  const matched = allowed.find((item) => item.toLowerCase() === normalized.toLowerCase());
+  return matched ?? normalized;
+}
+
+function shadowOptionFromStored(value: string | number | null | undefined) {
+  if (value === null || value === undefined || value === "") return "";
+  const numeric = Number(value);
+  if (!Number.isNaN(numeric)) {
+    if (numeric <= 0) return "No";
+    if (numeric < 1) return "Partial";
+    return "Yes";
+  }
+  const normalized = String(value).trim().toLowerCase();
+  if (normalized === "yes") return "Yes";
+  if (normalized === "partial") return "Partial";
+  if (normalized === "no") return "No";
+  return "";
+}
+
+function shadowNumericFromOption(input: string) {
+  const normalized = normalizeText(input)?.toLowerCase();
+  if (!normalized) return undefined;
+  if (normalized === "yes") return 1;
+  if (normalized === "partial") return 0.5;
+  if (normalized === "no") return 0;
+  return undefined;
+}
+
 function maskLast4(value: string) {
   if (!value) return "";
   if (value.length <= 4) return value;
@@ -197,7 +259,7 @@ function mapCustomerDetailToForm(detail: ApiCustomerDetail | null): FormValues {
     ...defaultFormValues,
     fullName: toInputString(detail.fullName),
     dateOfBirth: toInputString(detail.dateOfBirth),
-    gender: toInputString(detail.gender),
+    gender: normalizeCaseInsensitiveOption(toInputString(detail.gender), ALLOWED_GENDERS),
     fatherHusbandName: toInputString(detail.fatherHusbandName),
     panNumber: toInputString(detail.panNumber).toUpperCase(),
     addressLine1: toInputString(detail.addressLine1),
@@ -205,13 +267,20 @@ function mapCustomerDetailToForm(detail: ApiCustomerDetail | null): FormValues {
     villageLocality: toInputString(detail.villageLocality),
     pincode: toInputString(detail.pincode),
     alternatePhone: toInputString(detail.alternatePhone),
-    propertyOwnership: toInputString(detail.propertyOwnership),
+    installationType: "",
+    propertyOwnership: normalizeCaseInsensitiveOption(
+      toInputString(detail.propertyOwnership),
+      ALLOWED_PROPERTY_OWNERSHIP
+    ),
     roofArea: toInputString(detail.roofArea),
     recommendedCapacity: toInputString(detail.recommendedCapacity),
-    shadowFreeArea: toInputString(detail.shadowFreeArea),
-    roofType: toInputString(detail.roofType),
+    shadowFreeArea: shadowOptionFromStored(detail.shadowFreeArea),
+    roofType: normalizeCaseInsensitiveOption(toInputString(detail.roofType), ALLOWED_ROOF_TYPE),
     verifiedMonthlyBill: toInputString(detail.verifiedMonthlyBill),
-    connectionType: toInputString(detail.connectionType),
+    connectionType: normalizeCaseInsensitiveOption(
+      toInputString(detail.connectionType),
+      ALLOWED_CONNECTION_TYPE
+    ),
     consumerNumber: toInputString(detail.consumerNumber),
     discomName: toInputString(detail.discomName),
     bankName: toInputString(detail.bankName),
@@ -225,7 +294,10 @@ function mapCustomerDetailToForm(detail: ApiCustomerDetail | null): FormValues {
   };
 }
 
-function buildCustomerDetailsPayload(values: FormValues) {
+function buildCustomerDetailsPayload(
+  values: FormValues,
+  leadPrefill?: ApiCustomerDetailsResponse["leadPrefill"]
+) {
   const payload: Record<string, unknown> = {
     loanRequired: values.loanRequired
   };
@@ -263,6 +335,10 @@ function buildCustomerDetailsPayload(values: FormValues) {
   const alternatePhone = normalizeText(values.alternatePhone);
   if (alternatePhone) payload.alternatePhone = alternatePhone;
 
+  const installationType = normalizeText(values.installationType);
+  if (installationType) payload.installationType = installationType;
+  if (leadPrefill?.districtId) payload.districtId = leadPrefill.districtId;
+
   const propertyOwnership = normalizeText(values.propertyOwnership);
   if (propertyOwnership) payload.propertyOwnership = propertyOwnership;
 
@@ -272,7 +348,8 @@ function buildCustomerDetailsPayload(values: FormValues) {
   const recommendedCapacity = toPositiveNumber(values.recommendedCapacity);
   if (recommendedCapacity !== undefined) payload.recommendedCapacity = recommendedCapacity;
 
-  const shadowFreeArea = toPositiveNumber(values.shadowFreeArea);
+  const shadowFreeArea =
+    shadowNumericFromOption(values.shadowFreeArea) ?? toPositiveNumber(values.shadowFreeArea);
   if (shadowFreeArea !== undefined) payload.shadowFreeArea = shadowFreeArea;
 
   const roofType = normalizeText(values.roofType);
@@ -337,11 +414,66 @@ function LabeledInput(props: {
   );
 }
 
+function OptionSelect(props: {
+  label: string;
+  value: string;
+  options: readonly string[];
+  editable: boolean;
+  onChange: (value: string) => void;
+  helper?: string;
+  colors: ReturnType<typeof useAppPalette>;
+}) {
+  return (
+    <LabeledInput
+      label={props.label}
+      helper={props.helper}
+      labelColor={props.colors.text}
+      helperColor={props.colors.textMuted}
+      errorColor={props.colors.danger}
+    >
+      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+        {props.options.map((option) => {
+          const selected = props.value === option;
+          return (
+            <Pressable
+              key={option}
+              onPress={() => props.onChange(option)}
+              disabled={!props.editable}
+              style={{
+                borderWidth: 1,
+                borderColor: selected ? props.colors.primary : props.colors.border,
+                backgroundColor: selected ? props.colors.accent : props.colors.surface,
+                borderRadius: 999,
+                paddingVertical: 8,
+                paddingHorizontal: 12,
+                opacity: props.editable ? 1 : 0.7
+              }}
+            >
+              <Text
+                style={{
+                  color: selected ? props.colors.primary : props.colors.text,
+                  fontWeight: selected ? "700" : "500"
+                }}
+              >
+                {option}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
+    </LabeledInput>
+  );
+}
+
 export function CustomerDetailsScreen({ route }: CustomerDetailsScreenProps) {
   const colors = useAppPalette();
   const textInputStyle = useTextInputStyle();
   const { leadId, leadName } = route.params;
+  const user = useAuthStore((s) => s.user);
+  const enqueue = useQueueStore((s) => s.enqueue);
+  const queueItems = useQueueStore((s) => s.items);
   const draftKey = useMemo(() => `${DRAFT_KEY_PREFIX}${leadId}`, [leadId]);
+  const cacheKey = useMemo(() => `${CUSTOMER_DETAILS_CACHE_PREFIX}:${leadId}`, [leadId]);
 
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -354,7 +486,15 @@ export function CustomerDetailsScreen({ route }: CustomerDetailsScreenProps) {
   const [aadhaarFocused, setAadhaarFocused] = useState(false);
   const [existingAadhaarMasked, setExistingAadhaarMasked] = useState<string | null>(null);
   const [existingBankMasked, setExistingBankMasked] = useState<string | null>(null);
+  const [leadPrefill, setLeadPrefill] = useState<ApiCustomerDetailsResponse["leadPrefill"] | null>(
+    null
+  );
+  const [sitePhotoCount, setSitePhotoCount] = useState(0);
+  const [sitePhotoMin, setSitePhotoMin] = useState(3);
+  const [sitePhotoMax, setSitePhotoMax] = useState(10);
+  const [photoUploading, setPhotoUploading] = useState(false);
   const [isHydrated, setIsHydrated] = useState(false);
+  const [offlineNotice, setOfflineNotice] = useState<string | null>(null);
 
   const {
     control,
@@ -373,10 +513,35 @@ export function CustomerDetailsScreen({ route }: CustomerDetailsScreenProps) {
     () => [textInputStyle, !isEditable ? { opacity: 0.65 } : null],
     [isEditable, textInputStyle]
   );
+  const loanRequiredSelected = Boolean(watchedValues?.loanRequired);
+  const queuedSitePhotoCount = useMemo(
+    () =>
+      queueItems.filter(
+        (item) =>
+          item.kind === "UPLOAD_LEAD_DOCUMENT" &&
+          item.payload.leadId === leadId &&
+          item.payload.category.startsWith("site_photo") &&
+          (!item.ownerUserId || item.ownerUserId === user?.id)
+      ).length,
+    [leadId, queueItems, user?.id]
+  );
+
+  const applyPayloadMeta = useCallback((payload: ApiCustomerDetailsResponse) => {
+    setCurrentStatusName(payload.currentStatus?.name ?? "-");
+    setIsTerminal(Boolean(payload.currentStatus?.isTerminal));
+    setIsEditable(Boolean(payload.isEditable));
+    setLeadPrefill(payload.leadPrefill ?? null);
+    setSitePhotoCount(payload.sitePhotographs?.count ?? 0);
+    setSitePhotoMin(payload.sitePhotographs?.minRequired ?? 3);
+    setSitePhotoMax(payload.sitePhotographs?.maxAllowed ?? 10);
+    setExistingAadhaarMasked(payload.customerDetail?.aadhaarMasked ?? null);
+    setExistingBankMasked(payload.customerDetail?.bankAccountMasked ?? null);
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
+    setOfflineNotice(null);
     setIsHydrated(false);
 
     try {
@@ -387,12 +552,11 @@ export function CustomerDetailsScreen({ route }: CustomerDetailsScreenProps) {
 
       const payload = response.data?.data as ApiCustomerDetailsResponse;
       const remoteValues = mapCustomerDetailToForm(payload.customerDetail);
-
-      setCurrentStatusName(payload.currentStatus?.name ?? "-");
-      setIsTerminal(Boolean(payload.currentStatus?.isTerminal));
-      setIsEditable(Boolean(payload.isEditable));
-      setExistingAadhaarMasked(payload.customerDetail?.aadhaarMasked ?? null);
-      setExistingBankMasked(payload.customerDetail?.bankAccountMasked ?? null);
+      remoteValues.installationType = normalizeCaseInsensitiveOption(
+        toInputString(payload.leadPrefill?.installationType),
+        ALLOWED_INSTALLATION_TYPES
+      );
+      applyPayloadMeta(payload);
 
       let mergedValues = remoteValues;
       if (draftRaw) {
@@ -411,12 +575,51 @@ export function CustomerDetailsScreen({ route }: CustomerDetailsScreenProps) {
 
       reset(mergedValues);
       setIsHydrated(true);
+      if (user?.id) {
+        await writeOfflineCache(user.id, cacheKey, payload);
+      }
     } catch (err) {
+      if (user?.id) {
+        const [cachedPayload, draftRaw] = await Promise.all([
+          readOfflineCache<ApiCustomerDetailsResponse>(user.id, cacheKey),
+          AsyncStorage.getItem(draftKey)
+        ]);
+
+        if (cachedPayload) {
+          const remoteValues = mapCustomerDetailToForm(cachedPayload.customerDetail);
+          remoteValues.installationType = normalizeCaseInsensitiveOption(
+            toInputString(cachedPayload.leadPrefill?.installationType),
+            ALLOWED_INSTALLATION_TYPES
+          );
+          applyPayloadMeta(cachedPayload);
+
+          let mergedValues = remoteValues;
+          if (draftRaw) {
+            try {
+              const parsed = JSON.parse(draftRaw) as
+                | { values?: Partial<FormValues> }
+                | Partial<FormValues>;
+              const draftValues = parsed && "values" in parsed ? parsed.values : parsed;
+              if (draftValues && typeof draftValues === "object") {
+                mergedValues = { ...remoteValues, ...draftValues };
+              }
+            } catch {
+              // ignore corrupt draft
+            }
+          }
+
+          reset(mergedValues);
+          setOfflineNotice("Offline mode: showing cached customer details.");
+          setIsHydrated(true);
+          setLoading(false);
+          return;
+        }
+      }
       setError(extractErrorMessage(err, "Failed to load customer details."));
     } finally {
       setLoading(false);
     }
-  }, [draftKey, leadId, reset]);
+  }, [applyPayloadMeta, cacheKey, draftKey, leadId, reset, user?.id]);
 
   useEffect(() => {
     void load();
@@ -468,6 +671,186 @@ export function CustomerDetailsScreen({ route }: CustomerDetailsScreenProps) {
     }
   };
 
+  const canAddMoreSitePhotos = useCallback(() => {
+    if (!isEditable) {
+      Alert.alert("Editing disabled", "Site photos cannot be uploaded for this lead right now.");
+      return false;
+    }
+    if (sitePhotoCount >= sitePhotoMax) {
+      Alert.alert(
+        "Limit reached",
+        `A maximum of ${sitePhotoMax} site photographs can be uploaded for this lead.`
+      );
+      return false;
+    }
+    return true;
+  }, [isEditable, sitePhotoCount, sitePhotoMax]);
+
+  const normalizeSitePhotoMimeType = useCallback((fileName?: string, mimeType?: string | null) => {
+    const normalizedMime = mimeType?.toLowerCase().trim();
+    if (normalizedMime === "image/jpg") return "image/jpeg";
+    if (normalizedMime === "image/jpeg" || normalizedMime === "image/png") {
+      return normalizedMime;
+    }
+    const lower = (fileName ?? "").toLowerCase();
+    if (lower.endsWith(".png")) return "image/png";
+    return "image/jpeg";
+  }, []);
+
+  const uploadSitePhoto = useCallback(
+    async (file: { uri: string; name?: string; mimeType?: string; size?: number | null }) => {
+      if (!canAddMoreSitePhotos()) return;
+
+      const resolvedType = normalizeSitePhotoMimeType(file.name, file.mimeType);
+      if (!["image/jpeg", "image/png"].includes(resolvedType)) {
+        Alert.alert("Unsupported file type", "Only JPEG and PNG images are allowed.");
+        return;
+      }
+      if (typeof file.size === "number" && file.size > MAX_UPLOAD_SIZE_BYTES) {
+        Alert.alert("File too large", "Each file must be 10 MB or smaller.");
+        return;
+      }
+
+      setPhotoUploading(true);
+      try {
+        const nextIndex = Math.min(sitePhotoCount + 1, sitePhotoMax);
+        const fallbackName = `site-photo-${Date.now()}.jpg`;
+        const category = `site_photo_${nextIndex}`;
+        const queueFile = {
+          uri: file.uri,
+          fileName: file.name || fallbackName,
+          fileType: resolvedType,
+          fileSize: typeof file.size === "number" && file.size > 0 ? file.size : 0
+        };
+        const netState = await NetInfo.fetch();
+        const connected = Boolean(netState.isConnected) && netState.isInternetReachable !== false;
+
+        if (!connected) {
+          await enqueue(
+            {
+              id: `${Date.now()}-site-photo-${leadId}`,
+              kind: "UPLOAD_LEAD_DOCUMENT",
+              payload: {
+                leadId,
+                category,
+                file: queueFile
+              }
+            },
+            {
+              ownerUserId: user?.id,
+              dedupeKey: `upload:${leadId}:${category}:${queueFile.fileName}:${queueFile.fileSize}`
+            }
+          );
+          setSitePhotoCount((value) => Math.min(value + 1, sitePhotoMax));
+          Alert.alert("Saved offline", "Site photo queued for upload when internet reconnects.");
+          return;
+        }
+
+        await uploadLeadDocument({
+          leadId,
+          category,
+          file: queueFile
+        });
+        setSitePhotoCount((value) => Math.min(value + 1, sitePhotoMax));
+        Alert.alert("Upload complete", "Site photograph uploaded successfully.");
+      } catch (err) {
+        const netState = await NetInfo.fetch();
+        const connected = Boolean(netState.isConnected) && netState.isInternetReachable !== false;
+        const hasHttpResponse = Boolean((err as { response?: unknown })?.response);
+        if (!connected || !hasHttpResponse) {
+          const nextIndex = Math.min(sitePhotoCount + 1, sitePhotoMax);
+          const fallbackName = `site-photo-${Date.now()}.jpg`;
+          const category = `site_photo_${nextIndex}`;
+          const queueFile = {
+            uri: file.uri,
+            fileName: file.name || fallbackName,
+            fileType: resolvedType,
+            fileSize: typeof file.size === "number" && file.size > 0 ? file.size : 0
+          };
+          await enqueue(
+            {
+              id: `${Date.now()}-site-photo-${leadId}`,
+              kind: "UPLOAD_LEAD_DOCUMENT",
+              payload: {
+                leadId,
+                category,
+                file: queueFile
+              }
+            },
+            {
+              ownerUserId: user?.id,
+              dedupeKey: `upload:${leadId}:${category}:${queueFile.fileName}:${queueFile.fileSize}`
+            }
+          );
+          setSitePhotoCount((value) => Math.min(value + 1, sitePhotoMax));
+          Alert.alert("Saved offline", "Site photo queued for upload when internet reconnects.");
+          return;
+        }
+
+        Alert.alert("Upload failed", extractErrorMessage(err, "Unable to upload site photograph."));
+      } finally {
+        setPhotoUploading(false);
+      }
+    },
+    [canAddMoreSitePhotos, enqueue, leadId, normalizeSitePhotoMimeType, sitePhotoCount, sitePhotoMax, user?.id]
+  );
+
+  const pickFromCamera = useCallback(async () => {
+    const permission = await ImagePicker.requestCameraPermissionsAsync();
+    if (!permission.granted) {
+      Alert.alert("Permission required", "Camera permission is required to capture photos.");
+      return;
+    }
+    const result = await ImagePicker.launchCameraAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      quality: 0.9
+    });
+    if (result.canceled || result.assets.length === 0) return;
+    const asset = result.assets[0];
+    await uploadSitePhoto({
+      uri: asset.uri,
+      name: asset.fileName ?? undefined,
+      mimeType: asset.mimeType ?? undefined,
+      size: asset.fileSize
+    });
+  }, [uploadSitePhoto]);
+
+  const pickFromGallery = useCallback(async () => {
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) {
+      Alert.alert("Permission required", "Media library permission is required to select photos.");
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      quality: 0.9
+    });
+    if (result.canceled || result.assets.length === 0) return;
+    const asset = result.assets[0];
+    await uploadSitePhoto({
+      uri: asset.uri,
+      name: asset.fileName ?? undefined,
+      mimeType: asset.mimeType ?? undefined,
+      size: asset.fileSize
+    });
+  }, [uploadSitePhoto]);
+
+  const pickFromFiles = useCallback(async () => {
+    const result = await DocumentPicker.getDocumentAsync({
+      type: ["image/jpeg", "image/png"],
+      multiple: false,
+      copyToCacheDirectory: true
+    });
+    if (result.canceled || result.assets.length === 0) return;
+    const asset = result.assets[0];
+    await uploadSitePhoto({
+      uri: asset.uri,
+      name: asset.name,
+      mimeType: asset.mimeType,
+      size: asset.size
+    });
+  }, [uploadSitePhoto]);
+
   const onSubmit = handleSubmit(async (values) => {
     if (!isEditable) {
       Alert.alert(
@@ -501,23 +884,197 @@ export function CustomerDetailsScreen({ route }: CustomerDetailsScreenProps) {
       return;
     }
 
+    const installationType = normalizeText(values.installationType);
+    if (
+      installationType &&
+      !ALLOWED_INSTALLATION_TYPES.some(
+        (value) => value.toLowerCase() === installationType.toLowerCase()
+      )
+    ) {
+      Alert.alert(
+        "Invalid Installation Type",
+        "Installation Type must be Residential, Industrial, Agricultural, or Other."
+      );
+      return;
+    }
+
+    const gender = normalizeText(values.gender);
+    if (
+      gender &&
+      !ALLOWED_GENDERS.some((value) => value.toLowerCase() === gender.toLowerCase())
+    ) {
+      Alert.alert("Invalid Gender", "Gender must be Male, Female, or Other.");
+      return;
+    }
+
+    const propertyOwnership = normalizeText(values.propertyOwnership);
+    if (
+      propertyOwnership &&
+      !ALLOWED_PROPERTY_OWNERSHIP.some(
+        (value) => value.toLowerCase() === propertyOwnership.toLowerCase()
+      )
+    ) {
+      Alert.alert("Invalid Property Ownership", "Property ownership must be Owned, Rented, or Leased.");
+      return;
+    }
+
+    const roofType = normalizeText(values.roofType);
+    if (
+      roofType &&
+      !ALLOWED_ROOF_TYPE.some((value) => value.toLowerCase() === roofType.toLowerCase())
+    ) {
+      Alert.alert("Invalid Roof Type", "Roof type must be RCC, Tin, or Other.");
+      return;
+    }
+
+    const connectionType = normalizeText(values.connectionType);
+    if (
+      connectionType &&
+      !ALLOWED_CONNECTION_TYPE.some(
+        (value) => value.toLowerCase() === connectionType.toLowerCase()
+      )
+    ) {
+      Alert.alert(
+        "Invalid Connection Type",
+        "Connection type must be Single Phase or Three Phase."
+      );
+      return;
+    }
+
+    const shadowFree = normalizeText(values.shadowFreeArea);
+    if (
+      shadowFree &&
+      !ALLOWED_SHADOW_FREE.some((value) => value.toLowerCase() === shadowFree.toLowerCase())
+    ) {
+      Alert.alert(
+        "Invalid Shadow-Free Area",
+        "Shadow-Free Area must be Yes, Partial, or No."
+      );
+      return;
+    }
+
+    const missingRequired: string[] = [];
+    if (!normalizeText(values.fullName)) missingRequired.push("Full Name");
+    if (!normalizeText(values.dateOfBirth)) missingRequired.push("Date of Birth");
+    if (!normalizeText(values.gender)) missingRequired.push("Gender");
+    if (!normalizeText(values.fatherHusbandName)) missingRequired.push("Father / Husband Name");
+    if (!aadhaar && !existingAadhaarMasked) missingRequired.push("Aadhaar Number");
+    if (!pan) missingRequired.push("PAN Number");
+    if (!normalizeText(values.addressLine1)) missingRequired.push("Complete Address");
+    if (!normalizeText(values.villageLocality)) missingRequired.push("Village / Locality");
+    if (!normalizeText(values.pincode)) missingRequired.push("Pin Code");
+    if (!leadPrefill?.districtName) missingRequired.push("District");
+    if (!leadPrefill?.state) missingRequired.push("State");
+    if (!normalizeText(values.installationType)) missingRequired.push("Installation Type");
+    if (!normalizeText(values.propertyOwnership)) missingRequired.push("Property Ownership");
+    if (!toPositiveNumber(values.roofArea)) missingRequired.push("Total Roof / Land Area");
+    if (!toPositiveNumber(values.recommendedCapacity))
+      missingRequired.push("Recommended Solar Capacity");
+    if (!normalizeText(values.shadowFreeArea)) missingRequired.push("Shadow-Free Area");
+    if (!normalizeText(values.roofType)) missingRequired.push("Type of Roof");
+    if (!toPositiveNumber(values.verifiedMonthlyBill))
+      missingRequired.push("Current Monthly Electricity Bill");
+    if (!normalizeText(values.connectionType))
+      missingRequired.push("Current Electricity Connection Type");
+    if (!normalizeText(values.consumerNumber)) missingRequired.push("Electricity Consumer Number");
+    if (!normalizeText(values.discomName)) missingRequired.push("DISCOM / Electricity Board Name");
+    if (!normalizeText(values.bankAccountNumber) && !existingBankMasked)
+      missingRequired.push("Bank Account Number");
+    if (!normalizeText(values.bankName)) missingRequired.push("Bank Name");
+    if (!ifsc) missingRequired.push("IFSC Code");
+    if (!normalizeText(values.accountHolderName)) missingRequired.push("Account Holder Name");
+
+    if (missingRequired.length > 0) {
+      Alert.alert("Required fields missing", missingRequired.join(", "));
+      return;
+    }
+
+    if (values.loanRequired && !toPositiveNumber(values.loanAmountRequired)) {
+      Alert.alert(
+        "Loan Amount Required",
+        "Loan amount is required when Loan Required is set to Yes."
+      );
+      return;
+    }
+
+    if (sitePhotoCount < sitePhotoMin) {
+      Alert.alert(
+        "Site photographs required",
+        `Upload at least ${sitePhotoMin} site photographs before submitting this form.`
+      );
+      return;
+    }
+
+    const payload = buildCustomerDetailsPayload(values, leadPrefill ?? undefined);
+
     setSubmitting(true);
     try {
-      const payload = buildCustomerDetailsPayload(values);
+      const netState = await NetInfo.fetch();
+      const connected = Boolean(netState.isConnected) && netState.isInternetReachable !== false;
+      if (!connected) {
+        await enqueue(
+          {
+            id: `${Date.now()}-customer-details-${leadId}`,
+            kind: "UPSERT_CUSTOMER_DETAILS",
+            payload: {
+              leadId,
+              data: payload
+            }
+          },
+          {
+            ownerUserId: user?.id,
+            dedupeKey: `customer-details:${leadId}`
+          }
+        );
+        Alert.alert(
+          "Saved offline",
+          "Customer details were queued and will sync when internet reconnects."
+        );
+        return;
+      }
+
       const response = await api.put(`/api/leads/${leadId}/customer-details`, payload);
       const saved = response.data?.data as ApiCustomerDetailsResponse;
+      applyPayloadMeta(saved);
+      if (user?.id) {
+        await writeOfflineCache(user.id, cacheKey, saved);
+      }
 
-      setCurrentStatusName(saved.currentStatus?.name ?? currentStatusName);
-      setIsTerminal(Boolean(saved.currentStatus?.isTerminal));
-      setIsEditable(Boolean(saved.isEditable));
-      setExistingAadhaarMasked(saved.customerDetail?.aadhaarMasked ?? null);
-      setExistingBankMasked(saved.customerDetail?.bankAccountMasked ?? null);
-
-      reset(mapCustomerDetailToForm(saved.customerDetail));
+      const savedValues = mapCustomerDetailToForm(saved.customerDetail);
+      savedValues.installationType = normalizeCaseInsensitiveOption(
+        toInputString(saved.leadPrefill?.installationType),
+        ALLOWED_INSTALLATION_TYPES
+      );
+      reset(savedValues);
       await AsyncStorage.removeItem(draftKey);
       setIsHydrated(true);
       Alert.alert("Saved", "Customer details submitted successfully.");
     } catch (err) {
+      const netState = await NetInfo.fetch();
+      const connected = Boolean(netState.isConnected) && netState.isInternetReachable !== false;
+      const hasHttpResponse = Boolean((err as { response?: unknown })?.response);
+      if (!connected || !hasHttpResponse) {
+        await enqueue(
+          {
+            id: `${Date.now()}-customer-details-${leadId}`,
+            kind: "UPSERT_CUSTOMER_DETAILS",
+            payload: {
+              leadId,
+              data: payload
+            }
+          },
+          {
+            ownerUserId: user?.id,
+            dedupeKey: `customer-details:${leadId}`
+          }
+        );
+        Alert.alert(
+          "Saved offline",
+          "Customer details were queued and will sync when internet reconnects."
+        );
+        return;
+      }
+
       Alert.alert("Submit failed", extractErrorMessage(err, "Unable to submit customer details."));
     } finally {
       setSubmitting(false);
@@ -546,6 +1103,9 @@ export function CustomerDetailsScreen({ route }: CustomerDetailsScreenProps) {
     <AppScreen scroll contentContainerStyle={{ gap: 10, paddingBottom: 20 }}>
       <Card style={{ gap: 4 }}>
         <SectionTitle title={leadName || "Lead Customer Details"} subtitle={`Status: ${currentStatusName}`} />
+        {offlineNotice ? (
+          <Text style={{ color: colors.warning, fontWeight: "700" }}>{offlineNotice}</Text>
+        ) : null}
         {isTerminal ? (
           <Text style={{ color: colors.warning, fontWeight: "700" }}>Lead is in terminal status.</Text>
         ) : null}
@@ -554,6 +1114,12 @@ export function CustomerDetailsScreen({ route }: CustomerDetailsScreenProps) {
             Editing is locked for this lead in terminal status unless role-based override is allowed.
           </Text>
         ) : null}
+        <Text style={{ color: colors.textMuted }}>
+          District: {leadPrefill?.districtName || "Not set"} | State: {leadPrefill?.state || "Not set"}
+        </Text>
+        <Text style={{ color: colors.textMuted }}>
+          Installation Type: {normalizeText(getValues("installationType")) || "Not set"}
+        </Text>
       </Card>
 
       <Card style={{ gap: 10 }}>
@@ -592,21 +1158,20 @@ export function CustomerDetailsScreen({ route }: CustomerDetailsScreenProps) {
           />
         </LabeledInput>
 
-        <LabeledInput label="Gender" labelColor={colors.text} helperColor={colors.textMuted} errorColor={colors.danger}>
-          <Controller
-            control={control}
-            name="gender"
-            render={({ field: { value, onChange } }) => (
-              <TextInput
-                value={value}
-                onChangeText={onChange}
-                editable={isEditable}
-                placeholder="Male/Female/Other"
-                style={inputStyle}
-              />
-            )}
-          />
-        </LabeledInput>
+        <Controller
+          control={control}
+          name="gender"
+          render={({ field: { value, onChange } }) => (
+            <OptionSelect
+              label="Gender"
+              value={value}
+              options={ALLOWED_GENDERS}
+              editable={isEditable}
+              onChange={onChange}
+              colors={colors}
+            />
+          )}
+        />
 
         <LabeledInput label="Father / Husband Name" labelColor={colors.text} helperColor={colors.textMuted} errorColor={colors.danger}>
           <Controller
@@ -732,6 +1297,24 @@ export function CustomerDetailsScreen({ route }: CustomerDetailsScreenProps) {
           />
         </LabeledInput>
 
+        <LabeledInput label="District (Prefilled)" labelColor={colors.text} helperColor={colors.textMuted} errorColor={colors.danger}>
+          <TextInput
+            value={leadPrefill?.districtName ?? ""}
+            editable={false}
+            placeholder="District from lead"
+            style={[textInputStyle, { opacity: 0.7 }]}
+          />
+        </LabeledInput>
+
+        <LabeledInput label="State (Prefilled)" labelColor={colors.text} helperColor={colors.textMuted} errorColor={colors.danger}>
+          <TextInput
+            value={leadPrefill?.state ?? ""}
+            editable={false}
+            placeholder="State from lead"
+            style={[textInputStyle, { opacity: 0.7 }]}
+          />
+        </LabeledInput>
+
         <LabeledInput label="Alternate Phone" labelColor={colors.text} helperColor={colors.textMuted} errorColor={colors.danger}>
           <Controller
             control={control}
@@ -753,21 +1336,35 @@ export function CustomerDetailsScreen({ route }: CustomerDetailsScreenProps) {
       <Card style={{ gap: 10 }}>
         <Text style={{ fontSize: 16, fontWeight: "700", color: colors.text }}>Technical Details</Text>
 
-        <LabeledInput label="Property Ownership" labelColor={colors.text} helperColor={colors.textMuted} errorColor={colors.danger}>
-          <Controller
-            control={control}
-            name="propertyOwnership"
-            render={({ field: { value, onChange } }) => (
-              <TextInput
-                value={value}
-                onChangeText={onChange}
-                editable={isEditable}
-                placeholder="Owned / Rented"
-                style={inputStyle}
-              />
-            )}
-          />
-        </LabeledInput>
+        <Controller
+          control={control}
+          name="installationType"
+          render={({ field: { value, onChange } }) => (
+            <OptionSelect
+              label="Installation Type"
+              value={value}
+              options={ALLOWED_INSTALLATION_TYPES}
+              editable={isEditable}
+              onChange={onChange}
+              colors={colors}
+            />
+          )}
+        />
+
+        <Controller
+          control={control}
+          name="propertyOwnership"
+          render={({ field: { value, onChange } }) => (
+            <OptionSelect
+              label="Property Ownership"
+              value={value}
+              options={ALLOWED_PROPERTY_OWNERSHIP}
+              editable={isEditable}
+              onChange={onChange}
+              colors={colors}
+            />
+          )}
+        />
 
         <LabeledInput label="Roof Area (sq ft)" labelColor={colors.text} helperColor={colors.textMuted} errorColor={colors.danger}>
           <Controller
@@ -803,38 +1400,35 @@ export function CustomerDetailsScreen({ route }: CustomerDetailsScreenProps) {
           />
         </LabeledInput>
 
-        <LabeledInput label="Shadow Free Area" labelColor={colors.text} helperColor={colors.textMuted} errorColor={colors.danger}>
-          <Controller
-            control={control}
-            name="shadowFreeArea"
-            render={({ field: { value, onChange } }) => (
-              <TextInput
-                value={value}
-                onChangeText={onChange}
-                editable={isEditable}
-                keyboardType="numeric"
-                placeholder="Shadow free area"
-                style={inputStyle}
-              />
-            )}
-          />
-        </LabeledInput>
+        <Controller
+          control={control}
+          name="shadowFreeArea"
+          render={({ field: { value, onChange } }) => (
+            <OptionSelect
+              label="Shadow-Free Area Available"
+              value={value}
+              options={ALLOWED_SHADOW_FREE}
+              editable={isEditable}
+              onChange={onChange}
+              colors={colors}
+            />
+          )}
+        />
 
-        <LabeledInput label="Roof Type" labelColor={colors.text} helperColor={colors.textMuted} errorColor={colors.danger}>
-          <Controller
-            control={control}
-            name="roofType"
-            render={({ field: { value, onChange } }) => (
-              <TextInput
-                value={value}
-                onChangeText={onChange}
-                editable={isEditable}
-                placeholder="RCC / Tin / Other"
-                style={inputStyle}
-              />
-            )}
-          />
-        </LabeledInput>
+        <Controller
+          control={control}
+          name="roofType"
+          render={({ field: { value, onChange } }) => (
+            <OptionSelect
+              label="Type of Roof"
+              value={value}
+              options={ALLOWED_ROOF_TYPE}
+              editable={isEditable}
+              onChange={onChange}
+              colors={colors}
+            />
+          )}
+        />
 
         <LabeledInput label="Verified Monthly Bill" labelColor={colors.text} helperColor={colors.textMuted} errorColor={colors.danger}>
           <Controller
@@ -853,21 +1447,20 @@ export function CustomerDetailsScreen({ route }: CustomerDetailsScreenProps) {
           />
         </LabeledInput>
 
-        <LabeledInput label="Connection Type" labelColor={colors.text} helperColor={colors.textMuted} errorColor={colors.danger}>
-          <Controller
-            control={control}
-            name="connectionType"
-            render={({ field: { value, onChange } }) => (
-              <TextInput
-                value={value}
-                onChangeText={onChange}
-                editable={isEditable}
-                placeholder="Domestic / Commercial"
-                style={inputStyle}
-              />
-            )}
-          />
-        </LabeledInput>
+        <Controller
+          control={control}
+          name="connectionType"
+          render={({ field: { value, onChange } }) => (
+            <OptionSelect
+              label="Current Electricity Connection Type"
+              value={value}
+              options={ALLOWED_CONNECTION_TYPE}
+              editable={isEditable}
+              onChange={onChange}
+              colors={colors}
+            />
+          )}
+        />
 
         <LabeledInput label="Consumer Number" labelColor={colors.text} helperColor={colors.textMuted} errorColor={colors.danger}>
           <Controller
@@ -1021,10 +1614,13 @@ export function CustomerDetailsScreen({ route }: CustomerDetailsScreenProps) {
               <TextInput
                 value={value}
                 onChangeText={onChange}
-                editable={isEditable}
+                editable={isEditable && loanRequiredSelected}
                 keyboardType="numeric"
                 placeholder="Loan amount"
-                style={inputStyle}
+                style={[
+                  inputStyle,
+                  !loanRequiredSelected ? { backgroundColor: colors.surfaceMuted, color: colors.textMuted } : null
+                ]}
               />
             )}
           />
@@ -1045,6 +1641,74 @@ export function CustomerDetailsScreen({ route }: CustomerDetailsScreenProps) {
             )}
           />
         </LabeledInput>
+      </Card>
+
+      <Card style={{ gap: 10 }}>
+        <Text style={{ fontSize: 16, fontWeight: "700", color: colors.text }}>Site Photographs</Text>
+        <Text style={{ color: colors.textMuted }}>
+          Uploaded: {sitePhotoCount} / {sitePhotoMax}
+        </Text>
+        {queuedSitePhotoCount > 0 ? (
+          <Text style={{ color: colors.warning, fontWeight: "700" }}>
+            Queued for sync: {queuedSitePhotoCount}
+          </Text>
+        ) : null}
+        <Text style={{ color: colors.textMuted }}>
+          Minimum required before submit: {sitePhotoMin}
+        </Text>
+        {sitePhotoCount < sitePhotoMin ? (
+          <Text style={{ color: colors.warning }}>
+            Upload at least {sitePhotoMin - sitePhotoCount} more photo(s) to continue.
+          </Text>
+        ) : null}
+
+        <Pressable
+          onPress={() => {
+            void pickFromCamera();
+          }}
+          disabled={photoUploading || !isEditable}
+          style={{
+            backgroundColor: photoUploading || !isEditable ? colors.textMuted : colors.info,
+            borderRadius: 8,
+            padding: 10
+          }}
+        >
+          <Text style={{ textAlign: "center", color: "#fff", fontWeight: "700" }}>
+            {photoUploading ? "Uploading..." : "Capture Photo"}
+          </Text>
+        </Pressable>
+
+        <Pressable
+          onPress={() => {
+            void pickFromGallery();
+          }}
+          disabled={photoUploading || !isEditable}
+          style={{
+            backgroundColor: photoUploading || !isEditable ? colors.textMuted : colors.info,
+            borderRadius: 8,
+            padding: 10
+          }}
+        >
+          <Text style={{ textAlign: "center", color: "#fff", fontWeight: "700" }}>
+            {photoUploading ? "Uploading..." : "Choose from Gallery"}
+          </Text>
+        </Pressable>
+
+        <Pressable
+          onPress={() => {
+            void pickFromFiles();
+          }}
+          disabled={photoUploading || !isEditable}
+          style={{
+            backgroundColor: photoUploading || !isEditable ? colors.textMuted : colors.info,
+            borderRadius: 8,
+            padding: 10
+          }}
+        >
+          <Text style={{ textAlign: "center", color: "#fff", fontWeight: "700" }}>
+            {photoUploading ? "Uploading..." : "Choose from Files"}
+          </Text>
+        </Pressable>
       </Card>
 
       <Pressable

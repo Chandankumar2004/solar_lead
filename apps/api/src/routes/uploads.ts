@@ -16,14 +16,11 @@ import {
 import { type LeadAccessActor, scopeLeadWhere } from "../services/lead-access.service.js";
 
 export const uploadsRouter = Router();
-const MAX_DOCUMENT_SIZE_BYTES = 20 * 1024 * 1024;
+const MAX_DOCUMENT_SIZE_BYTES = 10 * 1024 * 1024;
 const ALLOWED_MIME_TYPES = new Set([
   "application/pdf",
   "image/jpeg",
-  "image/png",
-  "image/webp",
-  "image/heic",
-  "image/heif"
+  "image/png"
 ]);
 
 const createUploadSchema = z.object({

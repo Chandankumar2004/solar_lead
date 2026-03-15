@@ -109,8 +109,14 @@ export default function DistrictsPage() {
     setSaveState((prev) => ({ ...prev, [districtId]: "idle" }));
   };
 
-  const onSave = async (districtId: string) => {
+  const onSave = async (district: DistrictRow) => {
+    const districtId = district.id;
     const selection = drafts[districtId] ?? { managerIds: [], executiveIds: [] };
+    if (district.isActive && selection.managerIds.length === 0) {
+      setSaveState((prev) => ({ ...prev, [districtId]: "error" }));
+      setMessage("Active districts must have at least one District Manager assigned.");
+      return;
+    }
     setSaveState((prev) => ({ ...prev, [districtId]: "saving" }));
     setMessage(null);
     try {
@@ -222,7 +228,7 @@ export default function DistrictsPage() {
   }
 
   return (
-    <section className="space-y-3 rounded-xl bg-white p-4 shadow-sm">
+    <section className="min-w-0 space-y-3 rounded-xl bg-white p-3 shadow-sm sm:p-4">
       {districtErrorMessage ? (
         <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
           {districtErrorMessage}
@@ -236,7 +242,7 @@ export default function DistrictsPage() {
       <div className="rounded-lg border border-slate-200 p-3">
         <h3 className="text-sm font-semibold text-slate-800">Create District</h3>
         {canCreateDistrict ? (
-          <div className="mt-2 grid gap-2 md:grid-cols-4">
+          <div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
             <input
               value={newDistrictName}
               onChange={(event) => setNewDistrictName(event.target.value)}
@@ -316,8 +322,9 @@ export default function DistrictsPage() {
                   <td className="px-4 py-3">
                     <select
                       multiple
-                      className="min-h-24 w-56 rounded-md border border-slate-300 px-2 py-1 text-xs"
+                      className="min-h-24 w-full min-w-[11rem] max-w-[14rem] rounded-md border border-slate-300 px-2 py-1 text-xs"
                       value={draft.managerIds}
+                      disabled={!canManageDistrict}
                       onChange={(event) => {
                         const selected = Array.from(event.target.selectedOptions).map((option) => option.value);
                         updateSelection(district.id, "managerIds", selected);
@@ -333,8 +340,9 @@ export default function DistrictsPage() {
                   <td className="px-4 py-3">
                     <select
                       multiple
-                      className="min-h-24 w-56 rounded-md border border-slate-300 px-2 py-1 text-xs"
+                      className="min-h-24 w-full min-w-[11rem] max-w-[14rem] rounded-md border border-slate-300 px-2 py-1 text-xs"
                       value={draft.executiveIds}
+                      disabled={!canManageDistrict}
                       onChange={(event) => {
                         const selected = Array.from(event.target.selectedOptions).map((option) => option.value);
                         updateSelection(district.id, "executiveIds", selected);
@@ -349,14 +357,20 @@ export default function DistrictsPage() {
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex flex-col gap-1">
-                      <button
-                        type="button"
-                        onClick={() => void onSave(district.id)}
-                        disabled={status === "saving"}
-                        className="rounded-md border border-slate-300 px-3 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-60"
-                      >
-                        {status === "saving" ? "Saving..." : "Save Mapping"}
-                      </button>
+                      {canManageDistrict ? (
+                        <button
+                          type="button"
+                          onClick={() => void onSave(district)}
+                          disabled={status === "saving"}
+                          className="rounded-md border border-slate-300 px-3 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+                        >
+                          {status === "saving" ? "Saving..." : "Save Mapping"}
+                        </button>
+                      ) : (
+                        <span className="rounded-md border border-slate-200 px-3 py-1 text-xs text-slate-500">
+                          Read only
+                        </span>
+                      )}
                       {canManageDistrict ? (
                         <button
                           type="button"

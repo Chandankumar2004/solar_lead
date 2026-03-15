@@ -50,8 +50,35 @@ type DashboardSummary = {
     totalAssigned: number;
     activeLeads: number;
     terminalLeads: number;
+    visitsCompleted: number;
+    tokenAmountCollected: number;
     pendingDocuments: number;
     pendingPayments: number;
+  }>;
+  loanPipelineSummary: {
+    pending: number;
+    approved: number;
+    rejected: number;
+    total: number;
+  };
+  recentActivity: Array<{
+    id: string;
+    at: string;
+    lead: {
+      id: string;
+      name: string;
+      phone: string;
+      districtName: string;
+      districtState: string;
+    };
+    fromStatus: string | null;
+    toStatus: string;
+    actor: {
+      id: string;
+      name: string;
+      role: string;
+    };
+    notes: string | null;
   }>;
   generatedAt: string;
 };
@@ -86,6 +113,7 @@ export default function DashboardPage() {
 
   const {
     data: dashboardResponse,
+    error: dashboardError,
     isLoading,
     isValidating,
     mutate
@@ -110,9 +138,9 @@ export default function DashboardPage() {
   };
 
   return (
-    <div className="space-y-6">
-      <section className="rounded-xl bg-white p-4 shadow-sm">
-        <div className="grid gap-3 md:grid-cols-5">
+    <div className="min-w-0 space-y-6">
+      <section className="rounded-xl bg-white p-3 shadow-sm sm:p-4">
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
           <div>
             <label className="mb-1 block text-xs font-medium text-slate-600">Date from</label>
             <input
@@ -161,7 +189,7 @@ export default function DashboardPage() {
               ))}
             </select>
           </div>
-          <div className="flex items-end gap-2">
+          <div className="flex flex-wrap items-end gap-2 sm:col-span-2 lg:col-span-1">
             <button
               onClick={() => void mutate()}
               className="rounded-md border border-brand-300 bg-brand-50 px-3 py-2 text-sm font-medium text-brand-700 hover:bg-brand-100"
@@ -214,12 +242,45 @@ export default function DashboardPage() {
         </div>
       </section>
 
+      {dashboardError ? (
+        <section className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
+          Failed to load dashboard data. Please try refresh.
+        </section>
+      ) : null}
+
+      <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="rounded-xl bg-white p-4 shadow-sm">
+          <p className="text-sm text-slate-500">Loan Pending</p>
+          <p className="mt-1 text-2xl font-semibold">
+            {isLoading ? "..." : summary?.loanPipelineSummary.pending ?? 0}
+          </p>
+        </div>
+        <div className="rounded-xl bg-white p-4 shadow-sm">
+          <p className="text-sm text-slate-500">Loan Approved</p>
+          <p className="mt-1 text-2xl font-semibold">
+            {isLoading ? "..." : summary?.loanPipelineSummary.approved ?? 0}
+          </p>
+        </div>
+        <div className="rounded-xl bg-white p-4 shadow-sm">
+          <p className="text-sm text-slate-500">Loan Rejected</p>
+          <p className="mt-1 text-2xl font-semibold">
+            {isLoading ? "..." : summary?.loanPipelineSummary.rejected ?? 0}
+          </p>
+        </div>
+        <div className="rounded-xl bg-white p-4 shadow-sm">
+          <p className="text-sm text-slate-500">Loan Total</p>
+          <p className="mt-1 text-2xl font-semibold">
+            {isLoading ? "..." : summary?.loanPipelineSummary.total ?? 0}
+          </p>
+        </div>
+      </section>
+
       {summary ? <DashboardCharts summary={summary} /> : null}
 
-      <section className="rounded-xl bg-white p-4 shadow-sm">
-        <div className="flex items-center justify-between">
+      <section className="rounded-xl bg-white p-3 shadow-sm sm:p-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <h3 className="text-base font-semibold">Field Executive Performance</h3>
-          <span className="text-xs text-slate-500">
+          <span className="text-xs text-slate-500 sm:text-right">
             Updated {summary ? new Date(summary.generatedAt).toLocaleString() : "-"}
           </span>
         </div>
@@ -231,6 +292,8 @@ export default function DashboardPage() {
                 <th className="px-3 py-2">Assigned</th>
                 <th className="px-3 py-2">Active</th>
                 <th className="px-3 py-2">Terminal</th>
+                <th className="px-3 py-2">Visits Completed</th>
+                <th className="px-3 py-2">Token Collected</th>
                 <th className="px-3 py-2">Pending Docs</th>
                 <th className="px-3 py-2">Pending Payments</th>
               </tr>
@@ -238,13 +301,13 @@ export default function DashboardPage() {
             <tbody>
               {isLoading ? (
                 <tr>
-                  <td className="px-3 py-3 text-slate-500" colSpan={6}>
+                  <td className="px-3 py-3 text-slate-500" colSpan={8}>
                     Loading executive performance...
                   </td>
                 </tr>
               ) : executives.length === 0 ? (
                 <tr>
-                  <td className="px-3 py-3 text-slate-500" colSpan={6}>
+                  <td className="px-3 py-3 text-slate-500" colSpan={8}>
                     No executives in current filter scope.
                   </td>
                 </tr>
@@ -258,8 +321,73 @@ export default function DashboardPage() {
                     <td className="px-3 py-2">{executive.totalAssigned}</td>
                     <td className="px-3 py-2">{executive.activeLeads}</td>
                     <td className="px-3 py-2">{executive.terminalLeads}</td>
+                    <td className="px-3 py-2">{executive.visitsCompleted}</td>
+                    <td className="px-3 py-2">
+                      {executive.tokenAmountCollected.toLocaleString("en-IN", {
+                        style: "currency",
+                        currency: "INR",
+                        maximumFractionDigits: 0
+                      })}
+                    </td>
                     <td className="px-3 py-2">{executive.pendingDocuments}</td>
                     <td className="px-3 py-2">{executive.pendingPayments}</td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section className="rounded-xl bg-white p-3 shadow-sm sm:p-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h3 className="text-base font-semibold">Recent Activity</h3>
+          <span className="text-xs text-slate-500">Latest 20 lead updates</span>
+        </div>
+        <div className="mt-3 overflow-x-auto">
+          <table className="min-w-full text-sm">
+            <thead className="bg-slate-100 text-left text-xs uppercase text-slate-600">
+              <tr>
+                <th className="px-3 py-2">Time</th>
+                <th className="px-3 py-2">Lead</th>
+                <th className="px-3 py-2">Transition</th>
+                <th className="px-3 py-2">Actor</th>
+                <th className="px-3 py-2">Notes</th>
+              </tr>
+            </thead>
+            <tbody>
+              {isLoading ? (
+                <tr>
+                  <td className="px-3 py-3 text-slate-500" colSpan={5}>
+                    Loading recent activity...
+                  </td>
+                </tr>
+              ) : (summary?.recentActivity ?? []).length === 0 ? (
+                <tr>
+                  <td className="px-3 py-3 text-slate-500" colSpan={5}>
+                    No activity in selected filter scope.
+                  </td>
+                </tr>
+              ) : (
+                (summary?.recentActivity ?? []).map((activity) => (
+                  <tr key={activity.id} className="border-t border-slate-100">
+                    <td className="px-3 py-2">
+                      {new Date(activity.at).toLocaleString()}
+                    </td>
+                    <td className="px-3 py-2">
+                      <p className="font-medium">{activity.lead.name}</p>
+                      <p className="text-xs text-slate-500">
+                        {activity.lead.phone} • {activity.lead.districtName}
+                      </p>
+                    </td>
+                    <td className="px-3 py-2">
+                      {(activity.fromStatus ?? "Start")} → {activity.toStatus}
+                    </td>
+                    <td className="px-3 py-2">
+                      {activity.actor.name}
+                      <p className="text-xs text-slate-500">{activity.actor.role}</p>
+                    </td>
+                    <td className="px-3 py-2">{activity.notes ?? "-"}</td>
                   </tr>
                 ))
               )}

@@ -38,6 +38,7 @@ export type LoginFailureReason =
   | "INVALID_CREDENTIALS"
   | "ACCOUNT_PENDING"
   | "ACCOUNT_SUSPENDED"
+  | "ACCOUNT_DEACTIVATED"
   | "APP_PROFILE_NOT_FOUND"
   | "AUTH_CONFIG_ERROR"
   | "AUTH_BACKEND_ERROR";
@@ -109,6 +110,7 @@ function mapStatus(value: string | null | undefined): UserStatus {
   const normalized = (value ?? "").trim().toLowerCase();
   if (normalized === "active") return "ACTIVE";
   if (normalized === "pending") return "PENDING";
+  if (normalized === "deactivated") return "DEACTIVATED";
   return "SUSPENDED";
 }
 
@@ -122,6 +124,7 @@ function dbRoleValue(role: UserRole) {
 function dbStatusValue(status: UserStatus) {
   if (status === "ACTIVE") return "active";
   if (status === "PENDING") return "pending";
+  if (status === "DEACTIVATED") return "deactivated";
   return "suspended";
 }
 
@@ -937,6 +940,14 @@ export async function login(email: string, password: string): Promise<LoginResul
     return {
       ok: false,
       reason: "ACCOUNT_SUSPENDED",
+      userId: appUser.id
+    };
+  }
+
+  if (appUser.status === "DEACTIVATED") {
+    return {
+      ok: false,
+      reason: "ACCOUNT_DEACTIVATED",
       userId: appUser.id
     };
   }

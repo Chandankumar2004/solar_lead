@@ -143,6 +143,13 @@ export default function PaymentsVerificationPage() {
 
   const submitAction = async (action: "verify" | "reject") => {
     if (!selectedPayment) return;
+    if (reviewNote.trim().length < 3) {
+      setActionMessage({
+        type: "error",
+        text: "Review note is required (minimum 3 characters)."
+      });
+      return;
+    }
     if (action === "reject" && reviewNote.trim().length < 5) {
       setActionMessage({
         type: "error",
@@ -175,10 +182,10 @@ export default function PaymentsVerificationPage() {
   };
 
   return (
-    <div className="space-y-4">
-      <section className="rounded-xl bg-white p-4 shadow-sm">
+    <div className="min-w-0 space-y-4">
+      <section className="rounded-xl bg-white p-3 shadow-sm sm:p-4">
         <h2 className="text-base font-semibold">Payments Verification Queue</h2>
-        <div className="mt-3 grid gap-3 lg:grid-cols-5">
+        <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
           <select
             value={status}
             onChange={(event) => {
@@ -267,6 +274,7 @@ export default function PaymentsVerificationPage() {
                   <th className="px-4 py-3">Amount</th>
                   <th className="px-4 py-3">Method</th>
                   <th className="px-4 py-3">UTR</th>
+                  <th className="px-4 py-3">Field Executive</th>
                   <th className="px-4 py-3">Created</th>
                   <th className="px-4 py-3">Action</th>
                 </tr>
@@ -274,13 +282,13 @@ export default function PaymentsVerificationPage() {
               <tbody>
                 {isLoading ? (
                   <tr>
-                    <td className="px-4 py-4 text-slate-500" colSpan={6}>
+                    <td className="px-4 py-4 text-slate-500" colSpan={7}>
                       Loading payments...
                     </td>
                   </tr>
                 ) : payments.length === 0 ? (
                   <tr>
-                    <td className="px-4 py-4 text-slate-500" colSpan={6}>
+                    <td className="px-4 py-4 text-slate-500" colSpan={7}>
                       No payments found.
                     </td>
                   </tr>
@@ -308,6 +316,11 @@ export default function PaymentsVerificationPage() {
                         <td className="px-4 py-3">{formatAmount(payment.amount)}</td>
                         <td className="px-4 py-3">{payment.method}</td>
                         <td className="px-4 py-3">{payment.utrNumber ?? "-"}</td>
+                        <td className="px-4 py-3">
+                          {payment.collectedByUser?.fullName ??
+                            payment.lead.assignedExecutive?.fullName ??
+                            "-"}
+                        </td>
                         <td className="px-4 py-3">{new Date(payment.createdAt).toLocaleString()}</td>
                         <td className="px-4 py-3">
                           <div className="space-y-1">
@@ -358,10 +371,10 @@ export default function PaymentsVerificationPage() {
               <textarea
                 value={reviewNote}
                 onChange={(event) => setReviewNote(event.target.value)}
-                placeholder="Review note (required for reject)"
+                placeholder="Review note (required for verify/reject)"
                 className="min-h-28 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
               />
-              <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                 <button
                   onClick={() => void submitAction("verify")}
                   disabled={actionLoading !== null || selectedPayment.status !== "PENDING"}
@@ -390,48 +403,50 @@ export default function PaymentsVerificationPage() {
         </aside>
       </section>
 
-      <section className="flex items-center justify-between rounded-xl bg-white px-4 py-3 shadow-sm">
-        <div className="flex items-center gap-3">
-          <p className="text-sm text-slate-600">Total: {pagination?.total ?? 0}</p>
-          <select
-            value={pageSize}
-            onChange={(event) => {
-              setPageSize(Number(event.target.value));
-              setPage(1);
-            }}
-            className="rounded border border-slate-300 px-2 py-1 text-sm"
-          >
-            <option value={10}>10 / page</option>
-            <option value={20}>20 / page</option>
-            <option value={50}>50 / page</option>
-          </select>
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setPage((current) => Math.max(1, current - 1))}
-            disabled={(pagination?.page ?? 1) <= 1}
-            className="rounded border border-slate-300 px-3 py-1 text-sm disabled:opacity-50"
-          >
-            Previous
-          </button>
-          <span className="text-sm text-slate-600">
-            Page {pagination?.page ?? 1} / {pagination?.totalPages ?? 1}
-          </span>
-          <button
-            onClick={() =>
-              setPage((current) => Math.min(pagination?.totalPages ?? 1, current + 1))
-            }
-            disabled={(pagination?.page ?? 1) >= (pagination?.totalPages ?? 1)}
-            className="rounded border border-slate-300 px-3 py-1 text-sm disabled:opacity-50"
-          >
-            Next
-          </button>
-          <button
-            onClick={() => void mutate()}
-            className="rounded border border-brand-300 bg-brand-50 px-3 py-1 text-sm text-brand-700 hover:bg-brand-100"
-          >
-            Refresh
-          </button>
+      <section className="rounded-xl bg-white px-3 py-3 shadow-sm sm:px-4">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex flex-wrap items-center gap-3">
+            <p className="text-sm text-slate-600">Total: {pagination?.total ?? 0}</p>
+            <select
+              value={pageSize}
+              onChange={(event) => {
+                setPageSize(Number(event.target.value));
+                setPage(1);
+              }}
+              className="rounded border border-slate-300 px-2 py-1 text-sm"
+            >
+              <option value={10}>10 / page</option>
+              <option value={20}>20 / page</option>
+              <option value={50}>50 / page</option>
+            </select>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              onClick={() => setPage((current) => Math.max(1, current - 1))}
+              disabled={(pagination?.page ?? 1) <= 1}
+              className="rounded border border-slate-300 px-3 py-1 text-sm disabled:opacity-50"
+            >
+              Previous
+            </button>
+            <span className="text-sm text-slate-600">
+              Page {pagination?.page ?? 1} / {pagination?.totalPages ?? 1}
+            </span>
+            <button
+              onClick={() =>
+                setPage((current) => Math.min(pagination?.totalPages ?? 1, current + 1))
+              }
+              disabled={(pagination?.page ?? 1) >= (pagination?.totalPages ?? 1)}
+              className="rounded border border-slate-300 px-3 py-1 text-sm disabled:opacity-50"
+            >
+              Next
+            </button>
+            <button
+              onClick={() => void mutate()}
+              className="rounded border border-brand-300 bg-brand-50 px-3 py-1 text-sm text-brand-700 hover:bg-brand-100"
+            >
+              Refresh
+            </button>
+          </div>
         </div>
       </section>
     </div>

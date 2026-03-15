@@ -310,7 +310,7 @@ export default function WorkflowPage() {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="min-w-0 space-y-4">
       <div>
         <h2 className="text-lg font-semibold">Lead Status Configuration</h2>
         <p className="text-sm text-slate-600">
@@ -320,7 +320,7 @@ export default function WorkflowPage() {
       </div>
 
       <div className="grid gap-4 xl:grid-cols-[1.1fr_1fr]">
-        <section className="rounded-xl bg-white p-4 shadow-sm">
+        <section className="rounded-xl bg-white p-3 shadow-sm sm:p-4">
           <div className="mb-3 flex items-center justify-between">
             <h3 className="text-base font-semibold">Statuses</h3>
             <button
@@ -431,7 +431,7 @@ export default function WorkflowPage() {
           )}
         </section>
 
-        <section className="rounded-xl bg-white p-4 shadow-sm">
+        <section className="rounded-xl bg-white p-3 shadow-sm sm:p-4">
           <h3 className="text-base font-semibold">
             {editingStatusId ? "Edit Status" : "Create Status"}
           </h3>
@@ -565,13 +565,13 @@ export default function WorkflowPage() {
         </section>
       </div>
 
-      <section className="rounded-xl bg-white p-4 shadow-sm">
+      <section className="rounded-xl bg-white p-3 shadow-sm sm:p-4">
         <h3 className="text-base font-semibold">Allowed Next Statuses</h3>
         <p className="mt-1 text-sm text-slate-600">
           Configure which statuses can follow a selected source status.
         </p>
 
-        <div className="mt-3 grid gap-3 sm:grid-cols-[280px_1fr]">
+        <div className="mt-3 grid gap-3 lg:grid-cols-[280px_1fr]">
           <div>
             <label className="mb-1 block text-sm font-medium">From Status</label>
             <select

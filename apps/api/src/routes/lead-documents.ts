@@ -18,14 +18,13 @@ import { type LeadAccessActor, scopeLeadWhere } from "../services/lead-access.se
 export const leadDocumentsRouter = Router({ mergeParams: true });
 
 const PRESIGNED_URL_TTL_SECONDS = 300;
-const MAX_DOCUMENT_SIZE_BYTES = 20 * 1024 * 1024;
+const MAX_DOCUMENT_SIZE_BYTES = 10 * 1024 * 1024;
+const SITE_PHOTO_ALLOWED_MAX = 10;
+const SITE_PHOTO_CATEGORY_PREFIXES = ["site_photo", "site_photograph"] as const;
 const ALLOWED_MIME_TYPES = new Set([
   "application/pdf",
   "image/jpeg",
-  "image/png",
-  "image/webp",
-  "image/heic",
-  "image/heif"
+  "image/png"
 ]);
 
 const leadIdParamSchema = z.object({
@@ -39,13 +38,23 @@ const createPresignSchema = z.object({
   fileSize: z.coerce.number().int().positive()
 });
 
-const completeDocumentSchema = z.object({
-  category: z.string().trim().min(2).max(80),
-  s3Key: z.string().trim().min(10).max(1024),
-  fileName: z.string().trim().min(1).max(255),
-  fileType: z.string().trim().min(3).max(120),
-  fileSize: z.coerce.number().int().positive()
-});
+const completeDocumentSchema = z
+  .object({
+    category: z.string().trim().min(2).max(80),
+    storagePath: z.string().trim().min(10).max(1024).optional(),
+    s3Key: z.string().trim().min(10).max(1024).optional(),
+    fileName: z.string().trim().min(1).max(255),
+    fileType: z.string().trim().min(3).max(120),
+    fileSize: z.coerce.number().int().positive()
+  })
+  .superRefine((value, ctx) => {
+    if (!value.storagePath && !value.s3Key) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "storagePath is required"
+      });
+    }
+  });
 
 const listDocumentsQuerySchema = z.object({
   category: z.string().trim().min(2).max(80).optional(),
@@ -57,6 +66,22 @@ const listDocumentsQuerySchema = z.object({
 
 function sanitizeFileName(fileName: string) {
   return fileName.replace(/[^a-zA-Z0-9._-]/g, "_");
+}
+
+function normalizeCategory(category: string) {
+  return category.trim().toLowerCase().replace(/\s+/g, "_");
+}
+
+function isSitePhotoCategory(category: string) {
+  const normalized = normalizeCategory(category);
+  return SITE_PHOTO_CATEGORY_PREFIXES.some((prefix) => normalized.startsWith(prefix));
+}
+
+function sitePhotoCategoryFilters(): Prisma.StringFilter[] {
+  return SITE_PHOTO_CATEGORY_PREFIXES.map((prefix) => ({
+    startsWith: prefix,
+    mode: "insensitive"
+  }));
 }
 
 function assertFileTypeAndSize(fileType: string, fileSize: number) {
@@ -164,7 +189,7 @@ leadDocumentsRouter.post(
     assertFileTypeAndSize(body.fileType, body.fileSize);
     await ensureLeadExists(leadId, req.user!);
 
-    const safeCategory = body.category.toLowerCase().replace(/[^a-z0-9_-]/g, "_");
+    const safeCategory = normalizeCategory(body.category).replace(/[^a-z0-9_-]/g, "_");
     const safeFileName = sanitizeFileName(body.fileName);
     const s3Key = `leads/${leadId}/documents/${safeCategory}/${randomUUID()}-${safeFileName}`;
     const uploadUrl = await createDocumentUploadUrl(s3Key);
@@ -173,6 +198,7 @@ leadDocumentsRouter.post(
       res,
       {
         uploadUrl,
+        storagePath: s3Key,
         s3Key,
         expiresInSeconds: PRESIGNED_URL_TTL_SECONDS,
         bucket: STORAGE_BUCKET_NAME
@@ -189,23 +215,59 @@ leadDocumentsRouter.post(
   async (req, res) => {
     const { leadId } = req.params as z.infer<typeof leadIdParamSchema>;
     const body = req.body as z.infer<typeof completeDocumentSchema>;
+    const storagePath = body.storagePath ?? body.s3Key;
+
+    if (!storagePath) {
+      throw new AppError(400, "INVALID_STORAGE_PATH", "storagePath is required");
+    }
 
     assertFileTypeAndSize(body.fileType, body.fileSize);
     await ensureLeadExists(leadId, req.user!);
 
+    if (isSitePhotoCategory(body.category)) {
+      const [existingLatestForSameCategory, sitePhotoLatestCount] = await Promise.all([
+        prisma.document.findFirst({
+          where: {
+            leadId,
+            isLatest: true,
+            category: {
+              equals: body.category,
+              mode: "insensitive"
+            }
+          },
+          select: { id: true }
+        }),
+        prisma.document.count({
+          where: {
+            leadId,
+            isLatest: true,
+            OR: sitePhotoCategoryFilters().map((category) => ({ category }))
+          }
+        })
+      ]);
+
+      if (!existingLatestForSameCategory && sitePhotoLatestCount >= SITE_PHOTO_ALLOWED_MAX) {
+        throw new AppError(
+          400,
+          "SITE_PHOTO_LIMIT_REACHED",
+          `A maximum of ${SITE_PHOTO_ALLOWED_MAX} site photographs is allowed for this lead`
+        );
+      }
+    }
+
     const expectedPrefix = `leads/${leadId}/documents/`;
-    if (!body.s3Key.startsWith(expectedPrefix)) {
+    if (!storagePath.startsWith(expectedPrefix)) {
       throw new AppError(
         400,
-        "INVALID_S3_KEY",
-        "s3Key must match the expected lead documents path"
+        "INVALID_STORAGE_PATH",
+        "storagePath must match the expected lead documents path"
       );
     }
 
     const document = await createVersionedDocument({
       leadId,
       category: body.category,
-      s3Key: body.s3Key,
+      s3Key: storagePath,
       fileName: body.fileName,
       fileType: body.fileType,
       fileSize: body.fileSize,

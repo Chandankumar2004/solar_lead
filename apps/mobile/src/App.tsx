@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, AppState, Pressable, Text, View } from "react-native";
 import { NavigationContainer, DefaultTheme as NavigationDefaultTheme } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
@@ -173,6 +173,8 @@ export default function App() {
 
   const hydrate = useQueueStore((s) => s.hydrate);
   const flush = useQueueStore((s) => s.flush);
+  const queueItems = useQueueStore((s) => s.items);
+  const [isOffline, setIsOffline] = useState(false);
 
   const colors = useMemo(() => getPalette(themeMode), [themeMode]);
   const navTheme = useMemo(
@@ -195,9 +197,20 @@ export default function App() {
     void bootstrap();
     void hydrate();
 
+    void NetInfo.fetch().then((state) => {
+      const connected = Boolean(state.isConnected) && state.isInternetReachable !== false;
+      setIsOffline(!connected);
+      if (connected && user?.id) {
+        void flush(user.id);
+      }
+    });
+
     const netUnsub = NetInfo.addEventListener((state) => {
-      if (state.isConnected) {
-        void flush();
+      const connected = Boolean(state.isConnected) && state.isInternetReachable !== false;
+      setIsOffline(!connected);
+
+      if (connected && user?.id) {
+        void flush(user.id);
       }
     });
 
@@ -211,7 +224,12 @@ export default function App() {
       netUnsub();
       appStateSub.remove();
     };
-  }, [bootstrap, flush, hydrate, hydratePreferences, lockBiometric]);
+  }, [bootstrap, flush, hydrate, hydratePreferences, lockBiometric, user?.id]);
+
+  const pendingQueueCount = useMemo(() => {
+    if (!user?.id) return 0;
+    return queueItems.filter((item) => item.ownerUserId === user.id || !item.ownerUserId).length;
+  }, [queueItems, user?.id]);
 
   if (isBootstrapping || !prefsHydrated) {
     return <BootScreen colors={colors} />;
@@ -222,8 +240,26 @@ export default function App() {
   }
 
   return (
-    <NavigationContainer theme={navTheme}>
-      {user ? <MainTabs colors={colors} /> : <AuthNavigator />}
-    </NavigationContainer>
+    <View style={{ flex: 1, backgroundColor: colors.background }}>
+      {isOffline ? (
+        <View
+          style={{
+            backgroundColor: colors.warning,
+            paddingVertical: 8,
+            paddingHorizontal: 12,
+            borderBottomWidth: 1,
+            borderBottomColor: colors.border
+          }}
+        >
+          <Text style={{ color: "#fff", fontWeight: "700" }}>
+            Offline mode{pendingQueueCount > 0 ? ` | Pending sync: ${pendingQueueCount}` : ""}
+          </Text>
+        </View>
+      ) : null}
+
+      <NavigationContainer theme={navTheme}>
+        {user ? <MainTabs colors={colors} /> : <AuthNavigator />}
+      </NavigationContainer>
+    </View>
   );
 }

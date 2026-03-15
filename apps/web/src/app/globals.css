@@ -3,6 +3,18 @@
 @tailwind utilities;
 
 body {
-  @apply bg-slate-50 text-slate-900;
+  @apply bg-slate-50 text-slate-900 overflow-x-hidden;
 }
 
+@keyframes testimonial-scroll-left-to-right {
+  0% {
+    transform: translateX(0%);
+  }
+  100% {
+    transform: translateX(-50%);
+  }
+}
+
+.testimonial-track {
+  animation: testimonial-scroll-left-to-right 28s linear infinite;
+}

@@ -165,4 +165,14 @@ app.use(
   requireAuth,
   lazyRouter(() => import("./routes/notifications.js"), "notificationsRouter")
 );
+app.use(
+  "/reports",
+  requireAuth,
+  lazyRouter(() => import("./routes/reports.js"), "reportsRouter")
+);
+app.use(
+  "/api/reports",
+  requireAuth,
+  lazyRouter(() => import("./routes/reports.js"), "reportsRouter")
+);
 app.use(errorHandler);

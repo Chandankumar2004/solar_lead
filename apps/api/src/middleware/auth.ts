@@ -50,7 +50,13 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
   }
 
   if (resolved.user.status !== "ACTIVE") {
-    return fail(res, 401, "UNAUTHORIZED", "User is not active");
+    if (resolved.user.status === "PENDING") {
+      return fail(res, 401, "ACCOUNT_PENDING", "Your account is pending approval");
+    }
+    if (resolved.user.status === "SUSPENDED") {
+      return fail(res, 401, "ACCOUNT_SUSPENDED", "Your account is suspended");
+    }
+    return fail(res, 401, "ACCOUNT_DEACTIVATED", "Your account is deactivated");
   }
 
   req.user = resolved.user;

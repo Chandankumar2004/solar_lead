@@ -8,6 +8,7 @@ import NetInfo from "@react-native-community/netinfo";
 import axios, { AxiosError } from "axios";
 import { api } from "../services/api";
 import { useQueueStore } from "../store/queue-store";
+import { useAuthStore } from "../store/auth-store";
 import { uploadLeadDocument } from "../services/document-upload";
 import {
   AppButton,
@@ -66,6 +67,13 @@ type Attachment = {
   mimeType: string;
   sizeBytes: number;
 };
+
+const MAX_UPLOAD_SIZE_BYTES = 10 * 1024 * 1024;
+const ALLOWED_UPLOAD_MIME_TYPES = new Set([
+  "application/pdf",
+  "image/jpeg",
+  "image/png"
+]);
 
 function isUuid(value: string) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
@@ -169,15 +177,24 @@ function toPublicLeadPayload(payload: ApiLeadPayload) {
 
 function inferMimeType(fileName: string, fallback?: string | null) {
   if (fallback && fallback !== "application/octet-stream") {
-    return fallback;
+    const normalized = fallback.toLowerCase();
+    if (normalized === "image/jpg") return "image/jpeg";
+    return normalized;
   }
   const name = fileName.toLowerCase();
   if (name.endsWith(".pdf")) return "application/pdf";
   if (name.endsWith(".png")) return "image/png";
-  if (name.endsWith(".webp")) return "image/webp";
-  if (name.endsWith(".heic")) return "image/heic";
-  if (name.endsWith(".heif")) return "image/heif";
   return "image/jpeg";
+}
+
+function validateAttachment(file: Attachment) {
+  if (!ALLOWED_UPLOAD_MIME_TYPES.has(file.mimeType)) {
+    return "Only JPEG, PNG, and PDF files are allowed.";
+  }
+  if (file.sizeBytes > 0 && file.sizeBytes > MAX_UPLOAD_SIZE_BYTES) {
+    return "Each file must be 10 MB or smaller.";
+  }
+  return null;
 }
 
 async function createLeadWithRoleFallback(payload: ApiLeadPayload) {
@@ -198,6 +215,7 @@ export function LeadCreateScreen() {
   const colors = useAppPalette();
   const textInputStyle = useTextInputStyle();
   const enqueue = useQueueStore((s) => s.enqueue);
+  const user = useAuthStore((s) => s.user);
   const [coord, setCoord] = useState({ latitude: 12.9716, longitude: 77.5946 });
   const [districts, setDistricts] = useState<District[]>([]);
   const [districtsLoading, setDistrictsLoading] = useState(false);
@@ -241,7 +259,7 @@ export function LeadCreateScreen() {
     const docs = await DocumentPicker.getDocumentAsync({
       multiple: true,
       copyToCacheDirectory: true,
-      type: ["application/pdf", "image/*"]
+      type: ["application/pdf", "image/jpeg", "image/png"]
     });
     const images = await ImagePicker.launchImageLibraryAsync({
       allowsMultipleSelection: true,
@@ -272,7 +290,23 @@ export function LeadCreateScreen() {
         });
       }
     }
-    setAttachments(next);
+    const valid: Attachment[] = [];
+    const skipped: string[] = [];
+    for (const file of next) {
+      const reason = validateAttachment(file);
+      if (reason) {
+        skipped.push(`${file.fileName}: ${reason}`);
+      } else {
+        valid.push(file);
+      }
+    }
+    if (skipped.length > 0) {
+      Alert.alert(
+        "Some files were skipped",
+        skipped.slice(0, 3).join("\n") + (skipped.length > 3 ? `\n+${skipped.length - 3} more` : "")
+      );
+    }
+    setAttachments(valid);
   };
 
   const onSubmit = handleSubmit(async (values) => {
@@ -301,14 +335,19 @@ export function LeadCreateScreen() {
 
     const net = await NetInfo.fetch();
     if (!net.isConnected) {
-      await enqueue({
-        id: `${Date.now()}-offline`,
-        kind: "CREATE_LEAD_WITH_ATTACHMENTS",
-        payload: {
-          lead: payload,
-          attachments
+      await enqueue(
+        {
+          id: `${Date.now()}-offline`,
+          kind: "CREATE_LEAD_WITH_ATTACHMENTS",
+          payload: {
+            lead: payload,
+            attachments
+          }
+        },
+        {
+          ownerUserId: user?.id
         }
-      });
+      );
       Alert.alert("Saved offline", "Lead will sync when internet is back.");
       reset();
       return;
@@ -340,20 +379,26 @@ export function LeadCreateScreen() {
           uploadedCount += 1;
         } catch (uploadError) {
           if (await shouldQueueSubmission(uploadError)) {
-            await enqueue({
-              id: `${Date.now()}-upload-${Math.random().toString(16).slice(2)}`,
-              kind: "UPLOAD_LEAD_DOCUMENT",
-              payload: {
-                leadId,
-                category: "lead_attachment",
-                file: {
-                  uri: file.uri,
-                  fileName: file.fileName,
-                  fileType: file.mimeType,
-                  fileSize: file.sizeBytes
+            await enqueue(
+              {
+                id: `${Date.now()}-upload-${Math.random().toString(16).slice(2)}`,
+                kind: "UPLOAD_LEAD_DOCUMENT",
+                payload: {
+                  leadId,
+                  category: "lead_attachment",
+                  file: {
+                    uri: file.uri,
+                    fileName: file.fileName,
+                    fileType: file.mimeType,
+                    fileSize: file.sizeBytes
+                  }
                 }
+              },
+              {
+                ownerUserId: user?.id,
+                dedupeKey: `upload:${leadId}:lead_attachment:${file.fileName}:${file.sizeBytes}`
               }
-            });
+            );
             queuedCount += 1;
           } else {
             failedCount += 1;
@@ -380,14 +425,19 @@ export function LeadCreateScreen() {
       setAttachments([]);
     } catch (error) {
       if (await shouldQueueSubmission(error)) {
-        await enqueue({
-          id: `${Date.now()}-retry`,
-          kind: "CREATE_LEAD_WITH_ATTACHMENTS",
-          payload: {
-            lead: payload,
-            attachments
+        await enqueue(
+          {
+            id: `${Date.now()}-retry`,
+            kind: "CREATE_LEAD_WITH_ATTACHMENTS",
+            payload: {
+              lead: payload,
+              attachments
+            }
+          },
+          {
+            ownerUserId: user?.id
           }
-        });
+        );
         Alert.alert("Queued", "Submission queued due to server/network issue.");
         return;
       }

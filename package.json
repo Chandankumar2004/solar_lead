@@ -23,7 +23,6 @@
     "prisma:migrate:deploy": "pnpm --filter @solar/api exec prisma migrate deploy --schema ./prisma/schema.prisma",
     "prisma:db:push": "pnpm --filter @solar/api prisma:db:push",
     "prisma:db:push:force": "pnpm --filter @solar/api prisma:db:push:force",
-    "deploy:web:vercel": "npx vercel --prod",
     "lint": "pnpm --filter @solar/shared lint && pnpm --filter @solar/api lint && pnpm --filter @solar/web lint && pnpm --filter @solar/mobile lint",
     "typecheck": "node scripts/typecheck-workspaces.cjs",
     "typecheck:all": "node scripts/typecheck-workspaces.cjs"

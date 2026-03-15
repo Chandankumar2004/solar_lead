@@ -91,6 +91,14 @@ const reviewPaymentSchema = z
     note: value.note ?? value.notes ?? null
   }))
   .superRefine((value, ctx) => {
+    if (!value.note || value.note.trim().length < 3) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["note"],
+        message: "Review note is required (minimum 3 characters)"
+      });
+      return;
+    }
     if (value.action === "reject" && (!value.note || value.note.trim().length < 5)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -247,6 +255,22 @@ function parseDateBoundary(
     }
   }
   return date;
+}
+
+function managerDistrictLeadScope(userId: string): Prisma.LeadWhereInput {
+  return {
+    district: {
+      assignments: {
+        some: {
+          userId,
+          user: {
+            role: "MANAGER",
+            status: "ACTIVE"
+          }
+        }
+      }
+    }
+  };
 }
 
 async function assertLeadExists(leadId: string, actor: LeadAccessActor) {
@@ -478,7 +502,13 @@ paymentsRouter.get(
       });
     }
 
-    if (req.user!.role !== "SUPER_ADMIN" && req.user!.role !== "ADMIN") {
+    if (req.user!.role === "MANAGER") {
+      whereClauses.push({
+        lead: {
+          is: managerDistrictLeadScope(req.user!.id)
+        }
+      });
+    } else if (req.user!.role !== "SUPER_ADMIN" && req.user!.role !== "ADMIN") {
       whereClauses.push({
         lead: {
           is: scopeLeadWhere(req.user!, {})
@@ -589,7 +619,17 @@ paymentsRouter.post(
     if (!existing) {
       throw new AppError(404, "NOT_FOUND", "Payment not found");
     }
-    if (req.user!.role !== "SUPER_ADMIN" && req.user!.role !== "ADMIN") {
+    if (req.user!.role === "MANAGER") {
+      const accessibleLead = await prisma.lead.findFirst({
+        where: {
+          AND: [{ id: existing.leadId }, managerDistrictLeadScope(req.user!.id)]
+        },
+        select: { id: true }
+      });
+      if (!accessibleLead) {
+        throw new AppError(404, "NOT_FOUND", "Payment not found");
+      }
+    } else if (req.user!.role !== "SUPER_ADMIN" && req.user!.role !== "ADMIN") {
       const accessibleLead = await prisma.lead.findFirst({
         where: scopeLeadWhere(req.user!, { id: existing.leadId }),
         select: { id: true }
@@ -745,10 +785,11 @@ paymentsRouter.post(
     }
 
     if (body.action === "reject" && existing.lead.assignedExecutiveId) {
+      const rejectionReasonText = actionNote ? ` Reason: ${actionNote}` : "";
       await notifyUsers(
         [existing.lead.assignedExecutiveId],
         "UTR rejected",
-        `Payment UTR for lead ${existing.lead.externalId} was rejected.`,
+        `Payment UTR for lead ${existing.lead.externalId} was rejected.${rejectionReasonText}`,
         {
           type: "INTERNAL",
           leadId: existing.leadId,

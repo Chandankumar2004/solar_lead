@@ -10,9 +10,10 @@ datasource db {
 }
 
 enum UserStatus {
-  ACTIVE    @map("active")
-  PENDING   @map("pending")
-  SUSPENDED @map("suspended")
+  ACTIVE      @map("active")
+  PENDING     @map("pending")
+  SUSPENDED   @map("suspended")
+  DEACTIVATED @map("deactivated")
 }
 
 enum UserRole {
@@ -74,10 +75,28 @@ model User {
   verifiedPayment  Payment[]                @relation("PaymentVerifiedBy")
   auditLogs        AuditLog[]
   deviceTokens     UserDeviceToken[]
+  setupPasswordTokens        UserSetupPasswordToken[] @relation("UserSetupTokenUser")
+  issuedSetupPasswordTokens  UserSetupPasswordToken[] @relation("UserSetupTokenIssuer")
 
   @@index([role, status])
   @@index([status])
   @@map("users")
+}
+
+model UserSetupPasswordToken {
+  id             String    @id @default(uuid()) @db.Uuid
+  userId         String    @map("user_id") @db.Uuid
+  issuedByUserId String?   @map("issued_by_user_id") @db.Uuid
+  tokenHash      String    @unique @map("token_hash")
+  expiresAt      DateTime  @map("expires_at")
+  usedAt         DateTime? @map("used_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  user           User      @relation("UserSetupTokenUser", fields: [userId], references: [id], onDelete: Cascade)
+  issuedByUser   User?     @relation("UserSetupTokenIssuer", fields: [issuedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([userId, usedAt, expiresAt])
+  @@index([issuedByUserId])
+  @@map("user_setup_password_tokens")
 }
 
 model District {
@@ -402,4 +421,35 @@ model AuditLog {
   @@index([entityType, entityId])
   @@index([createdAt])
   @@map("audit_logs")
+}
+
+model PublicLeadSubmission {
+  id                   String   @id @db.Uuid
+  externalId           String   @unique @map("external_id") @db.Uuid
+  name                 String
+  phone                String
+  email                String?
+  monthlyBill          Decimal? @map("monthly_bill") @db.Decimal(12, 2)
+  districtId           String   @map("district_id") @db.Uuid
+  districtName         String   @map("district_name")
+  state                String
+  installationType     String?  @map("installation_type")
+  message              String?
+  consentGiven         Boolean  @default(false) @map("consent_given")
+  sourceIp             String?  @map("source_ip")
+  recaptchaScore       Decimal? @map("recaptcha_score") @db.Decimal(5, 4)
+  utmSource            String?  @map("utm_source")
+  utmMedium            String?  @map("utm_medium")
+  utmCampaign          String?  @map("utm_campaign")
+  utmTerm              String?  @map("utm_term")
+  utmContent           String?  @map("utm_content")
+  smsDeliveryStatus    String?  @map("sms_delivery_status")
+  smsProviderMessageId String?  @map("sms_provider_message_id")
+  smsError             String?  @map("sms_error")
+  createdAt            DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  @@index([createdAt(sort: Desc)], map: "idx_public_lead_submissions_created_at")
+  @@index([phone], map: "idx_public_lead_submissions_phone")
+  @@map("public_lead_submissions")
 }

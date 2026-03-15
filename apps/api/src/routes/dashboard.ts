@@ -94,6 +94,169 @@ function boundedPeriod(
   return { start, end };
 }
 
+function classifyLoanApplicationStatus(value: string | null | undefined) {
+  const normalized = (value ?? "").trim().toLowerCase();
+  if (!normalized) return "pending";
+  if (normalized.includes("reject")) return "rejected";
+  if (normalized.includes("approve")) return "approved";
+  if (normalized.includes("sanction")) return "approved";
+  if (normalized.includes("disburs")) return "approved";
+  return "pending";
+}
+
+function looksLikeVisitOrScheduledStatus(statusName: string) {
+  const normalized = statusName.trim().toLowerCase();
+  if (!normalized) return false;
+  return normalized.includes("visit") || normalized.includes("scheduled");
+}
+
+async function getMobileHomeSummary(req: Request, res: Response) {
+  const baseLeadWhere = scopeLeadWhere(req.user!, {});
+  const todayStart = startOfDay(new Date());
+
+  const [leads, notifications] = await Promise.all([
+    prisma.lead.findMany({
+      where: baseLeadWhere,
+      orderBy: { updatedAt: "desc" },
+      take: 200,
+      select: {
+        id: true,
+        externalId: true,
+        name: true,
+        phone: true,
+        updatedAt: true,
+        isOverdue: true,
+        currentStatus: {
+          select: {
+            id: true,
+            name: true,
+            isTerminal: true,
+            colorCode: true
+          }
+        },
+        district: {
+          select: {
+            id: true,
+            name: true,
+            state: true
+          }
+        },
+        customerDetail: {
+          select: {
+            id: true
+          }
+        },
+        documents: {
+          where: { isLatest: true },
+          select: { id: true },
+          take: 1
+        },
+        payments: {
+          where: { status: "VERIFIED" },
+          select: { id: true },
+          take: 1
+        }
+      }
+    }),
+    prisma.notificationLog.findMany({
+      where: {
+        recipient: req.user!.id
+      },
+      orderBy: { createdAt: "desc" },
+      take: 10,
+      select: {
+        id: true,
+        leadId: true,
+        channel: true,
+        deliveryStatus: true,
+        contentSent: true,
+        createdAt: true
+      }
+    })
+  ]);
+
+  const activeLeads = leads.filter((lead) => !lead.currentStatus.isTerminal);
+  const overdueCount = activeLeads.filter((lead) => lead.isOverdue).length;
+  const normalCount = activeLeads.length - overdueCount;
+
+  const activeByStatusMap = new Map<
+    string,
+    { statusId: string; statusName: string; colorCode: string | null; count: number }
+  >();
+  for (const lead of activeLeads) {
+    const current = activeByStatusMap.get(lead.currentStatus.id);
+    if (current) {
+      current.count += 1;
+      continue;
+    }
+    activeByStatusMap.set(lead.currentStatus.id, {
+      statusId: lead.currentStatus.id,
+      statusName: lead.currentStatus.name,
+      colorCode: lead.currentStatus.colorCode,
+      count: 1
+    });
+  }
+
+  const activeByStatus = Array.from(activeByStatusMap.values()).sort(
+    (a, b) => b.count - a.count || a.statusName.localeCompare(b.statusName)
+  );
+
+  const todaysTasks = activeLeads
+    .filter((lead) => {
+      const updatedAt = new Date(lead.updatedAt);
+      const updatedToday = !Number.isNaN(updatedAt.getTime()) && updatedAt >= todayStart;
+      return lead.isOverdue || updatedToday || looksLikeVisitOrScheduledStatus(lead.currentStatus.name);
+    })
+    .sort((a, b) => {
+      if (a.isOverdue !== b.isOverdue) {
+        return a.isOverdue ? -1 : 1;
+      }
+      return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+    })
+    .slice(0, 12)
+    .map((lead) => ({
+      leadId: lead.id,
+      externalId: lead.externalId,
+      customerName: lead.name,
+      phone: lead.phone,
+      districtName: lead.district.name,
+      districtState: lead.district.state,
+      statusName: lead.currentStatus.name,
+      isOverdue: lead.isOverdue,
+      updatedAt: lead.updatedAt
+    }));
+
+  const documentsToUpload = activeLeads.filter((lead) => lead.documents.length === 0).length;
+  const paymentsToCollect = activeLeads.filter((lead) => lead.payments.length === 0).length;
+  const formsToComplete = activeLeads.filter((lead) => !lead.customerDetail).length;
+
+  return ok(
+    res,
+    {
+      totals: {
+        assigned: leads.length,
+        active: activeLeads.length,
+        overdue: overdueCount
+      },
+      activeLeadsByStatus: activeByStatus,
+      urgency: {
+        overdue: overdueCount,
+        normal: normalCount
+      },
+      todaysTasks,
+      pendingActions: {
+        documentsToUpload,
+        paymentsToCollect,
+        formsToComplete,
+        total: documentsToUpload + paymentsToCollect + formsToComplete
+      },
+      recentNotifications: notifications,
+      generatedAt: new Date().toISOString()
+    },
+    "Mobile dashboard summary fetched"
+  );
+}
+
 async function getDashboardSummary(req: Request, res: Response) {
   const query = req.query as z.infer<typeof dashboardQuerySchema>;
   const dateFrom = parseDateBoundary(query.dateFrom, "dateFrom");
@@ -318,6 +481,111 @@ async function getDashboardSummary(req: Request, res: Response) {
     })
   ]);
 
+  const executiveIds = executives.map((executive) => executive.id);
+  const visitStatusIds = await prisma.leadStatus.findMany({
+    where: {
+      name: {
+        contains: "visit",
+        mode: "insensitive"
+      }
+    },
+    select: { id: true }
+  });
+
+  const [visitGrouped, paymentCollectedGrouped, recentActivityRows, loanStatusRows] =
+    await Promise.all([
+      executiveIds.length > 0 && visitStatusIds.length > 0
+        ? prisma.leadStatusHistory.groupBy({
+            by: ["changedByUserId"],
+            where: {
+              changedByUserId: {
+                in: executiveIds
+              },
+              toStatusId: {
+                in: visitStatusIds.map((row) => row.id)
+              },
+              lead: {
+                is: rangedLeadWhere
+              }
+            },
+            _count: { _all: true }
+          })
+        : Promise.resolve([]),
+      executiveIds.length > 0
+        ? prisma.payment.groupBy({
+            by: ["collectedByUserId"],
+            where: {
+              status: "VERIFIED",
+              collectedByUserId: {
+                in: executiveIds
+              },
+              lead: {
+                is: rangedLeadWhere
+              }
+            },
+            _sum: {
+              amount: true
+            }
+          })
+        : Promise.resolve([]),
+      prisma.leadStatusHistory.findMany({
+        where: {
+          lead: {
+            is: rangedLeadWhere
+          }
+        },
+        orderBy: {
+          createdAt: "desc"
+        },
+        take: 20,
+        select: {
+          id: true,
+          createdAt: true,
+          notes: true,
+          lead: {
+            select: {
+              id: true,
+              name: true,
+              phone: true,
+              district: {
+                select: {
+                  name: true,
+                  state: true
+                }
+              }
+            }
+          },
+          fromStatus: {
+            select: {
+              name: true
+            }
+          },
+          toStatus: {
+            select: {
+              name: true
+            }
+          },
+          changedByUser: {
+            select: {
+              id: true,
+              fullName: true,
+              role: true
+            }
+          }
+        }
+      }),
+      prisma.loanDetail.findMany({
+        where: {
+          lead: {
+            is: rangedLeadWhere
+          }
+        },
+        select: {
+          applicationStatus: true
+        }
+      })
+    ]);
+
   const districtIds = districtGrouped.map((row) => row.districtId);
   const districts =
     districtIds.length > 0
@@ -350,6 +618,15 @@ async function getDashboardSummary(req: Request, res: Response) {
   );
   const terminalMap = new Map(
     terminalGrouped.map((row) => [row.assignedExecutiveId ?? "", row._count._all])
+  );
+  const visitsCompletedMap = new Map(
+    visitGrouped.map((row) => [row.changedByUserId ?? "", row._count._all])
+  );
+  const tokenAmountCollectedMap = new Map(
+    paymentCollectedGrouped.map((row) => [
+      row.collectedByUserId ?? "",
+      Number(row._sum.amount ?? 0)
+    ])
   );
 
   const pendingDocumentMap = new Map<string, number>();
@@ -394,11 +671,49 @@ async function getDashboardSummary(req: Request, res: Response) {
     }))
     .sort((a, b) => b.count - a.count);
 
+  const loanPipelineSummary = loanStatusRows.reduce(
+    (acc, row) => {
+      const bucket = classifyLoanApplicationStatus(row.applicationStatus);
+      acc.total += 1;
+      if (bucket === "approved") {
+        acc.approved += 1;
+      } else if (bucket === "rejected") {
+        acc.rejected += 1;
+      } else {
+        acc.pending += 1;
+      }
+      return acc;
+    },
+    { pending: 0, approved: 0, rejected: 0, total: 0 }
+  );
+
+  const recentActivity = recentActivityRows.map((row) => ({
+    id: row.id,
+    at: row.createdAt,
+    lead: {
+      id: row.lead.id,
+      name: row.lead.name,
+      phone: row.lead.phone,
+      districtName: row.lead.district.name,
+      districtState: row.lead.district.state
+    },
+    fromStatus: row.fromStatus?.name ?? null,
+    toStatus: row.toStatus.name,
+    actor: {
+      id: row.changedByUser.id,
+      name: row.changedByUser.fullName,
+      role: row.changedByUser.role
+    },
+    notes: row.notes
+  }));
+
   const fieldExecutivePerformance = executives
     .map((executive) => {
       const totalAssigned = assignedMap.get(executive.id) ?? 0;
       const activeLeads = activeMap.get(executive.id) ?? 0;
       const terminalLeads = terminalMap.get(executive.id) ?? 0;
+      const visitsCompleted = visitsCompletedMap.get(executive.id) ?? 0;
+      const tokenAmountCollected = tokenAmountCollectedMap.get(executive.id) ?? 0;
       const pendingDocuments = pendingDocumentMap.get(executive.id) ?? 0;
       const pendingPayments = pendingPaymentMap.get(executive.id) ?? 0;
 
@@ -411,6 +726,8 @@ async function getDashboardSummary(req: Request, res: Response) {
         totalAssigned,
         activeLeads,
         terminalLeads,
+        visitsCompleted,
+        tokenAmountCollected,
         pendingDocuments,
         pendingPayments
       };
@@ -438,6 +755,8 @@ async function getDashboardSummary(req: Request, res: Response) {
     leadsByDistrict,
     leadsByInstallationType,
     fieldExecutivePerformance,
+    loanPipelineSummary,
+    recentActivity,
     generatedAt: new Date().toISOString()
   }, "Dashboard summary fetched");
 }
@@ -454,4 +773,10 @@ dashboardRouter.get(
   allowRoles("SUPER_ADMIN", "ADMIN", "DISTRICT_MANAGER"),
   validateQuery(dashboardQuerySchema),
   async (req, res) => getDashboardSummary(req, res)
+);
+
+dashboardRouter.get(
+  "/mobile-summary",
+  allowRoles("FIELD_EXECUTIVE"),
+  async (req, res) => getMobileHomeSummary(req, res)
 );

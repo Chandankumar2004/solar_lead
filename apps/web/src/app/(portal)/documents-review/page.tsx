@@ -66,6 +66,12 @@ type DashboardSummaryEnvelope = {
   };
 };
 
+type LeadSearchRow = {
+  id: string;
+  externalId?: string | null;
+  external_id?: string | null;
+};
+
 const fetcher = (url: string) => api.get(url).then((response) => response.data);
 
 function extractApiMessage(error: unknown) {
@@ -113,7 +119,9 @@ export default function DocumentsReviewPage() {
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [reviewNotes, setReviewNotes] = useState("");
-  const [actionLoading, setActionLoading] = useState<"verify" | "reject" | null>(null);
+  const [actionLoading, setActionLoading] = useState<
+    "verify" | "request_reupload" | "save_note" | null
+  >(null);
   const [actionMessage, setActionMessage] = useState<{
     type: "success" | "error";
     text: string;
@@ -220,12 +228,12 @@ export default function DocumentsReviewPage() {
     }
   };
 
-  const submitReviewAction = async (action: "verify" | "reject") => {
+  const submitReviewAction = async (action: "verify" | "request_reupload") => {
     if (!selectedDocument) return;
-    if (action === "reject" && reviewNotes.trim().length < 5) {
+    if (action === "request_reupload" && reviewNotes.trim().length < 5) {
       setActionMessage({
         type: "error",
-        text: "Rejection notes are required (minimum 5 characters)."
+        text: "Re-upload reason is required (minimum 5 characters)."
       });
       return;
     }
@@ -239,7 +247,7 @@ export default function DocumentsReviewPage() {
       });
       setActionMessage({
         type: "success",
-        text: action === "verify" ? "Document verified." : "Document rejected."
+        text: action === "verify" ? "Document verified." : "Re-upload requested."
       });
       setReviewNotes("");
       await mutate();
@@ -250,13 +258,33 @@ export default function DocumentsReviewPage() {
     }
   };
 
+  const saveDocumentNote = async () => {
+    if (!selectedDocument) return;
+    const note = reviewNotes.trim();
+    if (!note) {
+      setActionMessage({ type: "error", text: "Enter a note before saving." });
+      return;
+    }
+    setActionMessage(null);
+    setActionLoading("save_note");
+    try {
+      await api.post(`/api/documents/${selectedDocument.id}/notes`, { note });
+      setActionMessage({ type: "success", text: "Document note saved." });
+      await mutate();
+    } catch (error) {
+      setActionMessage({ type: "error", text: extractApiMessage(error) });
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
   const submitUpload = async () => {
     if (!canUploadDocuments) return;
-    const leadId = uploadLeadId.trim();
+    const leadIdentifier = uploadLeadId.trim();
     const categoryValue = uploadCategory.trim().length >= 2 ? uploadCategory.trim() : "general";
 
-    if (!leadId) {
-      setUploadMessage({ type: "error", text: "Lead ID is required." });
+    if (!leadIdentifier) {
+      setUploadMessage({ type: "error", text: "Lead ID or External ID is required." });
       return;
     }
     if (!uploadFile) {
@@ -264,11 +292,46 @@ export default function DocumentsReviewPage() {
       return;
     }
 
+    const resolveLeadId = async (identifier: string) => {
+      try {
+        await api.get(`/api/leads/${identifier}`);
+        return identifier;
+      } catch (error) {
+        const status = (error as { response?: { status?: number } })?.response?.status;
+        if (status && status !== 404) {
+          throw error;
+        }
+      }
+
+      const response = await api.get("/api/leads", {
+        params: {
+          search: identifier,
+          page: 1,
+          pageSize: 50
+        }
+      });
+
+      const rows = (response.data?.data ?? []) as LeadSearchRow[];
+      const normalized = identifier.toLowerCase();
+      const match = rows.find((row) => {
+        const rowExternalId = (row.externalId ?? row.external_id ?? "").toLowerCase();
+        return row.id.toLowerCase() === normalized || rowExternalId === normalized;
+      });
+
+      if (!match?.id) {
+        throw new Error("LEAD_NOT_FOUND");
+      }
+
+      return match.id;
+    };
+
     const fileType = inferMimeType(uploadFile.name, uploadFile.type);
     setUploadSubmitting(true);
     setUploadMessage(null);
     try {
-      const presignResponse = await api.post(`/api/leads/${leadId}/documents/presign`, {
+      const resolvedLeadId = await resolveLeadId(leadIdentifier);
+
+      const presignResponse = await api.post(`/api/leads/${resolvedLeadId}/documents/presign`, {
         category: categoryValue,
         fileName: uploadFile.name,
         fileType,
@@ -292,7 +355,7 @@ export default function DocumentsReviewPage() {
         throw new Error(`File upload failed (${putResponse.status})`);
       }
 
-      await api.post(`/api/leads/${leadId}/documents/complete`, {
+      await api.post(`/api/leads/${resolvedLeadId}/documents/complete`, {
         category: categoryValue,
         s3Key,
         fileName: uploadFile.name,
@@ -305,6 +368,13 @@ export default function DocumentsReviewPage() {
       setUploadInputKey((current) => current + 1);
       await mutate();
     } catch (error) {
+      if (error instanceof Error && error.message === "LEAD_NOT_FOUND") {
+        setUploadMessage({
+          type: "error",
+          text: "Lead not found. Enter a valid Lead ID or External ID."
+        });
+        return;
+      }
       setUploadMessage({ type: "error", text: extractApiMessage(error) });
     } finally {
       setUploadSubmitting(false);
@@ -325,10 +395,10 @@ export default function DocumentsReviewPage() {
       return <p className="text-sm text-slate-500">Preview unavailable.</p>;
     }
     if (selectedDocument.fileType === "application/pdf") {
-      return <iframe title="Document preview" src={previewUrl} className="h-[520px] w-full rounded border border-slate-200" />;
+      return <iframe title="Document preview" src={previewUrl} className="h-[360px] w-full rounded border border-slate-200 sm:h-[520px]" />;
     }
     if (selectedDocument.fileType.startsWith("image/")) {
-      return <iframe title="Image preview" src={previewUrl} className="h-[520px] w-full rounded border border-slate-200" />;
+      return <iframe title="Image preview" src={previewUrl} className="h-[360px] w-full rounded border border-slate-200 sm:h-[520px]" />;
     }
     return (
       <div className="rounded border border-slate-200 p-4 text-sm text-slate-600">
@@ -338,15 +408,15 @@ export default function DocumentsReviewPage() {
   };
 
   return (
-    <div className="space-y-4">
+    <div className="min-w-0 space-y-4">
       {canUploadDocuments ? (
-        <section className="rounded-xl bg-white p-4 shadow-sm">
+        <section className="rounded-xl bg-white p-3 shadow-sm sm:p-4">
           <h2 className="text-base font-semibold">Upload Document</h2>
-          <div className="mt-3 grid gap-3 lg:grid-cols-4">
+          <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <input
               value={uploadLeadId}
               onChange={(event) => setUploadLeadId(event.target.value)}
-              placeholder="Lead ID (UUID)"
+              placeholder="Lead ID or External ID"
               className="rounded-md border border-slate-300 px-3 py-2 text-sm"
             />
             <input
@@ -382,9 +452,9 @@ export default function DocumentsReviewPage() {
         </section>
       ) : null}
 
-      <section className="rounded-xl bg-white p-4 shadow-sm">
+      <section className="rounded-xl bg-white p-3 shadow-sm sm:p-4">
         <h2 className="text-base font-semibold">Documents Review Queue</h2>
-        <div className="mt-3 grid gap-3 lg:grid-cols-5">
+        <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
           <select
             value={status}
             onChange={(event) => {
@@ -573,10 +643,10 @@ export default function DocumentsReviewPage() {
               <textarea
                 value={reviewNotes}
                 onChange={(event) => setReviewNotes(event.target.value)}
-                placeholder="Review notes (required for rejection)"
+                placeholder="Review notes (required for re-upload request)"
                 className="min-h-28 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
               />
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <button
                   onClick={() => void submitReviewAction("verify")}
                   disabled={actionLoading !== null}
@@ -585,11 +655,20 @@ export default function DocumentsReviewPage() {
                   {actionLoading === "verify" ? "Verifying..." : "Verify"}
                 </button>
                 <button
-                  onClick={() => void submitReviewAction("reject")}
+                  onClick={() => void submitReviewAction("request_reupload")}
                   disabled={actionLoading !== null}
                   className="rounded-md border border-rose-300 px-3 py-2 text-sm font-medium text-rose-700 disabled:opacity-50"
                 >
-                  {actionLoading === "reject" ? "Rejecting..." : "Reject"}
+                  {actionLoading === "request_reupload"
+                    ? "Submitting..."
+                    : "Request Re-upload"}
+                </button>
+                <button
+                  onClick={() => void saveDocumentNote()}
+                  disabled={actionLoading !== null}
+                  className="rounded-md border border-slate-300 px-3 py-2 text-sm text-slate-700 disabled:opacity-50"
+                >
+                  {actionLoading === "save_note" ? "Saving..." : "Save Note"}
                 </button>
                 <button
                   onClick={() => void onDownload(selectedDocument.id)}
@@ -605,48 +684,50 @@ export default function DocumentsReviewPage() {
         </aside>
       </section>
 
-      <section className="flex items-center justify-between rounded-xl bg-white px-4 py-3 shadow-sm">
-        <div className="flex items-center gap-3">
-          <p className="text-sm text-slate-600">Total: {pagination?.total ?? 0}</p>
-          <select
-            value={pageSize}
-            onChange={(event) => {
-              setPageSize(Number(event.target.value));
-              setPage(1);
-            }}
-            className="rounded border border-slate-300 px-2 py-1 text-sm"
-          >
-            <option value={10}>10 / page</option>
-            <option value={20}>20 / page</option>
-            <option value={50}>50 / page</option>
-          </select>
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setPage((current) => Math.max(1, current - 1))}
-            disabled={(pagination?.page ?? 1) <= 1}
-            className="rounded border border-slate-300 px-3 py-1 text-sm disabled:opacity-50"
-          >
-            Previous
-          </button>
-          <span className="text-sm text-slate-600">
-            Page {pagination?.page ?? 1} / {pagination?.totalPages ?? 1}
-          </span>
-          <button
-            onClick={() =>
-              setPage((current) => Math.min(pagination?.totalPages ?? 1, current + 1))
-            }
-            disabled={(pagination?.page ?? 1) >= (pagination?.totalPages ?? 1)}
-            className="rounded border border-slate-300 px-3 py-1 text-sm disabled:opacity-50"
-          >
-            Next
-          </button>
-          <button
-            onClick={() => void mutate()}
-            className="rounded border border-brand-300 bg-brand-50 px-3 py-1 text-sm text-brand-700 hover:bg-brand-100"
-          >
-            Refresh
-          </button>
+      <section className="rounded-xl bg-white px-3 py-3 shadow-sm sm:px-4">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex flex-wrap items-center gap-3">
+            <p className="text-sm text-slate-600">Total: {pagination?.total ?? 0}</p>
+            <select
+              value={pageSize}
+              onChange={(event) => {
+                setPageSize(Number(event.target.value));
+                setPage(1);
+              }}
+              className="rounded border border-slate-300 px-2 py-1 text-sm"
+            >
+              <option value={10}>10 / page</option>
+              <option value={20}>20 / page</option>
+              <option value={50}>50 / page</option>
+            </select>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              onClick={() => setPage((current) => Math.max(1, current - 1))}
+              disabled={(pagination?.page ?? 1) <= 1}
+              className="rounded border border-slate-300 px-3 py-1 text-sm disabled:opacity-50"
+            >
+              Previous
+            </button>
+            <span className="text-sm text-slate-600">
+              Page {pagination?.page ?? 1} / {pagination?.totalPages ?? 1}
+            </span>
+            <button
+              onClick={() =>
+                setPage((current) => Math.min(pagination?.totalPages ?? 1, current + 1))
+              }
+              disabled={(pagination?.page ?? 1) >= (pagination?.totalPages ?? 1)}
+              className="rounded border border-slate-300 px-3 py-1 text-sm disabled:opacity-50"
+            >
+              Next
+            </button>
+            <button
+              onClick={() => void mutate()}
+              className="rounded border border-brand-300 bg-brand-50 px-3 py-1 text-sm text-brand-700 hover:bg-brand-100"
+            >
+              Refresh
+            </button>
+          </div>
         </div>
       </section>
     </div>

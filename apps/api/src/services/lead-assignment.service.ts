@@ -49,6 +49,19 @@ async function pickUserWithLowestActiveLeads(
   return activeCounts[0]?.userId ?? null;
 }
 
+async function hasActiveDistrictManager(districtId: string) {
+  const managerCount = await prisma.userDistrictAssignment.count({
+    where: {
+      districtId,
+      user: {
+        status: "ACTIVE",
+        role: "MANAGER"
+      }
+    }
+  });
+  return managerCount > 0;
+}
+
 export async function pickExecutiveWithLowestActiveLeads(districtId: string) {
   return pickUserWithLowestActiveLeads(districtId, "EXECUTIVE");
 }
@@ -60,6 +73,11 @@ export async function pickDistrictManagerWithLowestActiveLeads(districtId: strin
 export async function resolveLeadAutoAssignment(
   districtId: string
 ): Promise<LeadAutoAssignmentResult | null> {
+  const managerReady = await hasActiveDistrictManager(districtId);
+  if (!managerReady) {
+    return null;
+  }
+
   const assignedExecutiveId = await pickExecutiveWithLowestActiveLeads(districtId);
   if (assignedExecutiveId) {
     return {

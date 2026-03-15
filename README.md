@@ -10,7 +10,6 @@ Production-style monorepo for a Solar Panel Installation Lead Management System.
 
 ## Current Implementation Status
 - See `IMPLEMENTATION_STATUS.md` for frontend/backend/database completion tracking and pending gaps.
-- See `DEPLOYMENT_READY.md` for deployment readiness checklist.
 
 ## Monorepo Structure
 ```txt
@@ -223,52 +222,6 @@ pnpm --filter @solar/mobile typecheck
 ## Database ER Diagram
 - Mermaid ERD file: `docs/database-er-diagram.mmd`
 - Prisma schema: `apps/api/prisma/schema.prisma`
-
-## Deployment Notes
-See:
-- `DEVOPS.md` for production architecture and env matrix.
-- `NORTHFLANK_DEPLOYMENT.md` for monorepo API deployment on Northflank.
-- `apps/api/Dockerfile` and `apps/web/Dockerfile` for container deploy.
-
-## Vercel Deployment (Web)
-- This repo includes root-level `vercel.json` for deploying `apps/web` from the monorepo.
-- Required Vercel env vars (Project Settings -> Environment Variables):
-  - `NEXT_PUBLIC_API_BASE_URL=https://solar-lead.onrender.com`
-  - `NEXT_PUBLIC_API_URL=https://solar-lead.onrender.com`
-  - `NEXT_PUBLIC_SUPABASE_URL`
-  - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
-  - Firebase public keys (`NEXT_PUBLIC_FIREBASE_*`)
-  - `NEXT_PUBLIC_RECAPTCHA_SITE_KEY`
-
-Deploy commands:
-```bash
-npx vercel login
-npx vercel --prod
-```
-
-Deployment stack (current):
-- DB: Supabase PostgreSQL
-- File storage: Supabase Storage (`documents` bucket)
-- Queue/cache: Redis + BullMQ
-- Backend: Node/Express API + separate worker process
-- Web: Next.js
-
-## Northflank Deployment Checklist (API)
-- Service type: Combined service
-- Working directory: repo root
-- Build command: `pnpm install --frozen-lockfile --prod=false && pnpm --filter @solar/api build`
-- Start command: `pnpm --filter @solar/api start`
-- Keep release command empty unless you intentionally run:
-  - `pnpm --filter @solar/api exec prisma migrate deploy --schema ./prisma/schema.prisma`
-- Required env baseline:
-  - `NODE_ENV=production`
-  - `PORT=3000`
-  - `DATABASE_URL` (Supabase runtime URL)
-  - `DIRECT_URL` (Supabase direct URL for migrations/introspection)
-  - `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`
-  - `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`, `FIREBASE_PRIVATE_KEY`
-- Detailed env matrix and exact examples:
-  - `NORTHFLANK_DEPLOYMENT.md`
 
 ## Troubleshooting
 - CORS blocked from web:

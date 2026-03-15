@@ -6,6 +6,7 @@ import { publicLeadSubmissionRateLimit } from "../middleware/rate-limit.js";
 import { createAuditLog, requestIp } from "../services/audit-log.service.js";
 import { AppError } from "../lib/errors.js";
 import { env } from "../config/env.js";
+import { prisma } from "../lib/prisma.js";
 import { getPublicDistrictsPayload } from "../services/districts.service.js";
 import { resolveRecaptchaSecret, verifyRecaptchaToken } from "../services/recaptcha.service.js";
 import {
@@ -127,6 +128,30 @@ const duplicatePhoneQuerySchema = z.object({
   phone: z.string().trim().regex(INDIAN_MOBILE_REGEX, "phone must be a valid 10-digit Indian mobile number")
 });
 
+function parseBooleanEnv(raw: string | undefined): boolean | null {
+  if (typeof raw !== "string") {
+    return null;
+  }
+
+  const normalized = raw.trim().toLowerCase();
+  if (!normalized) {
+    return null;
+  }
+
+  if (["1", "true", "yes", "on"].includes(normalized)) {
+    return true;
+  }
+
+  if (["0", "false", "no", "off"].includes(normalized)) {
+    return false;
+  }
+
+  return null;
+}
+
+const enforceRecaptchaOnPublicLead =
+  parseBooleanEnv(process.env.RECAPTCHA_ENFORCE_PUBLIC_LEAD) ?? env.NODE_ENV === "production";
+
 publicRouter.get("/districts", async (_req: Request, res: Response) => {
   const payload = await getPublicDistrictsPayload();
   return ok(res, payload, "District list and mapping fetched");
@@ -135,6 +160,44 @@ publicRouter.get("/districts", async (_req: Request, res: Response) => {
 publicRouter.get("/district-mapping", async (_req: Request, res: Response) => {
   const payload = await getPublicDistrictsPayload();
   return ok(res, payload, "District mapping fetched");
+});
+
+publicRouter.get("/metrics/installations", async (_req: Request, res: Response) => {
+  const statuses = await prisma.leadStatus.findMany({
+    where: {
+      name: {
+        equals: "Installation Complete",
+        mode: "insensitive"
+      }
+    },
+    select: { id: true }
+  });
+
+  if (statuses.length === 0) {
+    return ok(
+      res,
+      {
+        count: null
+      },
+      "Installations metric unavailable"
+    );
+  }
+
+  const count = await prisma.lead.count({
+    where: {
+      currentStatusId: {
+        in: statuses.map((status) => status.id)
+      }
+    }
+  });
+
+  return ok(
+    res,
+    {
+      count
+    },
+    "Installations metric fetched"
+  );
 });
 
 publicRouter.get(
@@ -159,7 +222,7 @@ publicRouter.get(
 async function createPublicLead(req: Request, res: Response) {
   const payload = req.body as z.infer<typeof publicLeadSubmissionSchema>;
 
-  const shouldVerifyRecaptcha = Boolean(resolveRecaptchaSecret());
+  const shouldVerifyRecaptcha = enforceRecaptchaOnPublicLead && Boolean(resolveRecaptchaSecret());
   const rawRecaptchaToken = payload.recaptchaToken?.trim() ?? "";
   if (shouldVerifyRecaptcha) {
     if (!rawRecaptchaToken) {

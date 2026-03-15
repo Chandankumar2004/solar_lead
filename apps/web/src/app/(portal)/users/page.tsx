@@ -1,12 +1,13 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import useSWR from "swr";
 import { api } from "@/lib/api";
 
 type Role = "SUPER_ADMIN" | "ADMIN" | "MANAGER" | "EXECUTIVE";
-type Status = "ACTIVE" | "PENDING" | "SUSPENDED";
+type Status = "ACTIVE" | "PENDING" | "SUSPENDED" | "DEACTIVATED";
 
 type District = {
   id: string;
@@ -66,15 +67,35 @@ const ROLE_OPTIONS: Array<{ value: Role; label: string }> = [
 const STATUS_OPTIONS: Array<{ value: Status; label: string }> = [
   { value: "PENDING", label: "Pending" },
   { value: "ACTIVE", label: "Active" },
-  { value: "SUSPENDED", label: "Suspended" }
+  { value: "SUSPENDED", label: "Suspended" },
+  { value: "DEACTIVATED", label: "Deactivated" }
 ];
 
-function extractApiMessage(error: unknown) {
-  const maybe = error as { response?: { data?: { message?: string } } };
-  return maybe.response?.data?.message ?? "Operation failed";
+function extractApiError(error: unknown) {
+  const maybe = error as {
+    response?: {
+      data?: {
+        message?: string;
+        error?: {
+          code?: string;
+          details?: {
+            activeExecutiveLeadCount?: number;
+            activeManagerLeadCount?: number;
+            totalActiveLeadAssignments?: number;
+          };
+        };
+      };
+    };
+  };
+  return {
+    message: maybe.response?.data?.message ?? "Operation failed",
+    code: maybe.response?.data?.error?.code ?? null,
+    details: maybe.response?.data?.error?.details ?? null
+  };
 }
 
 export default function UsersPage() {
+  const router = useRouter();
   const [search, setSearch] = useState("");
   const [role, setRole] = useState("");
   const [status, setStatus] = useState("");
@@ -114,8 +135,48 @@ export default function UsersPage() {
     const actionKey = `${user.id}:${action}`;
     setActionMessage(null);
 
+    const actionLabel =
+      action === "approve" ? "approve" : action === "suspend" ? "suspend" : "deactivate";
+    const confirmed = window.confirm(`Are you sure you want to ${actionLabel} ${user.fullName}?`);
+    if (!confirmed) {
+      return;
+    }
+
     let payload: Record<string, string> = {};
     if (action === "suspend" || action === "deactivate") {
+      if (action === "deactivate") {
+        try {
+          const detailResponse = await api.get(`/api/users/${user.id}`);
+          const detailData = detailResponse.data?.data as
+            | {
+                workload?: {
+                  activeExecutiveLeadCount?: number;
+                  activeManagerLeadCount?: number;
+                };
+              }
+            | undefined;
+          const activeExecutiveLeadCount = detailData?.workload?.activeExecutiveLeadCount ?? 0;
+          const activeManagerLeadCount = detailData?.workload?.activeManagerLeadCount ?? 0;
+          const totalActiveLeadAssignments = activeExecutiveLeadCount + activeManagerLeadCount;
+
+          if (totalActiveLeadAssignments > 0) {
+            const openLeads = window.confirm(
+              `${user.fullName} has ${totalActiveLeadAssignments} active assigned lead(s). Reassign them before deactivation. Click OK to open Leads now.`
+            );
+            if (openLeads) {
+              router.push("/leads");
+            }
+            setActionMessage({
+              type: "error",
+              text: `Reassign ${totalActiveLeadAssignments} active lead(s) before deactivation.`
+            });
+            return;
+          }
+        } catch {
+          // Continue and rely on backend enforcement if workload pre-check fails.
+        }
+      }
+
       const reason = window.prompt(
         `${action === "suspend" ? "Suspension" : "Deactivation"} reason (min 5 characters):`,
         ""
@@ -145,9 +206,19 @@ export default function UsersPage() {
       });
       await mutate();
     } catch (error) {
+      const apiError = extractApiError(error);
+      if (apiError.code === "ACTIVE_LEAD_ASSIGNMENTS_EXIST") {
+        const totalActiveLeadAssignments = apiError.details?.totalActiveLeadAssignments ?? 0;
+        const openLeads = window.confirm(
+          `${user.fullName} still has ${totalActiveLeadAssignments} active assigned lead(s). Reassign first. Click OK to open Leads.`
+        );
+        if (openLeads) {
+          router.push("/leads");
+        }
+      }
       setActionMessage({
         type: "error",
-        text: extractApiMessage(error)
+        text: apiError.message
       });
     } finally {
       setActionLoading(null);
@@ -167,12 +238,13 @@ export default function UsersPage() {
   const statusClass = (value: Status) => {
     if (value === "ACTIVE") return "bg-emerald-100 text-emerald-800";
     if (value === "PENDING") return "bg-amber-100 text-amber-800";
+    if (value === "DEACTIVATED") return "bg-slate-200 text-slate-800";
     return "bg-rose-100 text-rose-800";
   };
 
   return (
-    <div className="space-y-4">
-      <section className="rounded-xl bg-white p-4 shadow-sm">
+    <div className="min-w-0 space-y-4">
+      <section className="rounded-xl bg-white p-3 shadow-sm sm:p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h2 className="text-base font-semibold">Users</h2>
           <Link
@@ -182,7 +254,7 @@ export default function UsersPage() {
             Create User
           </Link>
         </div>
-        <div className="mt-3 grid gap-3 lg:grid-cols-4">
+        <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <input
             value={search}
             onChange={(event) => {
@@ -344,48 +416,50 @@ export default function UsersPage() {
         </div>
       </section>
 
-      <section className="flex items-center justify-between rounded-xl bg-white px-4 py-3 shadow-sm">
-        <div className="flex items-center gap-3">
-          <p className="text-sm text-slate-600">Total: {pagination?.total ?? 0}</p>
-          <select
-            value={pageSize}
-            onChange={(event) => {
-              setPageSize(Number(event.target.value));
-              setPage(1);
-            }}
-            className="rounded border border-slate-300 px-2 py-1 text-sm"
-          >
-            <option value={10}>10 / page</option>
-            <option value={20}>20 / page</option>
-            <option value={50}>50 / page</option>
-          </select>
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setPage((current) => Math.max(1, current - 1))}
-            disabled={(pagination?.page ?? 1) <= 1}
-            className="rounded border border-slate-300 px-3 py-1 text-sm disabled:opacity-50"
-          >
-            Previous
-          </button>
-          <span className="text-sm text-slate-600">
-            Page {pagination?.page ?? 1} / {pagination?.totalPages ?? 1}
-          </span>
-          <button
-            onClick={() =>
-              setPage((current) => Math.min(pagination?.totalPages ?? 1, current + 1))
-            }
-            disabled={(pagination?.page ?? 1) >= (pagination?.totalPages ?? 1)}
-            className="rounded border border-slate-300 px-3 py-1 text-sm disabled:opacity-50"
-          >
-            Next
-          </button>
-          <button
-            onClick={() => void mutate()}
-            className="rounded border border-brand-300 bg-brand-50 px-3 py-1 text-sm text-brand-700 hover:bg-brand-100"
-          >
-            Refresh
-          </button>
+      <section className="rounded-xl bg-white px-3 py-3 shadow-sm sm:px-4">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex flex-wrap items-center gap-3">
+            <p className="text-sm text-slate-600">Total: {pagination?.total ?? 0}</p>
+            <select
+              value={pageSize}
+              onChange={(event) => {
+                setPageSize(Number(event.target.value));
+                setPage(1);
+              }}
+              className="rounded border border-slate-300 px-2 py-1 text-sm"
+            >
+              <option value={10}>10 / page</option>
+              <option value={20}>20 / page</option>
+              <option value={50}>50 / page</option>
+            </select>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              onClick={() => setPage((current) => Math.max(1, current - 1))}
+              disabled={(pagination?.page ?? 1) <= 1}
+              className="rounded border border-slate-300 px-3 py-1 text-sm disabled:opacity-50"
+            >
+              Previous
+            </button>
+            <span className="text-sm text-slate-600">
+              Page {pagination?.page ?? 1} / {pagination?.totalPages ?? 1}
+            </span>
+            <button
+              onClick={() =>
+                setPage((current) => Math.min(pagination?.totalPages ?? 1, current + 1))
+              }
+              disabled={(pagination?.page ?? 1) >= (pagination?.totalPages ?? 1)}
+              className="rounded border border-slate-300 px-3 py-1 text-sm disabled:opacity-50"
+            >
+              Next
+            </button>
+            <button
+              onClick={() => void mutate()}
+              className="rounded border border-brand-300 bg-brand-50 px-3 py-1 text-sm text-brand-700 hover:bg-brand-100"
+            >
+              Refresh
+            </button>
+          </div>
         </div>
       </section>
     </div>

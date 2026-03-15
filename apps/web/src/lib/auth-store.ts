@@ -14,7 +14,7 @@ export type AuthUser = {
   fullName: string;
   role: AdminRole;
   roleLabel: string;
-  status: "ACTIVE" | "PENDING" | "SUSPENDED";
+  status: "ACTIVE" | "PENDING" | "SUSPENDED" | "DEACTIVATED";
 };
 
 type AuthState = {

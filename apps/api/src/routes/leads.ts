@@ -193,6 +193,20 @@ const optionalPositiveNumber = z.preprocess(
   z.number().positive().optional()
 );
 
+const optionalNonNegativeNumber = z.preprocess(
+  (input) => {
+    const normalized = emptyToUndefined(input);
+    if (normalized === undefined) return undefined;
+    if (typeof normalized === "number") return normalized;
+    if (typeof normalized === "string") {
+      const parsed = Number(normalized.trim());
+      return Number.isNaN(parsed) ? normalized : parsed;
+    }
+    return normalized;
+  },
+  z.number().min(0).optional()
+);
+
 const optionalBoolean = z.preprocess(
   (input) => {
     if (input === undefined) return undefined;
@@ -207,13 +221,68 @@ const optionalBoolean = z.preprocess(
   z.boolean().optional()
 );
 
+const INSTALLATION_TYPE_OPTIONS = [
+  "Residential",
+  "Industrial",
+  "Agricultural",
+  "Other"
+] as const;
+
+const GENDER_OPTIONS = ["Male", "Female", "Other"] as const;
+const PROPERTY_OWNERSHIP_OPTIONS = ["Owned", "Rented", "Leased"] as const;
+const ROOF_TYPE_OPTIONS = ["RCC", "Tin", "Other"] as const;
+const CONNECTION_TYPE_OPTIONS = ["Single Phase", "Three Phase"] as const;
+const SHADOW_FREE_AREA_OPTIONS = ["Yes", "Partial", "No"] as const;
+const SITE_PHOTO_REQUIRED_MIN = 3;
+const SITE_PHOTO_ALLOWED_MAX = 10;
+const SITE_PHOTO_CATEGORY_PREFIXES = ["site_photo", "site_photograph"] as const;
+
+function resolveAllowedOption(
+  input: unknown,
+  allowed: readonly string[]
+) {
+  if (typeof input !== "string") {
+    return input;
+  }
+  const trimmed = input.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  const match = allowed.find((value) => value.toLowerCase() === trimmed.toLowerCase());
+  return match ?? trimmed;
+}
+
+function decimalToNumber(value: Prisma.Decimal | null | undefined) {
+  return value === null || value === undefined ? undefined : Number(value);
+}
+
+function resolveShadowFreeAreaInput(input: unknown) {
+  if (typeof input !== "string") return input;
+  const normalized = input.trim().toLowerCase();
+  if (!normalized) return undefined;
+  if (normalized === "yes") return 1;
+  if (normalized === "partial") return 0.5;
+  if (normalized === "no") return 0;
+  return input;
+}
+
+function sitePhotoCategoryFilter(): Prisma.StringFilter[] {
+  return SITE_PHOTO_CATEGORY_PREFIXES.map((prefix) => ({
+    startsWith: prefix,
+    mode: "insensitive"
+  }));
+}
+
 const customerDetailsBodySchema = z.object({
   fullName: z.preprocess(emptyToUndefined, z.string().min(2).max(120).optional()),
   dateOfBirth: z.preprocess(
     emptyToUndefined,
     z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "dateOfBirth must be YYYY-MM-DD").optional()
   ),
-  gender: z.preprocess(emptyToUndefined, z.string().max(30).optional()),
+  gender: z.preprocess(
+    (input) => resolveAllowedOption(emptyToUndefined(input), GENDER_OPTIONS),
+    z.enum(GENDER_OPTIONS).optional()
+  ),
   fatherHusbandName: z.preprocess(emptyToUndefined, z.string().max(120).optional()),
   aadhaarNumber: z.preprocess(
     (input) => {
@@ -245,13 +314,26 @@ const customerDetailsBodySchema = z.object({
   ),
   districtId: z.preprocess(emptyToUndefined, z.string().uuid().optional()),
   alternatePhone: z.preprocess(emptyToUndefined, z.string().max(20).optional()),
-  propertyOwnership: z.preprocess(emptyToUndefined, z.string().max(100).optional()),
+  propertyOwnership: z.preprocess(
+    (input) => resolveAllowedOption(emptyToUndefined(input), PROPERTY_OWNERSHIP_OPTIONS),
+    z.enum(PROPERTY_OWNERSHIP_OPTIONS).optional()
+  ),
+  installationType: z.preprocess(
+    (input) => resolveAllowedOption(emptyToUndefined(input), INSTALLATION_TYPE_OPTIONS),
+    z.enum(INSTALLATION_TYPE_OPTIONS).optional()
+  ),
   roofArea: optionalPositiveNumber,
   recommendedCapacity: optionalPositiveNumber,
-  shadowFreeArea: optionalPositiveNumber,
-  roofType: z.preprocess(emptyToUndefined, z.string().max(100).optional()),
+  shadowFreeArea: z.preprocess(resolveShadowFreeAreaInput, optionalNonNegativeNumber),
+  roofType: z.preprocess(
+    (input) => resolveAllowedOption(emptyToUndefined(input), ROOF_TYPE_OPTIONS),
+    z.enum(ROOF_TYPE_OPTIONS).optional()
+  ),
   verifiedMonthlyBill: optionalPositiveNumber,
-  connectionType: z.preprocess(emptyToUndefined, z.string().max(100).optional()),
+  connectionType: z.preprocess(
+    (input) => resolveAllowedOption(emptyToUndefined(input), CONNECTION_TYPE_OPTIONS),
+    z.enum(CONNECTION_TYPE_OPTIONS).optional()
+  ),
   consumerNumber: z.preprocess(emptyToUndefined, z.string().max(100).optional()),
   discomName: z.preprocess(emptyToUndefined, z.string().max(120).optional()),
   bankAccountNumber: z.preprocess(
@@ -389,7 +471,12 @@ type LeadResponseLike = {
 const LEAD_INTERNAL_NOTE_ACTION = "LEAD_INTERNAL_NOTE_ADDED";
 
 function canAccessInternalNotes(role: string) {
-  return role === "SUPER_ADMIN" || role === "ADMIN" || role === "MANAGER";
+  return (
+    role === "SUPER_ADMIN" ||
+    role === "ADMIN" ||
+    role === "MANAGER" ||
+    role === "EXECUTIVE"
+  );
 }
 
 function sanitizeLeadResponseForRole<T extends LeadResponseLike | null>(lead: T, role: string): T {
@@ -655,11 +742,14 @@ leadsRouter.get("/", validateQuery(listLeadsQuerySchema), async (req: Request, r
     : [];
 
   if (query.search) {
+    const isSearchUuid = isUuid(query.search);
     whereClauses.push({
       OR: [
         { name: { contains: query.search, mode: "insensitive" } },
         { phone: { contains: query.search, mode: "insensitive" } },
-        { email: { contains: query.search, mode: "insensitive" } }
+        { email: { contains: query.search, mode: "insensitive" } },
+        { externalId: query.search },
+        ...(isSearchUuid ? [{ id: query.search }] : [])
       ]
     });
   }
@@ -990,6 +1080,16 @@ leadsRouter.get(
       where: scopeLeadWhere(req.user!, { id }),
       select: {
         id: true,
+        districtId: true,
+        state: true,
+        installationType: true,
+        district: {
+          select: {
+            id: true,
+            name: true,
+            state: true
+          }
+        },
         currentStatus: {
           select: {
             id: true,
@@ -1009,12 +1109,31 @@ leadsRouter.get(
       lead.currentStatus.isTerminal
     );
 
+    const sitePhotoCount = await prisma.document.count({
+      where: {
+        leadId: lead.id,
+        isLatest: true,
+        OR: sitePhotoCategoryFilter().map((category) => ({ category }))
+      }
+    });
+
     return ok(
       res,
       {
         leadId: lead.id,
         currentStatus: lead.currentStatus,
         isEditable,
+        leadPrefill: {
+          districtId: lead.district?.id ?? lead.districtId,
+          districtName: lead.district?.name ?? null,
+          state: lead.state ?? lead.district?.state ?? null,
+          installationType: lead.installationType ?? null
+        },
+        sitePhotographs: {
+          count: sitePhotoCount,
+          minRequired: SITE_PHOTO_REQUIRED_MIN,
+          maxAllowed: SITE_PHOTO_ALLOWED_MAX
+        },
         customerDetail: lead.customerDetail
           ? toCustomerDetailResponse(lead.customerDetail, {
               includeSensitiveFields: canViewUnmaskedSensitiveLeadData(req.user!.role)
@@ -1040,13 +1159,23 @@ leadsRouter.put(
         id: true,
         name: true,
         districtId: true,
+        state: true,
+        installationType: true,
+        district: {
+          select: {
+            id: true,
+            name: true,
+            state: true
+          }
+        },
         currentStatus: {
           select: {
             id: true,
             name: true,
             isTerminal: true
           }
-        }
+        },
+        customerDetail: true
       }
     });
     if (!lead) {
@@ -1073,6 +1202,118 @@ leadsRouter.put(
       if (!districtExists) {
         throw new AppError(400, "INVALID_DISTRICT", "districtId is invalid");
       }
+    }
+
+    const effective = {
+      fullName: payload.fullName ?? lead.customerDetail?.fullName ?? lead.name,
+      dateOfBirth:
+        payload.dateOfBirth ??
+        (lead.customerDetail?.dateOfBirth
+          ? lead.customerDetail.dateOfBirth.toISOString().slice(0, 10)
+          : undefined),
+      gender: payload.gender ?? lead.customerDetail?.gender ?? undefined,
+      fatherHusbandName:
+        payload.fatherHusbandName ?? lead.customerDetail?.fatherHusbandName ?? undefined,
+      aadhaarNumber: payload.aadhaarNumber ?? lead.customerDetail?.aadhaarEncrypted ?? undefined,
+      panNumber: payload.panNumber ?? lead.customerDetail?.panEncrypted ?? undefined,
+      addressLine1: payload.addressLine1 ?? lead.customerDetail?.addressLine1 ?? undefined,
+      villageLocality:
+        payload.villageLocality ?? lead.customerDetail?.villageLocality ?? undefined,
+      pincode: payload.pincode ?? lead.customerDetail?.pincode ?? undefined,
+      districtId: payload.districtId ?? lead.customerDetail?.districtId ?? lead.districtId,
+      state: lead.state ?? lead.district?.state ?? undefined,
+      installationType:
+        payload.installationType ?? lead.installationType ?? undefined,
+      propertyOwnership:
+        payload.propertyOwnership ?? lead.customerDetail?.propertyOwnership ?? undefined,
+      roofArea: payload.roofArea ?? decimalToNumber(lead.customerDetail?.roofArea),
+      recommendedCapacity:
+        payload.recommendedCapacity ?? decimalToNumber(lead.customerDetail?.recommendedCapacity),
+      shadowFreeArea: payload.shadowFreeArea ?? decimalToNumber(lead.customerDetail?.shadowFreeArea),
+      roofType: payload.roofType ?? lead.customerDetail?.roofType ?? undefined,
+      verifiedMonthlyBill:
+        payload.verifiedMonthlyBill ?? decimalToNumber(lead.customerDetail?.verifiedMonthlyBill),
+      connectionType: payload.connectionType ?? lead.customerDetail?.connectionType ?? undefined,
+      consumerNumber: payload.consumerNumber ?? lead.customerDetail?.consumerNumber ?? undefined,
+      discomName: payload.discomName ?? lead.customerDetail?.discomName ?? undefined,
+      bankAccountNumber:
+        payload.bankAccountNumber ?? lead.customerDetail?.bankAccountEncrypted ?? undefined,
+      bankName: payload.bankName ?? lead.customerDetail?.bankName ?? undefined,
+      ifscCode: payload.ifscCode ?? lead.customerDetail?.ifscCode ?? undefined,
+      accountHolderName:
+        payload.accountHolderName ?? lead.customerDetail?.accountHolderName ?? undefined,
+      loanRequired:
+        payload.loanRequired ?? lead.customerDetail?.loanRequired ?? false,
+      loanAmountRequired:
+        payload.loanAmountRequired ?? decimalToNumber(lead.customerDetail?.loanAmountRequired),
+      photoCount: await prisma.document.count({
+        where: {
+          leadId: lead.id,
+          isLatest: true,
+          OR: sitePhotoCategoryFilter().map((category) => ({ category }))
+        }
+      })
+    };
+
+    const missingRequired: string[] = [];
+    if (!effective.fullName) missingRequired.push("fullName");
+    if (!effective.dateOfBirth) missingRequired.push("dateOfBirth");
+    if (!effective.gender) missingRequired.push("gender");
+    if (!effective.fatherHusbandName) missingRequired.push("fatherHusbandName");
+    if (!effective.aadhaarNumber) missingRequired.push("aadhaarNumber");
+    if (!effective.panNumber) missingRequired.push("panNumber");
+    if (!effective.addressLine1) missingRequired.push("addressLine1");
+    if (!effective.villageLocality) missingRequired.push("villageLocality");
+    if (!effective.pincode) missingRequired.push("pincode");
+    if (!effective.districtId) missingRequired.push("district");
+    if (!effective.state) missingRequired.push("state");
+    if (!effective.installationType) missingRequired.push("installationType");
+    if (!effective.propertyOwnership) missingRequired.push("propertyOwnership");
+    if (!effective.roofArea) missingRequired.push("roofArea");
+    if (!effective.recommendedCapacity) missingRequired.push("recommendedCapacity");
+    if (effective.shadowFreeArea === undefined || effective.shadowFreeArea === null) {
+      missingRequired.push("shadowFreeArea");
+    }
+    if (!effective.roofType) missingRequired.push("roofType");
+    if (!effective.verifiedMonthlyBill) missingRequired.push("verifiedMonthlyBill");
+    if (!effective.connectionType) missingRequired.push("connectionType");
+    if (!effective.consumerNumber) missingRequired.push("consumerNumber");
+    if (!effective.discomName) missingRequired.push("discomName");
+    if (!effective.bankAccountNumber) missingRequired.push("bankAccountNumber");
+    if (!effective.bankName) missingRequired.push("bankName");
+    if (!effective.ifscCode) missingRequired.push("ifscCode");
+    if (!effective.accountHolderName) missingRequired.push("accountHolderName");
+
+    if (missingRequired.length > 0) {
+      throw new AppError(
+        400,
+        "CUSTOMER_DETAILS_REQUIRED_FIELDS_MISSING",
+        `Missing required fields: ${missingRequired.join(", ")}`
+      );
+    }
+
+    if (effective.loanRequired && !effective.loanAmountRequired) {
+      throw new AppError(
+        400,
+        "LOAN_AMOUNT_REQUIRED",
+        "loanAmountRequired is required when loanRequired is true"
+      );
+    }
+
+    if (effective.photoCount < SITE_PHOTO_REQUIRED_MIN) {
+      throw new AppError(
+        400,
+        "SITE_PHOTOS_REQUIRED",
+        `At least ${SITE_PHOTO_REQUIRED_MIN} site photographs are required before submitting customer details`
+      );
+    }
+
+    if (effective.photoCount > SITE_PHOTO_ALLOWED_MAX) {
+      throw new AppError(
+        400,
+        "SITE_PHOTOS_LIMIT_EXCEEDED",
+        `A maximum of ${SITE_PHOTO_ALLOWED_MAX} site photographs is allowed`
+      );
     }
 
     const dateOfBirth = parseDateOnly(payload.dateOfBirth);
@@ -1213,10 +1454,20 @@ leadsRouter.put(
         : {})
     };
 
-    const customerDetail = await prisma.customerDetail.upsert({
-      where: { leadId: lead.id },
-      create: createData,
-      update: updateData
+    const customerDetail = await prisma.$transaction(async (tx) => {
+      if (payload.installationType !== undefined) {
+        await tx.lead.update({
+          where: { id: lead.id },
+          data: {
+            installationType: payload.installationType
+          }
+        });
+      }
+      return tx.customerDetail.upsert({
+        where: { leadId: lead.id },
+        create: createData,
+        update: updateData
+      });
     });
 
     await createAuditLog({
@@ -1237,6 +1488,17 @@ leadsRouter.put(
         leadId: lead.id,
         currentStatus: lead.currentStatus,
         isEditable,
+        leadPrefill: {
+          districtId: lead.district?.id ?? lead.districtId,
+          districtName: lead.district?.name ?? null,
+          state: lead.state ?? lead.district?.state ?? null,
+          installationType: payload.installationType ?? lead.installationType ?? null
+        },
+        sitePhotographs: {
+          count: effective.photoCount,
+          minRequired: SITE_PHOTO_REQUIRED_MIN,
+          maxAllowed: SITE_PHOTO_ALLOWED_MAX
+        },
         customerDetail: toCustomerDetailResponse(customerDetail, {
           includeSensitiveFields: canViewUnmaskedSensitiveLeadData(req.user!.role)
         })
@@ -1563,7 +1825,7 @@ leadsRouter.post(
       throw new AppError(
         400,
         "NO_ASSIGNEE_AVAILABLE",
-        "No active executive or district manager is available for this district"
+        "No valid auto-assignment target is available. Ensure the district has at least one active district manager and active assignees."
       );
     }
 

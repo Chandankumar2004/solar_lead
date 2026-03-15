@@ -1,9 +1,11 @@
 import { Request, Response, Router } from "express";
 import { z } from "zod";
-import { loginSchema } from "@solar/shared";
+import { loginSchema, strongPasswordSchema } from "@solar/shared";
+import bcrypt from "bcryptjs";
 import { fail, ok } from "../lib/http.js";
 import {
   changePassword,
+  ensureSupabaseAuthUserForAppUser,
   login,
   revokeRefreshToken,
   rotateRefreshToken
@@ -14,6 +16,10 @@ import { env } from "../config/env.js";
 import { createAuditLog, requestIp } from "../services/audit-log.service.js";
 import { toRbacRole, ROLE_LABEL } from "../middleware/rbac.js";
 import { validateBody } from "../middleware/validate.js";
+import {
+  findUsableSetupPasswordToken
+} from "../services/setup-password.service.js";
+import { prisma } from "../lib/prisma.js";
 
 export const authRouter = Router();
 
@@ -22,7 +28,30 @@ const refreshCookieName = (env.REFRESH_COOKIE_NAME ?? "refreshToken").trim() || 
 
 const isSecureCookieEnv = env.NODE_ENV === "production";
 const cookieSameSite = isSecureCookieEnv ? ("none" as const) : ("lax" as const);
-const enforceRecaptchaOnLogin = isSecureCookieEnv;
+
+function parseBooleanEnv(raw: string | undefined): boolean | null {
+  if (typeof raw !== "string") {
+    return null;
+  }
+
+  const normalized = raw.trim().toLowerCase();
+  if (!normalized) {
+    return null;
+  }
+
+  if (["1", "true", "yes", "on"].includes(normalized)) {
+    return true;
+  }
+
+  if (["0", "false", "no", "off"].includes(normalized)) {
+    return false;
+  }
+
+  return null;
+}
+
+const enforceRecaptchaOnLogin =
+  parseBooleanEnv(process.env.RECAPTCHA_ENFORCE_LOGIN) ?? isSecureCookieEnv;
 
 const refreshCookieConfig = {
   httpOnly: true,
@@ -49,10 +78,15 @@ const clearCookieConfig = {
 
 const changePasswordSchema = z.object({
   currentPassword: z.string().min(8),
-  newPassword: z.string().min(12)
+  newPassword: strongPasswordSchema
 }).refine((data) => data.currentPassword !== data.newPassword, {
   message: "New password must differ from current password",
   path: ["newPassword"]
+});
+
+const setupPasswordSchema = z.object({
+  token: z.string().trim().min(32, "Invalid setup token"),
+  newPassword: strongPasswordSchema
 });
 
 const loginRequestSchema = z.object({
@@ -178,17 +212,36 @@ authRouter.post("/login", async (req: Request, res: Response) => {
         }
 
         if (recaptchaResult.reason === "TOKEN_INVALID") {
-          console.error("AUTH_LOGIN_ERROR", {
-            ...recaptchaMeta,
-            reason: "RECAPTCHA_TOKEN_INVALID"
-          });
-          return fail(
-            res,
-            401,
-            "RECAPTCHA_TOKEN_INVALID",
-            "reCAPTCHA verification failed",
-            recaptchaMeta
+          const hasBrowserError = recaptchaResult.errorCodes.some(
+            (value) => value.trim().toLowerCase() === "browser-error"
           );
+          const hasTimeoutOrDuplicate = recaptchaResult.errorCodes.some(
+            (value) => value.trim().toLowerCase() === "timeout-or-duplicate"
+          );
+
+          // In local/dev environments, browser-level reCAPTCHA failures are often caused by
+          // localhost key/domain mismatch or blocked scripts. Keep production strict.
+          if (!isSecureCookieEnv && (hasBrowserError || hasTimeoutOrDuplicate)) {
+            console.warn("AUTH_LOGIN_RECAPTCHA_BYPASS_DEV", {
+              ...recaptchaMeta,
+              reason: "DEV_BROWSER_RECAPTCHA_BYPASS"
+            });
+          } else {
+
+            console.error("AUTH_LOGIN_ERROR", {
+              ...recaptchaMeta,
+              reason: "RECAPTCHA_TOKEN_INVALID"
+            });
+            return fail(
+              res,
+              400,
+              "RECAPTCHA_TOKEN_INVALID",
+              hasBrowserError || hasTimeoutOrDuplicate
+                ? "reCAPTCHA verification failed. Please retry."
+                : "reCAPTCHA verification failed",
+              recaptchaMeta
+            );
+          }
         }
 
         console.error("AUTH_LOGIN_ERROR", {
@@ -226,6 +279,8 @@ authRouter.post("/login", async (req: Request, res: Response) => {
           ? "Your account is pending approval"
           : result.reason === "ACCOUNT_SUSPENDED"
             ? "Your account is suspended"
+          : result.reason === "ACCOUNT_DEACTIVATED"
+            ? "Your account is deactivated"
           : result.reason === "AUTH_CONFIG_ERROR"
               ? "Authentication is not configured"
               : result.reason === "AUTH_BACKEND_ERROR"
@@ -468,3 +523,94 @@ authRouter.post("/change-password", requireAuth, validateBody(changePasswordSche
 
   return ok(res, {}, "Password changed");
 });
+
+authRouter.post(
+  "/setup-password",
+  validateBody(setupPasswordSchema),
+  async (req: Request, res: Response) => {
+    const body = req.body as z.infer<typeof setupPasswordSchema>;
+    const tokenRecord = await findUsableSetupPasswordToken(body.token);
+    if (!tokenRecord) {
+      return fail(res, 400, "INVALID_SETUP_TOKEN", "Setup password token is invalid or expired");
+    }
+
+    if (tokenRecord.user.status === "DEACTIVATED") {
+      return fail(res, 403, "ACCOUNT_DEACTIVATED", "Your account is deactivated");
+    }
+
+    const authSync = await ensureSupabaseAuthUserForAppUser({
+      appUserId: tokenRecord.user.id,
+      email: tokenRecord.user.email,
+      fullName: tokenRecord.user.fullName,
+      password: body.newPassword,
+      createIfMissing: false,
+      syncExisting: true
+    });
+
+    if (!authSync.ok) {
+      if (authSync.reason === "NOT_FOUND") {
+        return fail(res, 404, "AUTH_PROFILE_NOT_FOUND", "Authentication profile not found");
+      }
+      if (authSync.reason === "CONFLICT") {
+        return fail(res, 409, "CONFLICT", authSync.message);
+      }
+      if (authSync.reason === "AUTH_CONFIG_ERROR") {
+        return fail(res, 500, "AUTH_CONFIG_ERROR", "Authentication is not configured");
+      }
+      return fail(res, 502, "AUTH_BACKEND_ERROR", authSync.message);
+    }
+
+    try {
+      await prisma.$transaction(async (tx) => {
+        const passwordHash = await bcrypt.hash(body.newPassword, 12);
+        await tx.user.update({
+          where: { id: tokenRecord.user.id },
+          data: { passwordHash }
+        });
+        const markUsed = await tx.userSetupPasswordToken.updateMany({
+          where: {
+            id: tokenRecord.id,
+            usedAt: null
+          },
+          data: { usedAt: new Date() }
+        });
+        if (markUsed.count !== 1) {
+          throw new Error("SETUP_TOKEN_ALREADY_USED");
+        }
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message === "SETUP_TOKEN_ALREADY_USED") {
+        return fail(res, 400, "INVALID_SETUP_TOKEN", "Setup password token is invalid or expired");
+      }
+      console.error("AUTH_SETUP_PASSWORD_ERROR", {
+        requestId: req.requestId ?? null,
+        error
+      });
+      return fail(res, 500, "INTERNAL_ERROR", "Unexpected server error", {
+        requestId: req.requestId ?? null
+      });
+    }
+
+    await createAuditLog({
+      actorUserId: tokenRecord.user.id,
+      action: "PASSWORD_SETUP_COMPLETED",
+      entityType: "user",
+      entityId: tokenRecord.user.id,
+      detailsJson: {
+        source: "SETUP_PASSWORD_LINK"
+      },
+      ipAddress: requestIp(req)
+    });
+
+    return ok(
+      res,
+      {
+        status: tokenRecord.user.status,
+        requiresApproval: tokenRecord.user.status === "PENDING"
+      },
+      tokenRecord.user.status === "PENDING"
+        ? "Password set. Your account still requires approval before login."
+        : "Password set successfully"
+    );
+  }
+);

@@ -99,6 +99,7 @@ function roleLabel(role: UserRole) {
 function statusLabel(status: UserStatus) {
   if (status === "ACTIVE") return "Active";
   if (status === "PENDING") return "Pending";
+  if (status === "DEACTIVATED") return "Deactivated";
   return "Suspended";
 }
 
@@ -126,6 +127,21 @@ export async function sendUserPendingApprovalEmail(input: {
     subject: "Account created: pending approval",
     text: `Hi ${input.fullName}, your ${roleLabel(input.role)} account was created and is currently pending approval.`,
     tags: ["user", "pending_approval"]
+  });
+}
+
+export async function sendUserSetupPasswordEmail(input: {
+  to: string;
+  fullName: string;
+  role: UserRole;
+  setupLink: string;
+  expiresAt: Date;
+}) {
+  return sendEmail({
+    to: input.to,
+    subject: "Set up your Solar Admin password",
+    text: `Hi ${input.fullName}, your ${roleLabel(input.role)} account is created. Set your password using this one-time link: ${input.setupLink}. This link expires on ${input.expiresAt.toUTCString()}.`,
+    tags: ["user", "setup_password"]
   });
 }
 

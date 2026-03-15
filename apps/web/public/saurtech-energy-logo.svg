@@ -1,0 +1,20 @@
+<svg width="420" height="180" viewBox="0 0 420 180" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="orangeFill" x1="24" y1="10" x2="210" y2="110" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FF932A"/>
+      <stop offset="1" stop-color="#FF7A00"/>
+    </linearGradient>
+  </defs>
+  <g>
+    <circle cx="38" cy="97" r="18" fill="url(#orangeFill)"/>
+    <path d="M50 88L104 10H133L84 96H50V88Z" fill="url(#orangeFill)"/>
+    <path d="M96 10H126L193 96H162L96 10Z" fill="url(#orangeFill)"/>
+    <path d="M150 20C171 8 197 14 209 31C216 42 217 58 209 69C202 80 189 86 175 87L206 129H171L140 87H165C175 87 184 80 187 71C190 63 188 53 181 46C174 38 162 35 151 40L150 20Z" fill="url(#orangeFill)"/>
+  </g>
+  <text x="38" y="149" fill="#0F8F4F" font-family="Arial, Helvetica, sans-serif" font-size="42" font-weight="700" letter-spacing="1">
+    SAURTECH
+  </text>
+  <text x="72" y="176" fill="#0F8F4F" font-family="Arial, Helvetica, sans-serif" font-size="42" font-weight="700" letter-spacing="1">
+    ENERGY
+  </text>
+</svg>

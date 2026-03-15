@@ -28,7 +28,6 @@ const createUserSchema = z.object({
   email: z.string().trim().email(),
   phone: z.union([z.string().trim().min(8).max(20), z.literal("")]).optional(),
   employeeId: z.union([z.string().trim().min(2).max(50), z.literal("")]).optional(),
-  password: z.string().min(12),
   role: z.enum(["SUPER_ADMIN", "ADMIN", "MANAGER", "EXECUTIVE"]),
   districtIds: z.array(z.string()).default([])
 });
@@ -81,7 +80,6 @@ export default function CreateUserPage() {
       email: "",
       phone: "",
       employeeId: "",
-      password: "",
       role: "EXECUTIVE",
       districtIds: []
     }
@@ -103,7 +101,6 @@ export default function CreateUserPage() {
         email: values.email,
         phone: values.phone?.trim() ? values.phone.trim() : null,
         employeeId: values.employeeId?.trim() ? values.employeeId.trim() : null,
-        password: values.password,
         role: values.role,
         districtIds: canAssignDistricts ? values.districtIds : []
       });
@@ -122,16 +119,16 @@ export default function CreateUserPage() {
   });
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
+    <div className="min-w-0 space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-lg font-semibold">Create User</h2>
         <Link href="/users" className="text-sm text-brand-700 hover:underline">
           Back to Users
         </Link>
       </div>
 
-      <form onSubmit={onSubmit} className="rounded-xl bg-white p-4 shadow-sm">
-        <div className="grid gap-3 md:grid-cols-2">
+      <form onSubmit={onSubmit} className="rounded-xl bg-white p-3 shadow-sm sm:p-4">
+        <div className="grid gap-3 sm:grid-cols-2">
           <div>
             <label className="mb-1 block text-sm font-medium">Full Name</label>
             <input
@@ -181,17 +178,6 @@ export default function CreateUserPage() {
               ))}
             </select>
             {errors.role && <p className="mt-1 text-xs text-rose-600">{errors.role.message}</p>}
-          </div>
-          <div>
-            <label className="mb-1 block text-sm font-medium">Temporary Password</label>
-            <input
-              type="password"
-              className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
-              {...register("password")}
-            />
-            {errors.password && (
-              <p className="mt-1 text-xs text-rose-600">{errors.password.message}</p>
-            )}
           </div>
           <div className="md:col-span-2">
             <label className="mb-1 block text-sm font-medium">
@@ -280,6 +266,9 @@ export default function CreateUserPage() {
             Cancel
           </Link>
         </div>
+        <p className="mt-3 text-xs text-slate-500">
+          A one-time setup password email will be sent to the user after creation.
+        </p>
       </form>
     </div>
   );

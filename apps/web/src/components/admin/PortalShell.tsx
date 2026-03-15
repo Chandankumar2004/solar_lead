@@ -6,7 +6,6 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth-store";
 import { ADMIN_NAV_ITEMS, hasRouteAccess, pageTitle } from "@/lib/rbac";
-import { getSupabaseBrowserClient } from "@/lib/supabase";
 
 type PortalShellProps = {
   children: React.ReactNode;
@@ -74,18 +73,13 @@ export function PortalShell({ children }: PortalShellProps) {
   }, [user]);
 
   const onLogout = async () => {
-    const supabase = getSupabaseBrowserClient();
     try {
       await api.post("/api/auth/logout");
     } catch {
-      // Ignore backend failures and clear browser auth state.
+      // Ignore backend failures and clear local user state.
     }
-    try {
-      await supabase?.auth.signOut();
-    } finally {
-      setUser(null);
-      router.replace("/login");
-    }
+    setUser(null);
+    router.replace("/login");
   };
 
   if (loading || !user) {
@@ -123,10 +117,10 @@ export function PortalShell({ children }: PortalShellProps) {
             })}
           </nav>
         </aside>
-        <section className="flex min-h-screen flex-col">
-          <header className="flex items-center justify-between border-b border-slate-200 bg-white px-4 py-3 md:px-6">
-            <div>
-              <h2 className="text-lg font-semibold">{pageTitle(pathname)}</h2>
+        <section className="flex min-h-screen min-w-0 flex-col">
+          <header className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-white px-3 py-3 sm:px-4 md:px-6">
+            <div className="min-w-0">
+              <h2 className="break-words text-base font-semibold sm:text-lg">{pageTitle(pathname)}</h2>
               <p className="text-xs text-slate-500">{user.fullName}</p>
             </div>
             <button
@@ -152,7 +146,7 @@ export function PortalShell({ children }: PortalShellProps) {
               );
             })}
           </nav>
-          <main className="flex-1 p-4 md:p-6">
+          <main className="flex-1 p-3 sm:p-4 md:p-6">
             {forbidden ? (
               <div className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900">
                 You are not allowed to access this page with role {user.roleLabel}.

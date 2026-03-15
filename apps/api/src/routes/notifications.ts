@@ -17,6 +17,11 @@ import { createAuditLog, requestIp } from "../services/audit-log.service.js";
 
 export const notificationsRouter = Router();
 const allowNotificationManagers = allowRoles("SUPER_ADMIN", "ADMIN");
+const allowNotificationLogReaders = allowRoles(
+  "SUPER_ADMIN",
+  "ADMIN",
+  "DISTRICT_MANAGER"
+);
 
 const customerTemplateChannelSchema = z.enum(["SMS", "EMAIL", "WHATSAPP"]);
 
@@ -148,6 +153,22 @@ function parseDateBoundary(
     }
   }
   return date;
+}
+
+function managerDistrictLeadScope(userId: string): Prisma.LeadWhereInput {
+  return {
+    district: {
+      assignments: {
+        some: {
+          userId,
+          user: {
+            role: "MANAGER",
+            status: "ACTIVE"
+          }
+        }
+      }
+    }
+  };
 }
 
 async function assertUniqueTemplateName(name: string, ignoreId?: string) {
@@ -504,7 +525,7 @@ notificationsRouter.post(
 
 notificationsRouter.get(
   "/logs",
-  allowNotificationManagers,
+  allowNotificationLogReaders,
   validateQuery(logsQuerySchema),
   async (req, res) => {
     const query = req.query as unknown as z.infer<typeof logsQuerySchema>;
@@ -553,6 +574,23 @@ notificationsRouter.get(
         }
       });
     }
+
+    if (req.user!.role === "MANAGER") {
+      whereClauses.push({
+        OR: [
+          {
+            lead: {
+              is: managerDistrictLeadScope(req.user!.id)
+            }
+          },
+          {
+            leadId: null,
+            recipient: req.user!.id
+          }
+        ]
+      });
+    }
+
     const where: Prisma.NotificationLogWhereInput =
       whereClauses.length > 0 ? { AND: whereClauses } : {};
     const skip = (query.page - 1) * query.pageSize;
@@ -600,7 +638,7 @@ notificationsRouter.get(
 
 notificationsRouter.get(
   "/logs/:id",
-  allowNotificationManagers,
+  allowNotificationLogReaders,
   validateParams(logIdParamSchema),
   async (req, res) => {
     const { id } = req.params as z.infer<typeof logIdParamSchema>;
@@ -622,6 +660,23 @@ notificationsRouter.get(
     if (!log) {
       throw new AppError(404, "NOT_FOUND", "Notification log not found");
     }
+
+    if (req.user!.role === "MANAGER") {
+      const scopedLead = log.lead
+        ? await prisma.lead.findFirst({
+            where: {
+              AND: [{ id: log.lead.id }, managerDistrictLeadScope(req.user!.id)]
+            },
+            select: { id: true }
+          })
+        : null;
+      const canViewInternalPush = !log.leadId && log.recipient === req.user!.id;
+
+      if (!scopedLead && !canViewInternalPush) {
+        throw new AppError(404, "NOT_FOUND", "Notification log not found");
+      }
+    }
+
     return ok(res, log, "Notification log fetched");
   }
 );
