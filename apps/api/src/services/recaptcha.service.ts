@@ -65,6 +65,14 @@ export async function verifyRecaptchaToken(params: {
     };
   }
 
+  if (env.NODE_ENV !== "production" && token === "dev-bypass") {
+    return {
+      ok: true,
+      score: null,
+      action: params.expectedAction ?? null
+    };
+  }
+
   const secret = resolveRecaptchaSecret();
   if (!secret) {
     return {

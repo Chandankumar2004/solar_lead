@@ -222,7 +222,7 @@ export function LeadListScreen() {
             style={[
               styles.filterLabel,
               { color: colors.text },
-              sortOrder === SORT_NEWEST && { color: colors.primary }
+              sortOrder === SORT_NEWEST && { color: colors.primaryDark }
             ]}
           >
             Newest
@@ -243,7 +243,7 @@ export function LeadListScreen() {
             style={[
               styles.filterLabel,
               { color: colors.text },
-              sortOrder === SORT_OLDEST && { color: colors.primary }
+              sortOrder === SORT_OLDEST && { color: colors.primaryDark }
             ]}
           >
             Oldest
@@ -276,8 +276,10 @@ export function LeadListScreen() {
                 style={[
                   styles.filterLabel,
                   { color: colors.text },
-                  isActive && { color: colors.primary }
+                  isActive && { color: colors.primaryDark }
                 ]}
+                numberOfLines={1}
+                ellipsizeMode="tail"
               >
                 {label}
               </Text>
@@ -320,10 +322,14 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     paddingHorizontal: 12,
     borderRadius: 999,
-    borderWidth: 1
+    borderWidth: 1,
+    minHeight: 36,
+    alignItems: "center",
+    justifyContent: "center"
   },
   filterLabel: {
-    fontWeight: "600"
+    fontWeight: "700",
+    fontSize: 13
   },
   error: {
     marginBottom: 8

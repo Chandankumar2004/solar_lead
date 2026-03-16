@@ -165,6 +165,10 @@ export default function UserDetailPage() {
     text: string;
   } | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [showResetForm, setShowResetForm] = useState(false);
+  const [resetPassword, setResetPassword] = useState("");
+  const [resetConfirmPassword, setResetConfirmPassword] = useState("");
+  const [resetError, setResetError] = useState<string | null>(null);
 
   const { data, isLoading, mutate } = useSWR(`/api/users/${userId}`, fetcher);
   const { data: districtsData } = useSWR("/api/districts", fetcher);
@@ -215,6 +219,12 @@ export default function UserDetailPage() {
 
   const selectedRole = watch("role");
   const canAssignDistricts = isDistrictRole(selectedRole);
+  const canResetPassword =
+    authUser?.role === "SUPER_ADMIN"
+      ? user?.role !== "SUPER_ADMIN" && authUser?.id !== user?.id
+      : authUser?.role === "ADMIN"
+        ? (user?.role === "MANAGER" || user?.role === "EXECUTIVE") && authUser?.id !== user?.id
+        : false;
   const availableRoleOptions =
     authUser?.role === "ADMIN"
       ? ROLE_OPTIONS.filter((item) => item.value === "MANAGER" || item.value === "EXECUTIVE")
@@ -295,6 +305,33 @@ export default function UserDetailPage() {
         type: "error",
         text: apiError.message
       });
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const runPasswordReset = async () => {
+    if (!user) return;
+    setActionMessage(null);
+    setResetError(null);
+
+    const actionKey = `${user.id}:reset-password`;
+    setActionLoading(actionKey);
+    try {
+      await api.post(`/api/users/${user.id}/reset-password`, {
+        password: resetPassword,
+        confirmPassword: resetConfirmPassword
+      });
+      setActionMessage({
+        type: "success",
+        text: "Password updated successfully."
+      });
+      setShowResetForm(false);
+      setResetPassword("");
+      setResetConfirmPassword("");
+      await mutate();
+    } catch (error) {
+      setResetError(extractApiError(error).message);
     } finally {
       setActionLoading(null);
     }
@@ -498,6 +535,59 @@ export default function UserDetailPage() {
         </section>
       ) : null}
 
+      {showResetForm ? (
+        <section className="rounded-md border border-indigo-200 bg-indigo-50 px-3 py-3 text-sm text-indigo-900">
+          <p className="font-medium">Reset Password</p>
+          <div className="mt-2 grid gap-2 sm:grid-cols-2">
+            <div>
+              <label className="mb-1 block text-xs font-medium">New Password</label>
+              <input
+                type="password"
+                className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                value={resetPassword}
+                onChange={(event) => setResetPassword(event.target.value)}
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium">Confirm Password</label>
+              <input
+                type="password"
+                className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                value={resetConfirmPassword}
+                onChange={(event) => setResetConfirmPassword(event.target.value)}
+              />
+            </div>
+          </div>
+          {resetError ? (
+            <div className="mt-2 rounded-md border border-rose-300 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+              {resetError}
+            </div>
+          ) : null}
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => void runPasswordReset()}
+              disabled={actionLoading === `${user.id}:reset-password`}
+              className="rounded-md bg-indigo-600 px-4 py-2 text-xs font-medium text-white disabled:opacity-50"
+            >
+              {actionLoading === `${user.id}:reset-password` ? "Saving..." : "Save Password"}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setShowResetForm(false);
+                setResetPassword("");
+                setResetConfirmPassword("");
+                setResetError(null);
+              }}
+              className="rounded-md border border-slate-300 px-4 py-2 text-xs text-slate-700"
+            >
+              Cancel
+            </button>
+          </div>
+        </section>
+      ) : null}
+
       <form onSubmit={onSubmit} className="rounded-xl bg-white p-3 shadow-sm sm:p-4">
         <h3 className="text-base font-semibold">Edit User</h3>
         <div className="mt-3 grid gap-3 sm:grid-cols-2">
@@ -666,6 +756,18 @@ export default function UserDetailPage() {
           >
             {actionLoading === `${user.id}:deactivate` ? "Updating..." : "Deactivate"}
           </button>
+          {canResetPassword ? (
+            <button
+              type="button"
+              onClick={() => {
+                setShowResetForm((value) => !value);
+                setResetError(null);
+              }}
+              className="rounded-md border border-indigo-300 px-4 py-2 text-sm text-indigo-700 disabled:opacity-50"
+            >
+              {showResetForm ? "Hide Reset Form" : "Reset Password"}
+            </button>
+          ) : null}
         </div>
       </form>
     </div>

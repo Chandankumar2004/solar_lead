@@ -196,6 +196,7 @@ export default function App() {
   const [isOffline, setIsOffline] = useState(false);
   const [pushNotice, setPushNotice] = useState<string | null>(null);
   const pendingLeadIdFromPushRef = useRef<string | null>(null);
+  const backgroundAtRef = useRef<number | null>(null);
   const hydrateNotifications = useNotificationStore((s) => s.hydrate);
   const addForegroundNotification = useNotificationStore((s) => s.addForegroundNotification);
   const addOpenedNotification = useNotificationStore((s) => s.addOpenedNotification);
@@ -277,8 +278,22 @@ export default function App() {
     });
 
     const appStateSub = AppState.addEventListener("change", (nextState) => {
-      if (nextState !== "active") {
-        lockBiometric();
+      if (nextState === "background") {
+        backgroundAtRef.current = Date.now();
+        return;
+      }
+
+      if (nextState === "active") {
+        const lastBackgroundAt = backgroundAtRef.current;
+        backgroundAtRef.current = null;
+
+        if (lastBackgroundAt) {
+          const elapsed = Date.now() - lastBackgroundAt;
+          const graceMs = 30000;
+          if (elapsed >= graceMs) {
+            lockBiometric();
+          }
+        }
       }
     });
 

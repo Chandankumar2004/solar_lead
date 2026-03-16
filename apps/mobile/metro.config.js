@@ -12,5 +12,6 @@ config.resolver.nodeModulesPaths = [
   path.resolve(workspaceRoot, "node_modules")
 ];
 config.resolver.unstable_enableSymlinks = true;
+config.maxWorkers = 1;
 
 module.exports = config;

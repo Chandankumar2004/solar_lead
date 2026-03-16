@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { Prisma, UserRole, UserStatus } from "@prisma/client";
 import { Request, Response, Router } from "express";
 import { z } from "zod";
+import { strongPasswordSchema } from "@solar/shared";
 import { created, ok } from "../lib/http.js";
 import { AppError } from "../lib/errors.js";
 import { prisma } from "../lib/prisma.js";
@@ -122,6 +123,16 @@ const statusActionSchema = z.object({
 const updateAssignmentsSchema = z.object({
   districtIds: z.array(z.string().uuid()).default([])
 });
+
+const resetPasswordSchema = z
+  .object({
+    password: strongPasswordSchema,
+    confirmPassword: z.string()
+  })
+  .refine((value) => value.password === value.confirmPassword, {
+    message: "Passwords do not match",
+    path: ["confirmPassword"]
+  });
 
 const userInclude = {
   districts: {
@@ -1092,5 +1103,112 @@ usersRouter.post(
     });
 
     return ok(res, { user: mapUser(updated) }, "User deactivated");
+  }
+);
+
+usersRouter.post(
+  "/:id/reset-password",
+  validateParams(userIdParamSchema),
+  validateBody(resetPasswordSchema),
+  async (req: Request, res: Response) => {
+    const { id } = req.params as z.infer<typeof userIdParamSchema>;
+    const body = req.body as z.infer<typeof resetPasswordSchema>;
+    const actor = req.user!;
+
+    const target = await getUserOrFail(id);
+    if (target.id === actor.id) {
+      throw new AppError(
+        400,
+        "SELF_PASSWORD_RESET_FORBIDDEN",
+        "You cannot reset your own password using this action"
+      );
+    }
+
+    if (actor.role === "SUPER_ADMIN") {
+      if (target.role === "SUPER_ADMIN") {
+        throw new AppError(
+          403,
+          "FORBIDDEN",
+          "Super Admin passwords must be reset by the account owner"
+        );
+      }
+    } else if (actor.role === "ADMIN") {
+      if (target.role !== "MANAGER" && target.role !== "EXECUTIVE") {
+        throw new AppError(
+          403,
+          "FORBIDDEN",
+          "Admins can only reset District Manager or Field Executive passwords"
+        );
+      }
+    } else {
+      throw new AppError(403, "FORBIDDEN", "Only Super Admin or Admin can reset passwords");
+    }
+
+    const passwordHash = await bcrypt.hash(body.password, BCRYPT_WORK_FACTOR);
+
+    const supabaseProvision = await ensureSupabaseAuthUserForAppUser({
+      appUserId: target.id,
+      email: target.email,
+      fullName: target.fullName,
+      password: body.password,
+      createIfMissing: false,
+      syncExisting: true
+    });
+
+    if (!supabaseProvision.ok) {
+      if (supabaseProvision.reason === "NOT_FOUND") {
+        throw new AppError(404, "AUTH_PROFILE_NOT_FOUND", "Authentication profile not found");
+      }
+      if (supabaseProvision.reason === "AUTH_CONFIG_ERROR") {
+        throw new AppError(500, "AUTH_CONFIG_ERROR", "Authentication is not configured");
+      }
+      throw new AppError(502, "AUTH_BACKEND_ERROR", supabaseProvision.message);
+    }
+
+    const updated = await prisma.$transaction(async (tx) => {
+      await tx.user.update({
+        where: { id: target.id },
+        data: {
+          passwordHash
+        }
+      });
+
+      await tx.userSetupPasswordToken.updateMany({
+        where: {
+          userId: target.id,
+          usedAt: null
+        },
+        data: {
+          usedAt: new Date()
+        }
+      });
+
+      return tx.user.findUniqueOrThrow({
+        where: { id: target.id },
+        include: userInclude
+      });
+    });
+
+    await revokeAllUserRefreshSessions(target.id);
+
+    await createAuditLog({
+      actorUserId: actor.id,
+      action: "USER_PASSWORD_RESET_ISSUED",
+      entityType: "user",
+      entityId: target.id,
+      detailsJson: {
+        email: target.email,
+        role: target.role
+      },
+      ipAddress: requestIp(req)
+    });
+
+    return ok(
+      res,
+      {
+        user: mapUser(updated)
+      },
+      "Password updated"
+    );
   }
 );

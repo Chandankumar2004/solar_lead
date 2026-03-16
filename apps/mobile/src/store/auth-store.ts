@@ -5,6 +5,7 @@ import { create } from "zustand";
 import { api, setAuthFailureHandler, type AuthFailureInfo } from "../services/api";
 import { useQueueStore } from "./queue-store";
 import { clearOfflineCacheForOwner } from "../services/offline-cache";
+import { clearDocumentCacheForOwner } from "../services/document-cache";
 import { clearStoredPushToken, unregisterCurrentPushToken } from "../services/push-notifications";
 
 const BIOMETRIC_ENABLED_KEY = "auth.biometric_enabled";
@@ -36,7 +37,11 @@ type AuthState = {
   isBiometricUnlocked: boolean;
   authNotice: string | null;
   bootstrap: () => Promise<void>;
-  login: (email: string, password: string) => Promise<void>;
+  login: (
+    email: string,
+    password: string,
+    options?: { recaptchaToken?: string | null; recaptchaAction?: string }
+  ) => Promise<void>;
   logout: () => Promise<void>;
   setBiometricEnabled: (enabled: boolean) => Promise<void>;
   unlockWithBiometric: () => Promise<boolean>;
@@ -211,10 +216,12 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
   },
 
-  login: async (email, password) => {
+  login: async (email, password, options) => {
     const response = await api.post("/api/auth/login", {
       email,
-      password
+      password,
+      recaptchaToken: options?.recaptchaToken ?? undefined,
+      recaptchaAction: options?.recaptchaAction ?? undefined
     });
 
     const user = toUser(response.data?.data?.user);
@@ -246,7 +253,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     if (currentUserId) {
       await Promise.all([
         useQueueStore.getState().clearByOwner(currentUserId),
-        clearOfflineCacheForOwner(currentUserId)
+        clearOfflineCacheForOwner(currentUserId),
+        clearDocumentCacheForOwner(currentUserId)
       ]);
     }
 
@@ -314,6 +322,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     if (currentUserId) {
       void useQueueStore.getState().clearByOwner(currentUserId);
       void clearOfflineCacheForOwner(currentUserId);
+      void clearDocumentCacheForOwner(currentUserId);
     }
     void clearStoredPushToken();
 

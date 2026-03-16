@@ -1,8 +1,9 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
   Image,
+  LayoutChangeEvent,
   Linking,
   Platform,
   Pressable,
@@ -13,12 +14,18 @@ import {
 } from "react-native";
 import NetInfo from "@react-native-community/netinfo";
 import * as DocumentPicker from "expo-document-picker";
+import * as FileSystem from "expo-file-system";
 import * as ImagePicker from "expo-image-picker";
 import { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { api } from "../services/api";
 import { useAppPalette, useTextInputStyle } from "../ui/primitives";
 import { uploadLeadDocument } from "../services/document-upload";
 import type { LeadDocumentUploadFile } from "../services/document-upload";
+import {
+  downloadAndCacheDocument,
+  getCachedDocument,
+  type CachedDocument
+} from "../services/document-cache";
 import { useQueueStore } from "../store/queue-store";
 import type { QueueItem } from "../store/queue-store";
 import { useAuthStore } from "../store/auth-store";
@@ -150,11 +157,32 @@ type CachedLeadDetailPayload = {
 };
 
 const MAX_UPLOAD_SIZE_BYTES = 10 * 1024 * 1024;
+const SITE_PHOTO_MAX = 10;
 const ALLOWED_UPLOAD_MIME_TYPES = new Set([
   "application/pdf",
   "image/jpeg",
   "image/png"
 ]);
+type DocumentCategoryOption = {
+  value: string;
+  label: string;
+  helper?: string;
+};
+
+const DOCUMENT_CATEGORIES: DocumentCategoryOption[] = [
+  { value: "aadhaar_front", label: "Aadhaar Card Front" },
+  { value: "aadhaar_back", label: "Aadhaar Card Back" },
+  { value: "pan_card", label: "PAN Card" },
+  { value: "electricity_bill", label: "Electricity Bill (latest)" },
+  { value: "cancelled_cheque_passbook", label: "Cancelled Cheque / Passbook Front" },
+  { value: "site_photo", label: "Site Photographs", helper: "Multiple photos allowed." },
+  {
+    value: "roof_assessment",
+    label: "Roof Assessment / Site Plan (optional)",
+    helper: "Optional document."
+  }
+];
+const DEFAULT_DOCUMENT_CATEGORY = "site_photo";
 const LEAD_DETAIL_CACHE_PREFIX = "lead-detail";
 
 function formatDateTime(value: string) {
@@ -208,6 +236,54 @@ function normalizeCategory(value: string) {
     return normalized.slice(0, 80);
   }
   return "general";
+}
+
+function isSitePhotoCategory(value: string) {
+  return normalizeCategory(value).startsWith("site_photo");
+}
+
+function extractSitePhotoIndex(value: string) {
+  const normalized = normalizeCategory(value);
+  if (!normalized.startsWith("site_photo")) {
+    return null;
+  }
+  const suffix = normalized.slice("site_photo".length);
+  if (!suffix) {
+    return 1;
+  }
+  if (suffix.startsWith("_")) {
+    const numeric = Number(suffix.slice(1));
+    if (Number.isFinite(numeric) && numeric > 0) {
+      return numeric;
+    }
+  }
+  return 1;
+}
+
+const CATEGORY_LABELS: Record<string, string> = {
+  aadhaar_front: "Aadhaar Card Front",
+  aadhaar_back: "Aadhaar Card Back",
+  pan_card: "PAN Card",
+  electricity_bill: "Electricity Bill (latest)",
+  cancelled_cheque_passbook: "Cancelled Cheque / Passbook Front",
+  site_photo: "Site Photographs",
+  roof_assessment: "Roof Assessment / Site Plan",
+  lead_attachment: "Lead Attachment",
+  general: "General"
+};
+
+function formatCategoryLabel(value: string) {
+  const normalized = normalizeCategory(value);
+  if (normalized.startsWith("site_photo")) {
+    const index = extractSitePhotoIndex(normalized);
+    return index ? `Site Photograph ${index}` : "Site Photographs";
+  }
+  if (CATEGORY_LABELS[normalized]) {
+    return CATEGORY_LABELS[normalized];
+  }
+  return normalized
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (match) => match.toUpperCase());
 }
 
 function inferMimeType(fileName: string, fallback?: string | null) {
@@ -270,6 +346,8 @@ export function LeadDetailScreen({ route, navigation }: LeadDetailScreenProps) {
   const textInputStyle = useTextInputStyle();
   const { leadId } = route.params;
   const user = useAuthStore((s) => s.user);
+  const scrollRef = useRef<ScrollView>(null);
+  const sectionOffsetsRef = useRef<{ documents?: number }>({});
   const companyUpiId = process.env.EXPO_PUBLIC_COMPANY_UPI_ID?.trim() || "";
   const companyUpiName =
     process.env.EXPO_PUBLIC_COMPANY_UPI_NAME?.trim() || "Solar Payments";
@@ -292,8 +370,12 @@ export function LeadDetailScreen({ route, navigation }: LeadDetailScreenProps) {
   const [error, setError] = useState<string | null>(null);
   const [offlineNotice, setOfflineNotice] = useState<string | null>(null);
 
-  const [uploadCategory, setUploadCategory] = useState("site_photo");
+  const [uploadCategory, setUploadCategory] = useState(DEFAULT_DOCUMENT_CATEGORY);
   const [uploadItems, setUploadItems] = useState<UploadUiItem[]>([]);
+  const [cachedDocuments, setCachedDocuments] = useState<Record<string, CachedDocument>>({});
+  const [downloadStates, setDownloadStates] = useState<
+    Record<string, "idle" | "downloading" | "failed">
+  >({});
   const [paymentAmount, setPaymentAmount] = useState("");
   const [utrNumber, setUtrNumber] = useState("");
   const [paymentSubmitting, setPaymentSubmitting] = useState(false);
@@ -320,7 +402,50 @@ export function LeadDetailScreen({ route, navigation }: LeadDetailScreenProps) {
     [queueItems, leadId, user?.id]
   );
 
+  const buildSitePhotoIndexSet = useCallback(() => {
+    const used = new Set<number>();
+    documents.forEach((doc) => {
+      const index = extractSitePhotoIndex(doc.category);
+      if (index) {
+        used.add(index);
+      }
+    });
+    queueItems.forEach((item: QueueItem) => {
+      if (
+        item.kind === "UPLOAD_LEAD_DOCUMENT" &&
+        item.payload.leadId === leadId &&
+        (!item.ownerUserId || item.ownerUserId === user?.id) &&
+        isSitePhotoCategory(item.payload.category)
+      ) {
+        const index = extractSitePhotoIndex(item.payload.category);
+        if (index) {
+          used.add(index);
+        }
+      }
+    });
+    return used;
+  }, [documents, leadId, queueItems, user?.id]);
+
+  const selectedCategory = useMemo(
+    () => DOCUMENT_CATEGORIES.find((option) => option.value === uploadCategory) ?? null,
+    [uploadCategory]
+  );
+
   const cacheKey = useMemo(() => `${LEAD_DETAIL_CACHE_PREFIX}:${leadId}`, [leadId]);
+
+  const registerSectionOffset = useCallback(
+    (key: "documents") =>
+      (event: LayoutChangeEvent) => {
+        sectionOffsetsRef.current[key] = event.nativeEvent.layout.y;
+      },
+    []
+  );
+
+  const scrollToSection = useCallback((key: "documents") => {
+    const offset = sectionOffsetsRef.current[key];
+    if (typeof offset !== "number") return;
+    scrollRef.current?.scrollTo({ y: Math.max(0, offset - 12), animated: true });
+  }, []);
 
   const applyLoadedData = useCallback((payload: CachedLeadDetailPayload) => {
     setLead(payload.lead);
@@ -404,6 +529,28 @@ export function LeadDetailScreen({ route, navigation }: LeadDetailScreenProps) {
   useEffect(() => {
     void load();
   }, [load]);
+
+  const hydrateCachedDocuments = useCallback(async () => {
+    if (!user?.id || documents.length === 0) {
+      setCachedDocuments({});
+      return;
+    }
+
+    const entries = await Promise.all(
+      documents.map((doc) => getCachedDocument(user.id, doc.id))
+    );
+    const next: Record<string, CachedDocument> = {};
+    entries.forEach((entry, index) => {
+      if (entry) {
+        next[documents[index].id] = entry;
+      }
+    });
+    setCachedDocuments(next);
+  }, [documents, user?.id]);
+
+  useEffect(() => {
+    void hydrateCachedDocuments();
+  }, [hydrateCachedDocuments]);
 
   useEffect(() => {
     setPaymentSnapshot({});
@@ -596,7 +743,10 @@ export function LeadDetailScreen({ route, navigation }: LeadDetailScreenProps) {
   const handlePickedFiles = useCallback(
     async (files: LeadDocumentUploadFile[], source: UploadSource) => {
       if (!files.length) return;
-      const category = normalizeCategory(uploadCategory);
+      const baseCategory = normalizeCategory(uploadCategory);
+      const sitePhotoIndices = isSitePhotoCategory(baseCategory)
+        ? buildSitePhotoIndexSet()
+        : new Set<number>();
 
       for (const file of files) {
         const validationError = validatePickedUploadFile(file);
@@ -605,12 +755,29 @@ export function LeadDetailScreen({ route, navigation }: LeadDetailScreenProps) {
           continue;
         }
 
+        let resolvedCategory = baseCategory;
+        if (isSitePhotoCategory(baseCategory)) {
+          let nextIndex = 1;
+          while (sitePhotoIndices.has(nextIndex) && nextIndex <= SITE_PHOTO_MAX) {
+            nextIndex += 1;
+          }
+          if (nextIndex > SITE_PHOTO_MAX) {
+            Alert.alert(
+              "Site photo limit reached",
+              `A maximum of ${SITE_PHOTO_MAX} site photographs can be uploaded for this lead.`
+            );
+            break;
+          }
+          resolvedCategory = `site_photo_${nextIndex}`;
+          sitePhotoIndices.add(nextIndex);
+        }
+
         const uploadId = createUploadId();
         setUploadItems((prev) => [
           {
             id: uploadId,
             source,
-            category,
+            category: resolvedCategory,
             file,
             state: "pending",
             progress: 0
@@ -618,10 +785,51 @@ export function LeadDetailScreen({ route, navigation }: LeadDetailScreenProps) {
           ...prev
         ]);
 
-        await runUpload(uploadId, file, category);
+        await runUpload(uploadId, file, resolvedCategory);
       }
     },
-    [runUpload, uploadCategory]
+    [buildSitePhotoIndexSet, runUpload, uploadCategory]
+  );
+
+  const handleDownloadDocument = useCallback(
+    async (doc: LeadDocumentSummary) => {
+      if (!user?.id) return;
+      const netState = await NetInfo.fetch();
+      const connected = Boolean(netState.isConnected) && netState.isInternetReachable !== false;
+      if (!connected) {
+        Alert.alert("Offline", "Connect to the internet to download this document.");
+        return;
+      }
+
+      setDownloadStates((prev) => ({ ...prev, [doc.id]: "downloading" }));
+      try {
+        const cached = await downloadAndCacheDocument(user.id, doc.id);
+        setCachedDocuments((prev) => ({ ...prev, [doc.id]: cached }));
+        setDownloadStates((prev) => ({ ...prev, [doc.id]: "idle" }));
+        Alert.alert("Downloaded", "Document saved for offline access.");
+      } catch (err) {
+        setDownloadStates((prev) => ({ ...prev, [doc.id]: "failed" }));
+        Alert.alert("Download failed", extractErrorMessage(err, "Unable to download document."));
+      }
+    },
+    [user?.id]
+  );
+
+  const openCachedDocument = useCallback(
+    async (documentId: string) => {
+      const cached = cachedDocuments[documentId];
+      if (!cached) return;
+      try {
+        const uri =
+          Platform.OS === "android"
+            ? await FileSystem.getContentUriAsync(cached.localUri)
+            : cached.localUri;
+        await Linking.openURL(uri);
+      } catch (err) {
+        Alert.alert("Open failed", extractErrorMessage(err, "Unable to open document."));
+      }
+    },
+    [cachedDocuments]
   );
 
   const pickFromCamera = async () => {
@@ -979,8 +1187,13 @@ export function LeadDetailScreen({ route, navigation }: LeadDetailScreenProps) {
   }
 
   return (
-    <ScrollView style={{ backgroundColor: colors.background }} contentContainerStyle={{ padding: 16, gap: 12 }}>
+    <ScrollView
+      ref={scrollRef}
+      style={{ backgroundColor: colors.background }}
+      contentContainerStyle={{ padding: 16, gap: 12, paddingBottom: 120 }}
+    >
       <View
+        onLayout={registerSectionOffset("documents")}
         style={{
           backgroundColor: colors.surface,
           borderRadius: 10,
@@ -1011,49 +1224,100 @@ export function LeadDetailScreen({ route, navigation }: LeadDetailScreenProps) {
         </Text>
       </View>
 
-      <View style={{ flexDirection: "row", gap: 8 }}>
-        <Pressable
-          onPress={() => {
-            void openDialer();
-          }}
-          style={{
-            flex: 1,
-            backgroundColor: colors.primary,
-            borderRadius: 8,
-            padding: 12
-          }}
-        >
-          <Text style={{ color: "#fff", textAlign: "center", fontWeight: "700" }}>
-            Call
-          </Text>
-        </Pressable>
-        <Pressable
-          onPress={() => {
-            void openMaps();
-          }}
-          style={{
-            flex: 1,
-            backgroundColor: colors.info,
-            borderRadius: 8,
-            padding: 12
-          }}
-        >
-          <Text style={{ color: "#fff", textAlign: "center", fontWeight: "700" }}>
-            Navigate
-          </Text>
-        </Pressable>
-      </View>
-
-      <Pressable
-        onPress={() =>
-          navigation.navigate("CustomerDetails", { leadId, leadName: lead.name })
-        }
-        style={{ backgroundColor: colors.primaryDark, borderRadius: 8, padding: 12 }}
+      <View
+        style={{
+          backgroundColor: colors.surface,
+          borderRadius: 10,
+          padding: 12,
+          borderWidth: 1,
+          borderColor: colors.border,
+          gap: 10
+        }}
       >
-        <Text style={{ color: "#fff", textAlign: "center", fontWeight: "700" }}>
-          Customer Details Form
-        </Text>
-      </Pressable>
+        <Text style={{ fontSize: 16, fontWeight: "700" }}>Quick Actions</Text>
+        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+          <Pressable
+            onPress={() => {
+              void openDialer();
+            }}
+            style={{
+              flexGrow: 1,
+              flexBasis: "48%",
+              minWidth: 140,
+              backgroundColor: colors.primary,
+              borderRadius: 8,
+              paddingVertical: 12,
+              paddingHorizontal: 8,
+              alignItems: "center",
+              justifyContent: "center"
+            }}
+          >
+            <Text style={{ color: "#fff", textAlign: "center", fontWeight: "700" }}>
+              Call
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={() => {
+              void openMaps();
+            }}
+            style={{
+              flexGrow: 1,
+              flexBasis: "48%",
+              minWidth: 140,
+              backgroundColor: colors.info,
+              borderRadius: 8,
+              paddingVertical: 12,
+              paddingHorizontal: 8,
+              alignItems: "center",
+              justifyContent: "center"
+            }}
+          >
+            <Text style={{ color: "#fff", textAlign: "center", fontWeight: "700" }}>
+              Navigate
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={() =>
+              navigation.navigate("CustomerDetails", { leadId, leadName: lead.name })
+            }
+            style={{
+              flexGrow: 1,
+              flexBasis: "48%",
+              minWidth: 140,
+              backgroundColor: colors.primaryDark,
+              borderRadius: 8,
+              paddingVertical: 12,
+              paddingHorizontal: 8,
+              alignItems: "center",
+              justifyContent: "center"
+            }}
+          >
+            <Text style={{ color: "#fff", textAlign: "center", fontWeight: "700" }}>
+              Customer Form
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={() => {
+              scrollToSection("documents");
+            }}
+            style={{
+              flexGrow: 1,
+              flexBasis: "48%",
+              minWidth: 140,
+              backgroundColor: colors.warning,
+              borderRadius: 8,
+              paddingVertical: 12,
+              paddingHorizontal: 8,
+              alignItems: "center",
+              justifyContent: "center"
+            }}
+          >
+            <Text style={{ color: "#fff", textAlign: "center", fontWeight: "700" }}>
+              Upload Docs
+            </Text>
+          </Pressable>
+        </View>
+      </View>
 
       <View
         style={{
@@ -1294,13 +1558,40 @@ export function LeadDetailScreen({ route, navigation }: LeadDetailScreenProps) {
         }}
       >
         <Text style={{ fontSize: 16, fontWeight: "700" }}>Document Upload</Text>
-        <TextInput
-          value={uploadCategory}
-          onChangeText={setUploadCategory}
-          placeholder="Category (example: site_photo)"
-          autoCapitalize="none"
-          style={textInputStyle}
-        />
+        <View style={{ gap: 8 }}>
+          <Text style={{ color: colors.textMuted, fontWeight: "600" }}>Category</Text>
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+            {DOCUMENT_CATEGORIES.map((option) => {
+              const active = uploadCategory === option.value;
+              return (
+                <Pressable
+                  key={option.value}
+                  onPress={() => setUploadCategory(option.value)}
+                  style={{
+                    borderWidth: 1,
+                    borderColor: active ? colors.primary : colors.border,
+                    backgroundColor: active ? colors.accent : colors.surface,
+                    borderRadius: 999,
+                    paddingVertical: 6,
+                    paddingHorizontal: 12
+                  }}
+                >
+                  <Text
+                    style={{
+                      fontWeight: active ? "700" : "500",
+                      color: active ? colors.primary : colors.text
+                    }}
+                  >
+                    {option.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+          {selectedCategory?.helper ? (
+            <Text style={{ color: colors.textMuted }}>{selectedCategory.helper}</Text>
+          ) : null}
+        </View>
 
         <View style={{ flexDirection: "row", gap: 8 }}>
           <Pressable
@@ -1373,7 +1664,7 @@ export function LeadDetailScreen({ route, navigation }: LeadDetailScreenProps) {
               >
                 <Text style={{ fontWeight: "700" }}>{item.file.fileName}</Text>
                 <Text style={{ color: colors.textMuted }}>
-                  {item.category} | {formatBytes(item.file.fileSize)}
+                  {formatCategoryLabel(item.category)} | {formatBytes(item.file.fileSize)}
                 </Text>
                 <Text>
                   Status:{" "}
@@ -1435,20 +1726,73 @@ export function LeadDetailScreen({ route, navigation }: LeadDetailScreenProps) {
         {documents.length === 0 ? (
           <Text style={{ color: colors.textMuted }}>No documents uploaded for this lead yet.</Text>
         ) : (
-          documents.slice(0, 10).map((doc) => (
-            <View
-              key={doc.id}
-              style={{ borderBottomWidth: 1, borderBottomColor: colors.border, paddingBottom: 8 }}
-            >
-              <Text style={{ fontWeight: "700" }}>{doc.fileName}</Text>
-              <Text style={{ color: colors.textMuted, fontSize: 12 }}>
-                {doc.category} | v{doc.version} | {doc.reviewStatus}
-              </Text>
-              <Text style={{ color: colors.textMuted, fontSize: 12 }}>
-                {formatDateTime(doc.createdAt)}
-              </Text>
-            </View>
-          ))
+          documents.slice(0, 10).map((doc) => {
+            const cached = cachedDocuments[doc.id];
+            const downloadState = downloadStates[doc.id] ?? "idle";
+            return (
+              <View
+                key={doc.id}
+                style={{ borderBottomWidth: 1, borderBottomColor: colors.border, paddingBottom: 8 }}
+              >
+                <Text style={{ fontWeight: "700" }}>{doc.fileName}</Text>
+                <Text style={{ color: colors.textMuted, fontSize: 12 }}>
+                  {formatCategoryLabel(doc.category)} | v{doc.version} | {doc.reviewStatus}
+                </Text>
+                <Text style={{ color: colors.textMuted, fontSize: 12 }}>
+                  {formatDateTime(doc.createdAt)}
+                </Text>
+                {cached ? (
+                  <Text style={{ color: colors.primary, fontSize: 12 }}>
+                    Available offline
+                  </Text>
+                ) : null}
+                <View style={{ flexDirection: "row", gap: 8, marginTop: 6 }}>
+                  {cached ? (
+                    <Pressable
+                      onPress={() => {
+                        void openCachedDocument(doc.id);
+                      }}
+                      style={{
+                        borderWidth: 1,
+                        borderColor: colors.primary,
+                        borderRadius: 8,
+                        paddingVertical: 6,
+                        paddingHorizontal: 10
+                      }}
+                    >
+                      <Text style={{ color: colors.primary, fontWeight: "700" }}>
+                        Open Offline
+                      </Text>
+                    </Pressable>
+                  ) : (
+                    <Pressable
+                      onPress={() => {
+                        void handleDownloadDocument(doc);
+                      }}
+                      disabled={downloadState === "downloading"}
+                      style={{
+                        borderWidth: 1,
+                        borderColor: colors.border,
+                        borderRadius: 8,
+                        paddingVertical: 6,
+                        paddingHorizontal: 10,
+                        opacity: downloadState === "downloading" ? 0.6 : 1
+                      }}
+                    >
+                      <Text style={{ color: colors.text, fontWeight: "700" }}>
+                        {downloadState === "downloading" ? "Downloading..." : "Download for Offline"}
+                      </Text>
+                    </Pressable>
+                  )}
+                </View>
+                {downloadState === "failed" ? (
+                  <Text style={{ color: colors.danger, fontSize: 12 }}>
+                    Download failed. Retry when online.
+                  </Text>
+                ) : null}
+              </View>
+            );
+          })
         )}
       </View>
 

@@ -339,6 +339,36 @@ authRouter.post("/login", async (req: Request, res: Response) => {
       return fail(res, statusCode, result.reason, reasonMessage, details);
     }
 
+    const pendingSetupToken = await prisma.userSetupPasswordToken.findFirst({
+      where: {
+        userId: result.user.id,
+        usedAt: null,
+        expiresAt: {
+          gt: new Date()
+        }
+      },
+      select: { id: true }
+    });
+
+    if (pendingSetupToken) {
+      await createAuditLog({
+        actorUserId: result.user.id,
+        action: "LOGIN_BLOCKED_PASSWORD_RESET_REQUIRED",
+        entityType: "auth",
+        detailsJson: {
+          reason: "SETUP_PASSWORD_TOKEN_ACTIVE",
+          email: result.user.email
+        },
+        ipAddress: requestIp(req)
+      });
+      return fail(
+        res,
+        403,
+        "PASSWORD_RESET_REQUIRED",
+        "Password reset required. Check your email for the setup link."
+      );
+    }
+
     if (!result.accessToken || !result.refreshToken) {
       console.error("AUTH_LOGIN_ERROR", {
         reason: "TOKEN_PAIR_EMPTY",
