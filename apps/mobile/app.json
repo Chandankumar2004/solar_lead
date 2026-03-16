@@ -2,6 +2,7 @@
   "expo": {
     "name": "Solar Lead Mobile",
     "slug": "solar-lead-mobile",
+    "scheme": "solarleadmobile",
     "version": "1.0.0",
     "orientation": "portrait",
     "assetBundlePatterns": [
@@ -15,4 +16,3 @@
     }
   }
 }
-

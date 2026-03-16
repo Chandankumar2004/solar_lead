@@ -15,10 +15,16 @@ import {
   notifyActiveAdmins,
   notifyUsers,
   queueLeadStatusCustomerNotification,
+  triggerExecutiveLeadStatusUpdatedNotification,
+  triggerExecutiveLoanStatusUpdatedNotification,
   triggerNewLeadNotification,
   triggerOverdueLeadNotification
 } from "../services/notification.service.js";
 import { createAuditLog, requestIp } from "../services/audit-log.service.js";
+import {
+  decryptSensitiveValue,
+  encryptSensitiveValue
+} from "../services/sensitive-data.service.js";
 import { validateBody, validateParams, validateQuery } from "../middleware/validate.js";
 import { AppError } from "../lib/errors.js";
 import {
@@ -341,9 +347,9 @@ const customerDetailsBodySchema = z.object({
       const normalized = emptyToUndefined(input);
       if (normalized === undefined) return undefined;
       if (typeof normalized !== "string") return normalized;
-      return normalized.replace(/\s/g, "");
+      return normalized.replace(/\D/g, "");
     },
-    z.string().min(6).max(34).optional()
+    z.string().regex(/^\d{6,34}$/, "bankAccountNumber must be 6 to 34 digits").optional()
   ),
   bankName: z.preprocess(emptyToUndefined, z.string().max(120).optional()),
   ifscCode: z.preprocess(
@@ -424,14 +430,16 @@ function toCustomerDetailResponse(detail: {
   updatedAt: Date;
 }, options: CustomerDetailResponseOptions = {}) {
   const includeSensitiveFields = options.includeSensitiveFields ?? false;
-  const panNumber = detail.panEncrypted ? detail.panEncrypted.toUpperCase() : null;
+  const aadhaarNumber = decryptSensitiveValue(detail.aadhaarEncrypted);
+  const panNumber = decryptSensitiveValue(detail.panEncrypted)?.toUpperCase() ?? null;
+  const bankAccountNumber = decryptSensitiveValue(detail.bankAccountEncrypted);
   return {
     id: detail.id,
     fullName: detail.fullName,
     dateOfBirth: detail.dateOfBirth ? detail.dateOfBirth.toISOString().slice(0, 10) : null,
     gender: detail.gender,
     fatherHusbandName: detail.fatherHusbandName,
-    aadhaarMasked: maskSensitiveLast4(detail.aadhaarEncrypted),
+    aadhaarMasked: maskSensitiveLast4(aadhaarNumber),
     panNumber: includeSensitiveFields ? panNumber : null,
     panMasked: maskSensitiveLast4(panNumber),
     addressLine1: detail.addressLine1,
@@ -449,7 +457,7 @@ function toCustomerDetailResponse(detail: {
     connectionType: detail.connectionType,
     consumerNumber: detail.consumerNumber,
     discomName: detail.discomName,
-    bankAccountMasked: maskSensitiveLast4(detail.bankAccountEncrypted),
+    bankAccountMasked: maskSensitiveLast4(bankAccountNumber),
     bankName: detail.bankName,
     ifscCode: detail.ifscCode,
     accountHolderName: detail.accountHolderName,
@@ -474,7 +482,6 @@ function canAccessInternalNotes(role: string) {
   return (
     role === "SUPER_ADMIN" ||
     role === "ADMIN" ||
-    role === "MANAGER" ||
     role === "EXECUTIVE"
   );
 }
@@ -1325,9 +1332,11 @@ leadsRouter.put(
         ? { fatherHusbandName: payload.fatherHusbandName }
         : {}),
       ...(payload.aadhaarNumber !== undefined
-        ? { aadhaarEncrypted: payload.aadhaarNumber }
+        ? { aadhaarEncrypted: encryptSensitiveValue(payload.aadhaarNumber) }
         : {}),
-      ...(payload.panNumber !== undefined ? { panEncrypted: payload.panNumber } : {}),
+      ...(payload.panNumber !== undefined
+        ? { panEncrypted: encryptSensitiveValue(payload.panNumber) }
+        : {}),
       ...(payload.addressLine1 !== undefined
         ? { addressLine1: payload.addressLine1 }
         : {}),
@@ -1364,7 +1373,7 @@ leadsRouter.put(
         : {}),
       ...(payload.discomName !== undefined ? { discomName: payload.discomName } : {}),
       ...(payload.bankAccountNumber !== undefined
-        ? { bankAccountEncrypted: payload.bankAccountNumber }
+        ? { bankAccountEncrypted: encryptSensitiveValue(payload.bankAccountNumber) }
         : {}),
       ...(payload.bankName !== undefined ? { bankName: payload.bankName } : {}),
       ...(payload.ifscCode !== undefined ? { ifscCode: payload.ifscCode } : {}),
@@ -1395,9 +1404,11 @@ leadsRouter.put(
         ? { fatherHusbandName: payload.fatherHusbandName }
         : {}),
       ...(payload.aadhaarNumber !== undefined
-        ? { aadhaarEncrypted: payload.aadhaarNumber }
+        ? { aadhaarEncrypted: encryptSensitiveValue(payload.aadhaarNumber) }
         : {}),
-      ...(payload.panNumber !== undefined ? { panEncrypted: payload.panNumber } : {}),
+      ...(payload.panNumber !== undefined
+        ? { panEncrypted: encryptSensitiveValue(payload.panNumber) }
+        : {}),
       ...(payload.addressLine1 !== undefined
         ? { addressLine1: payload.addressLine1 }
         : {}),
@@ -1438,7 +1449,7 @@ leadsRouter.put(
         : {}),
       ...(payload.discomName !== undefined ? { discomName: payload.discomName } : {}),
       ...(payload.bankAccountNumber !== undefined
-        ? { bankAccountEncrypted: payload.bankAccountNumber }
+        ? { bankAccountEncrypted: encryptSensitiveValue(payload.bankAccountNumber) }
         : {}),
       ...(payload.bankName !== undefined ? { bankName: payload.bankName } : {}),
       ...(payload.ifscCode !== undefined ? { ifscCode: payload.ifscCode } : {}),
@@ -2130,6 +2141,30 @@ leadsRouter.post(
         changedByUserId: req.user?.id,
         transitionNotes: historyNotes ?? null
       });
+
+      const actorRole = req.user.role;
+      const changedByAdminOrManager =
+        actorRole === "SUPER_ADMIN" || actorRole === "ADMIN" || actorRole === "MANAGER";
+      if (changedByAdminOrManager && lead.assignedExecutiveId) {
+        await triggerExecutiveLeadStatusUpdatedNotification({
+          leadId: lead.id,
+          externalId: lead.externalId,
+          assignedExecutiveId: lead.assignedExecutiveId,
+          fromStatusName: lead.currentStatus.name,
+          toStatusName: toStatus.name,
+          changedByRole: actorRole,
+          changedByUserId: req.user.id
+        });
+
+        await triggerExecutiveLoanStatusUpdatedNotification({
+          leadId: lead.id,
+          externalId: lead.externalId,
+          assignedExecutiveId: lead.assignedExecutiveId,
+          statusName: toStatus.name,
+          changedByRole: actorRole,
+          changedByUserId: req.user.id
+        });
+      }
 
       return ok(res, updated, "Status updated");
     } catch (error) {

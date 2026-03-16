@@ -363,7 +363,7 @@ documentsRouter.post(
         notificationTitle,
         notificationMessage,
         {
-          type: "INTERNAL",
+          type: "DOCUMENT_REJECTED",
           leadId: updated.leadId,
           entityType: "document",
           entityId: updated.id,

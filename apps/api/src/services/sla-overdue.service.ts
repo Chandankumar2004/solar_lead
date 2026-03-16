@@ -2,14 +2,23 @@ import { env } from "../config/env.js";
 import { prisma } from "../lib/prisma.js";
 import { isPrismaConnected } from "../lib/prisma.js";
 import { createAuditLog } from "./audit-log.service.js";
-import { notifyDistrictManagersAndAdmins } from "./notification.service.js";
+import {
+  notifyDistrictManagersAndAdmins,
+  triggerExecutiveInactivityReminderNotification
+} from "./notification.service.js";
 
 const DEFAULT_SLA_CHECK_INTERVAL_MS = 5 * 60 * 1000;
+const REMINDER_DEDUPE_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 type SlaCheckSummary = {
   checkedLeads: number;
   markedOverdue: number;
   notifiedUsers: number;
+};
+
+type InactivityCheckSummary = {
+  checkedLeads: number;
+  remindersSent: number;
 };
 
 let timer: NodeJS.Timeout | null = null;
@@ -22,6 +31,14 @@ function resolveSlaCheckIntervalMs() {
     return raw;
   }
   return DEFAULT_SLA_CHECK_INTERVAL_MS;
+}
+
+function resolveInactivityReminderDays() {
+  const configured = env.LEAD_INACTIVITY_REMINDER_DAYS;
+  if (Number.isFinite(configured) && configured >= 0) {
+    return configured;
+  }
+  return 3;
 }
 
 export async function runSlaOverdueCheck(): Promise<SlaCheckSummary> {
@@ -146,6 +163,140 @@ export async function runSlaOverdueCheck(): Promise<SlaCheckSummary> {
   };
 }
 
+export async function runInactivityReminderCheck(): Promise<InactivityCheckSummary> {
+  const inactivityDays = resolveInactivityReminderDays();
+  if (inactivityDays <= 0) {
+    return {
+      checkedLeads: 0,
+      remindersSent: 0
+    };
+  }
+
+  const now = new Date();
+  const inactivityThreshold = new Date(now.getTime() - inactivityDays * 24 * 60 * 60 * 1000);
+  const dedupeSince = new Date(now.getTime() - REMINDER_DEDUPE_WINDOW_MS);
+
+  const candidates = await prisma.lead.findMany({
+    where: {
+      assignedExecutiveId: {
+        not: null
+      },
+      updatedAt: {
+        lte: inactivityThreshold
+      },
+      currentStatus: {
+        is: {
+          isTerminal: false
+        }
+      },
+      assignedExecutive: {
+        is: {
+          role: "EXECUTIVE",
+          status: "ACTIVE"
+        }
+      }
+    },
+    select: {
+      id: true,
+      externalId: true,
+      assignedExecutiveId: true,
+      updatedAt: true,
+      currentStatus: {
+        select: {
+          name: true
+        }
+      }
+    }
+  });
+
+  if (!candidates.length) {
+    return {
+      checkedLeads: 0,
+      remindersSent: 0
+    };
+  }
+
+  const leadIds = candidates.map((lead) => lead.id);
+  const recipientIds = candidates
+    .map((lead) => lead.assignedExecutiveId)
+    .filter((value): value is string => Boolean(value));
+
+  const recentReminderLogs = await prisma.notificationLog.findMany({
+    where: {
+      leadId: {
+        in: leadIds
+      },
+      recipient: {
+        in: recipientIds
+      },
+      channel: "PUSH",
+      createdAt: {
+        gte: dedupeSince
+      },
+      contentSent: {
+        contains: "Inactivity reminder",
+        mode: "insensitive"
+      }
+    },
+    select: {
+      leadId: true,
+      recipient: true
+    }
+  });
+
+  const dedupeKeys = new Set(
+    recentReminderLogs
+      .filter((log) => log.leadId)
+      .map((log) => `${log.leadId}:${log.recipient}`)
+  );
+
+  let remindersSent = 0;
+
+  for (const lead of candidates) {
+    if (!lead.assignedExecutiveId) continue;
+    const dedupeKey = `${lead.id}:${lead.assignedExecutiveId}`;
+    if (dedupeKeys.has(dedupeKey)) {
+      continue;
+    }
+
+    const recipients = await triggerExecutiveInactivityReminderNotification({
+      leadId: lead.id,
+      externalId: lead.externalId,
+      assignedExecutiveId: lead.assignedExecutiveId,
+      inactivityDays,
+      statusName: lead.currentStatus.name,
+      lastActivityAt: lead.updatedAt
+    });
+
+    if (recipients.length === 0) {
+      continue;
+    }
+
+    remindersSent += recipients.length;
+    dedupeKeys.add(dedupeKey);
+
+    await createAuditLog({
+      actorUserId: null,
+      action: "LEAD_INACTIVITY_REMINDER_SENT",
+      entityType: "lead",
+      entityId: lead.id,
+      detailsJson: {
+        leadId: lead.id,
+        externalId: lead.externalId,
+        inactivityDays,
+        lastActivityAt: lead.updatedAt.toISOString(),
+        remindedUserIds: recipients
+      },
+      ipAddress: null
+    });
+  }
+
+  return {
+    checkedLeads: candidates.length,
+    remindersSent
+  };
+}
+
 export function startSlaOverdueMonitor() {
   if (timer || env.NODE_ENV === "test") {
     return;
@@ -169,8 +320,13 @@ export function startSlaOverdueMonitor() {
       }
 
       const summary = await runSlaOverdueCheck();
-      if (summary.markedOverdue > 0) {
-        console.info("sla_overdue_check_completed", summary);
+      const inactivitySummary = await runInactivityReminderCheck();
+      if (summary.markedOverdue > 0 || inactivitySummary.remindersSent > 0) {
+        console.info("sla_overdue_check_completed", {
+          ...summary,
+          inactivityCheckedLeads: inactivitySummary.checkedLeads,
+          inactivityRemindersSent: inactivitySummary.remindersSent
+        });
       }
     } catch (error) {
       console.error("sla_overdue_check_failed", error);

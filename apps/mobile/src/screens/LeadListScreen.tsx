@@ -65,16 +65,52 @@ export function LeadListScreen() {
     setRefreshing(true);
     setError(null);
     try {
-      const response = await api.get("/api/leads", {
+      const baseParams = {
+        pageSize: 100,
+        execId: user.id
+      };
+
+      const firstPage = await api.get("/api/leads", {
         params: {
-          page: 1,
-          pageSize: 100,
-          execId: user.id
+          ...baseParams,
+          page: 1
         }
       });
-      const rows = Array.isArray(response.data?.data) ? (response.data.data as Lead[]) : [];
-      setLeads(rows);
-      await writeOfflineCache(user.id, LEAD_LIST_CACHE_KEY, rows);
+
+      const allRows: Lead[] = Array.isArray(firstPage.data?.data)
+        ? (firstPage.data.data as Lead[])
+        : [];
+
+      const totalPages = Number(firstPage.data?.pagination?.totalPages ?? 1);
+      let partialPageLoadFailed = false;
+
+      if (Number.isFinite(totalPages) && totalPages > 1) {
+        for (let page = 2; page <= totalPages; page += 1) {
+          try {
+            const pageResponse = await api.get("/api/leads", {
+              params: {
+                ...baseParams,
+                page
+              }
+            });
+            const pageRows = Array.isArray(pageResponse.data?.data)
+              ? (pageResponse.data.data as Lead[])
+              : [];
+            allRows.push(...pageRows);
+          } catch {
+            partialPageLoadFailed = true;
+            break;
+          }
+        }
+      }
+
+      const deduped = Array.from(new Map(allRows.map((row) => [row.id, row])).values());
+      setLeads(deduped);
+      await writeOfflineCache(user.id, LEAD_LIST_CACHE_KEY, deduped);
+
+      if (partialPageLoadFailed) {
+        setError("Some leads could not be loaded. Pull to refresh.");
+      }
     } catch {
       const cached = await readOfflineCache<Lead[]>(user.id, LEAD_LIST_CACHE_KEY);
       if (cached && cached.length > 0) {

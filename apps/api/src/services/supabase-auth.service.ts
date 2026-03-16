@@ -98,6 +98,85 @@ function nonEmpty(value: string | null | undefined) {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+function readSupabaseUserMetadata(supabaseUser: SupabaseAuthUser) {
+  return (
+    (supabaseUser.user_metadata as Record<string, unknown> | null | undefined) ??
+    {}
+  );
+}
+
+function hasSessionRevocationMarker(supabaseUser: SupabaseAuthUser) {
+  const metadata = readSupabaseUserMetadata(supabaseUser);
+  const marker = metadata.session_revoked_at;
+  return typeof marker === "string" && marker.trim().length > 0;
+}
+
+async function clearSessionRevocationMarker(supabaseUser: SupabaseAuthUser) {
+  if (!hasSessionRevocationMarker(supabaseUser)) {
+    return;
+  }
+
+  const adminClient = getSupabaseAdminClient();
+  if (!adminClient) {
+    return;
+  }
+
+  const metadata = readSupabaseUserMetadata(supabaseUser);
+  const nextMetadata = {
+    ...metadata,
+    session_revoked_at: null
+  };
+
+  const { error } = await adminClient.auth.admin.updateUserById(supabaseUser.id, {
+    user_metadata: nextMetadata
+  });
+
+  if (error) {
+    console.error("SUPABASE_SESSION_REVOCATION_CLEAR_ERROR", {
+      supabaseUserId: supabaseUser.id,
+      error: error.message
+    });
+  }
+}
+
+async function revokeSupabaseUserSessionsById(supabaseUserId: string) {
+  const supabaseUrl = nonEmpty(process.env.SUPABASE_URL);
+  const serviceRoleKey = nonEmpty(process.env.SUPABASE_SERVICE_ROLE_KEY);
+  if (!supabaseUrl || !serviceRoleKey) {
+    return;
+  }
+
+  const baseUrl = supabaseUrl.replace(/\/+$/, "");
+  const endpoint = `${baseUrl}/auth/v1/admin/users/${encodeURIComponent(
+    supabaseUserId
+  )}/logout`;
+
+  try {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        apikey: serviceRoleKey,
+        Authorization: `Bearer ${serviceRoleKey}`,
+        "Content-Type": "application/json"
+      }
+    });
+
+    if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      console.error("SUPABASE_USER_LOGOUT_ALL_ERROR", {
+        supabaseUserId,
+        status: response.status,
+        body
+      });
+    }
+  } catch (error) {
+    console.error("SUPABASE_USER_LOGOUT_ALL_ERROR", {
+      supabaseUserId,
+      error
+    });
+  }
+}
+
 function mapRole(value: string | null | undefined): UserRole {
   const normalized = (value ?? "").trim().toLowerCase();
   if (normalized === "super_admin") return "SUPER_ADMIN";
@@ -952,6 +1031,8 @@ export async function login(email: string, password: string): Promise<LoginResul
     };
   }
 
+  await clearSessionRevocationMarker(data.user);
+
   try {
     const adminClient = getSupabaseAdminClient();
     if (adminClient) {
@@ -1013,6 +1094,10 @@ export async function rotateRefreshToken(refreshToken: string) {
     return null;
   }
 
+  if (hasSessionRevocationMarker(data.user)) {
+    return null;
+  }
+
   const appUser = await mapSupabaseUserToAppUser(data.user);
   if (!appUser || appUser.status !== "ACTIVE") {
     return null;
@@ -1027,12 +1112,99 @@ export async function rotateRefreshToken(refreshToken: string) {
 }
 
 export async function revokeRefreshToken(refreshToken: string | undefined) {
-  void refreshToken;
+  const token = nonEmpty(refreshToken);
+  if (!token) {
+    return;
+  }
+
+  if (!isSupabaseAuthConfigured()) {
+    return;
+  }
+
+  const anonClient = getSupabaseAnonClient();
+  const adminClient = getSupabaseAdminClient();
+  if (!anonClient || !adminClient) {
+    return;
+  }
+
+  const { data, error } = await anonClient.auth.refreshSession({
+    refresh_token: token
+  });
+  if (error || !data.session?.access_token) {
+    return;
+  }
+
+  const { error: signOutError } = await adminClient.auth.admin.signOut(
+    data.session.access_token,
+    "local"
+  );
+  if (signOutError) {
+    console.error("SUPABASE_SESSION_SIGNOUT_ERROR", {
+      reason: signOutError.message
+    });
+  }
   return;
 }
 
 export async function revokeAllUserRefreshSessions(userId: string) {
-  void userId;
+  const normalizedUserId = nonEmpty(userId);
+  if (!normalizedUserId) {
+    return;
+  }
+
+  if (!isSupabaseAuthConfigured()) {
+    return;
+  }
+
+  const adminClient = getSupabaseAdminClient();
+  if (!adminClient) {
+    return;
+  }
+
+  const appUser = await findSessionUserById(normalizedUserId);
+  if (!appUser) {
+    return;
+  }
+
+  let supabaseUser: SupabaseAuthUser | null = null;
+  try {
+    supabaseUser = await findSupabaseUser({
+      appUserId: normalizedUserId,
+      email: appUser.email
+    });
+  } catch (error) {
+    console.error("SUPABASE_USER_FIND_ERROR", {
+      appUserId: normalizedUserId,
+      email: appUser.email,
+      error
+    });
+    return;
+  }
+
+  if (!supabaseUser) {
+    return;
+  }
+
+  const currentMetadata = readSupabaseUserMetadata(supabaseUser);
+  const { error: updateError } = await adminClient.auth.admin.updateUserById(
+    supabaseUser.id,
+    {
+      user_metadata: {
+        ...currentMetadata,
+        session_revoked_at: new Date().toISOString()
+      }
+    }
+  );
+
+  if (updateError) {
+    console.error("SUPABASE_SESSION_REVOCATION_MARK_ERROR", {
+      appUserId: normalizedUserId,
+      supabaseUserId: supabaseUser.id,
+      error: updateError.message
+    });
+  }
+
+  await revokeSupabaseUserSessionsById(supabaseUser.id);
   return;
 }
 

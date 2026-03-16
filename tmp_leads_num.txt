@@ -1,0 +1,271 @@
+1:import { Prisma } from "@prisma/client";
+2:import { Request, Response, Router } from "express";
+3:import { z } from "zod";
+4:import { createLeadSchema, transitionLeadSchema } from "@solar/shared";
+5:import { allowRoles } from "../middleware/rbac.js";
+6:import { created, ok } from "../lib/http.js";
+7:import { prisma } from "../lib/prisma.js";
+8:import { resolveLeadAutoAssignment } from "../services/lead-assignment.service.js";
+13:} from "../services/lead-status.service.js";
+22:} from "../services/notification.service.js";
+23:import { createAuditLog, requestIp } from "../services/audit-log.service.js";
+24:import { validateBody, validateParams, validateQuery } from "../middleware/validate.js";
+25:import { AppError } from "../lib/errors.js";
+29:} from "../services/lead-access.service.js";
+55:    if (typeof input === "boolean") return input;
+56:    if (typeof input === "string") {
+58:      if (normalized === "true") return true;
+59:      if (normalized === "false") return false;
+111:    if (input === null || input === "") return null;
+112:    if (typeof input === "string") {
+125:    email: z.union([z.string().trim().email(), z.literal(""), z.null()]).optional(),
+130:    state: z.union([z.string().trim().min(2).max(100), z.literal(""), z.null()]).optional(),
+133:    message: z.union([z.string().trim().max(1000), z.literal(""), z.null()]).optional(),
+148:        message: "At least one field is required"
+156:      value.email === undefined ? undefined : value.email === "" ? null : value.email,
+160:    state: value.state === undefined ? undefined : value.state === "" ? null : value.state,
+163:      value.message === undefined ? undefined : value.message === "" ? null : value.message,
+182:  if (typeof input !== "string") return input;
+184:  return trimmed === "" ? undefined : trimmed;
+191:    if (typeof normalized === "number") return normalized;
+202:    if (typeof normalized === "number") return normalized;
+203:    if (typeof normalized === "string") {
+215:    if (typeof input === "boolean") return input;
+216:    if (typeof input === "string") {
+218:      if (normalized === "true") return true;
+219:      if (normalized === "false") return false;
+227:  "Residential",
+228:  "Industrial",
+229:  "Agricultural",
+230:  "Other"
+233:const GENDER_OPTIONS = ["Male", "Female", "Other"] as const;
+234:const PROPERTY_OWNERSHIP_OPTIONS = ["Owned", "Rented", "Leased"] as const;
+235:const ROOF_TYPE_OPTIONS = ["RCC", "Tin", "Other"] as const;
+236:const CONNECTION_TYPE_OPTIONS = ["Single Phase", "Three Phase"] as const;
+237:const SHADOW_FREE_AREA_OPTIONS = ["Yes", "Partial", "No"] as const;
+240:const SITE_PHOTO_CATEGORY_PREFIXES = ["site_photo", "site_photograph"] as const;
+246:  if (typeof input !== "string") {
+262:  if (typeof input !== "string") return input;
+265:  if (normalized === "yes") return 1;
+266:  if (normalized === "partial") return 0.5;
+267:  if (normalized === "no") return 0;
+274:    mode: "insensitive"
+282:    z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "dateOfBirth must be YYYY-MM-DD").optional()
+293:      if (typeof normalized !== "string") return normalized;
+294:      return normalized.replace(/\D/g, "");
+296:    z.string().regex(/^\d{12}$/, "aadhaarNumber must be 12 digits").optional()
+302:      if (typeof normalized !== "string") return normalized;
+303:      return normalized.toUpperCase().replace(/\s/g, "");
+307:      .regex(/^[A-Z]{5}[0-9]{4}[A-Z]$/, "panNumber must match PAN format")
+315:    z.string().regex(/^\d{6}$/, "pincode must be 6 digits").optional()
+345:      if (typeof normalized !== "string") return normalized;
+346:      return normalized.replace(/\s/g, "");
+355:      if (typeof normalized !== "string") return normalized;
+356:      return normalized.toUpperCase().replace(/\s/g, "");
+360:      .regex(/^[A-Z]{4}0[A-Z0-9]{6}$/, "ifscCode must be valid IFSC")
+376:  return role === "SUPER_ADMIN" || role === "ADMIN";
+381:  const compact = value.replace(/\s/g, "");
+384:  return `${"*".repeat(compact.length - 4)}${compact.slice(-4)}`;
+388:  return role === "SUPER_ADMIN" || role === "ADMIN";
+473:const LEAD_INTERNAL_NOTE_ACTION = "LEAD_INTERNAL_NOTE_ADDED";
+477:    role === "SUPER_ADMIN" ||
+478:    role === "ADMIN" ||
+479:    role === "EXECUTIVE"
+484:  if (!lead || typeof lead !== "object") {
+504:    entry.detailsJson && typeof entry.detailsJson === "object"
+507:  const noteValue = typeof details.note === "string" ? details.note : "";
+525:      entityType: "lead",
+529:    orderBy: { createdAt: "desc" },
+547:      { entityType: "lead", entityId: leadId },
+550:          path: ["leadId"],
+565:    orderBy: { createdAt: "desc" },
+598:  field: "dateFrom" | "dateTo"
+603:    throw new AppError(400, "VALIDATION_ERROR", `${field} must be a valid date`);
+605:  if (!raw.includes("T")) {
+606:    if (field === "dateFrom") {
+668:    orderBy: { createdAt: "desc" },
+679:    orderBy: { createdAt: "desc" },
+691:    orderBy: { createdAt: "desc" },
+703:    orderBy: { createdAt: "desc" },
+719:  allowRoles("SUPER_ADMIN", "ADMIN", "DISTRICT_MANAGER", "FIELD_EXECUTIVE")
+722:leadsRouter.get("/", validateQuery(listLeadsQuerySchema), async (req: Request, res: Response) => {
+724:  const dateFrom = parseDateBoundary(query.dateFrom, "dateFrom");
+725:  const dateTo = parseDateBoundary(query.dateTo, "dateTo");
+728:    throw new AppError(400, "VALIDATION_ERROR", "dateFrom cannot be greater than dateTo");
+734:        .split(",")
+740:        .split(",")
+749:        { name: { contains: query.search, mode: "insensitive" } },
+750:        { phone: { contains: query.search, mode: "insensitive" } },
+751:        { email: { contains: query.search, mode: "insensitive" } },
+763:        "VALIDATION_ERROR",
+764:        "statusIds must contain comma-separated UUID values"
+775:        where: { name: { equals: query.status, mode: "insensitive" } },
+782:          "Leads fetched",
+800:        (value): value is string => typeof value === "string" && value.length > 0
+809:        "VALIDATION_ERROR",
+810:        "districtIds must contain UUID values"
+820:          state: { equals: query.state, mode: "insensitive" }
+825:              state: { equals: query.state, mode: "insensitive" }
+839:      installationType: { equals: query.type, mode: "insensitive" }
+845:      utmSource: { contains: query.source, mode: "insensitive" }
+875:      orderBy: { createdAt: "desc" },
+883:    "Leads fetched",
+894:  "/:id",
+904:      throw new AppError(404, "NOT_FOUND", "Lead not found");
+923:      "Lead detail fetched"
+929:  "/:id/internal-notes",
+933:      throw new AppError(403, "FORBIDDEN", "You cannot view internal notes");
+942:      throw new AppError(404, "NOT_FOUND", "Lead not found");
+946:    return ok(res, notes, "Internal notes fetched");
+951:  "/:id/internal-notes",
+956:      throw new AppError(403, "FORBIDDEN", "You cannot add internal notes");
+967:      throw new AppError(404, "NOT_FOUND", "Lead not found");
+974:        entityType: "lead",
+979:          visibility: "internal"
+994:    return created(res, toInternalNoteResponse(createdLog), "Internal note added");
+999:  "/:id/activity-log",
+1008:      throw new AppError(404, "NOT_FOUND", "Lead not found");
+1012:    return ok(res, activityLog, "Lead activity log fetched");
+1017:  "/:id/allowed-next-statuses",
+1040:      throw new AppError(404, "NOT_FOUND", "Lead not found");
+1051:      orderBy: [{ orderIndex: "asc" }, { createdAt: "asc" }],
+1069:      "Allowed next statuses fetched"
+1075:  "/:id/customer-details",
+1105:      throw new AppError(404, "NOT_FOUND", "Lead not found");
+1144:      "Customer details fetched"
+1150:  "/:id/customer-details",
+1183:      throw new AppError(404, "NOT_FOUND", "Lead not found");
+1193:        "TERMINAL_STATUS_LOCKED",
+1194:        "Customer details cannot be edited once lead is in terminal status"
+1204:        throw new AppError(400, "INVALID_DISTRICT", "districtId is invalid");
+1260:    if (!effective.fullName) missingRequired.push("fullName");
+1261:    if (!effective.dateOfBirth) missingRequired.push("dateOfBirth");
+1262:    if (!effective.gender) missingRequired.push("gender");
+1263:    if (!effective.fatherHusbandName) missingRequired.push("fatherHusbandName");
+1264:    if (!effective.aadhaarNumber) missingRequired.push("aadhaarNumber");
+1265:    if (!effective.panNumber) missingRequired.push("panNumber");
+1266:    if (!effective.addressLine1) missingRequired.push("addressLine1");
+1267:    if (!effective.villageLocality) missingRequired.push("villageLocality");
+1268:    if (!effective.pincode) missingRequired.push("pincode");
+1269:    if (!effective.districtId) missingRequired.push("district");
+1270:    if (!effective.state) missingRequired.push("state");
+1271:    if (!effective.installationType) missingRequired.push("installationType");
+1272:    if (!effective.propertyOwnership) missingRequired.push("propertyOwnership");
+1273:    if (!effective.roofArea) missingRequired.push("roofArea");
+1274:    if (!effective.recommendedCapacity) missingRequired.push("recommendedCapacity");
+1276:      missingRequired.push("shadowFreeArea");
+1278:    if (!effective.roofType) missingRequired.push("roofType");
+1279:    if (!effective.verifiedMonthlyBill) missingRequired.push("verifiedMonthlyBill");
+1280:    if (!effective.connectionType) missingRequired.push("connectionType");
+1281:    if (!effective.consumerNumber) missingRequired.push("consumerNumber");
+1282:    if (!effective.discomName) missingRequired.push("discomName");
+1283:    if (!effective.bankAccountNumber) missingRequired.push("bankAccountNumber");
+1284:    if (!effective.bankName) missingRequired.push("bankName");
+1285:    if (!effective.ifscCode) missingRequired.push("ifscCode");
+1286:    if (!effective.accountHolderName) missingRequired.push("accountHolderName");
+1291:        "CUSTOMER_DETAILS_REQUIRED_FIELDS_MISSING",
+1292:        `Missing required fields: ${missingRequired.join(", ")}`
+1299:        "LOAN_AMOUNT_REQUIRED",
+1300:        "loanAmountRequired is required when loanRequired is true"
+1307:        "SITE_PHOTOS_REQUIRED",
+1315:        "SITE_PHOTOS_LIMIT_EXCEEDED",
+1476:      action: "CUSTOMER_DETAILS_UPSERTED",
+1477:      entityType: "lead",
+1507:      "Customer details saved"
+1513:  "/:id",
+1514:  allowRoles("SUPER_ADMIN", "ADMIN", "DISTRICT_MANAGER"),
+1533:      throw new AppError(404, "NOT_FOUND", "Lead not found");
+1546:      actorRole === "SUPER_ADMIN" || actorRole === "ADMIN" || actorRole === "MANAGER";
+1549:      throw new AppError(403, "FORBIDDEN", "You cannot reassign this lead");
+1555:        "REASSIGNMENT_REASON_REQUIRED",
+1556:        "reassignmentReason is required when changing assignedExecutiveId"
+1566:        throw new AppError(400, "INVALID_DISTRICT", "Invalid districtId");
+1579:        executive.role !== "EXECUTIVE" ||
+1580:        executive.status !== "ACTIVE"
+1584:          "INVALID_EXECUTIVE",
+1585:          "assignedExecutiveId must be an active executive"
+1597:        manager.role !== "MANAGER" ||
+1598:        manager.status !== "ACTIVE"
+1600:        throw new AppError(400, "INVALID_MANAGER", "assignedManagerId must be an active manager");
+1604:    if (actorRole === "MANAGER") {
+1608:          "FORBIDDEN",
+1609:          "District managers cannot move leads across districts"
+1619:          "FORBIDDEN",
+1620:          "District managers cannot reassign district manager ownership"
+1628:            "INVALID_EXECUTIVE",
+1629:            "District managers can only reassign to an active executive in their district"
+1636:            "INVALID_DISTRICT",
+1637:            "Lead district is required for district manager reassignment"
+1646:              role: "EXECUTIVE",
+1647:              status: "ACTIVE"
+1655:            "INVALID_EXECUTIVE_DISTRICT_SCOPE",
+1656:            "District manager can reassign only to executives mapped to the same district"
+1691:        reason: "Marked overdue from lead update"
+1697:      action: "LEAD_UPDATED",
+1698:      entityType: "lead",
+1707:        action: "LEAD_REASSIGNED",
+1708:        entityType: "lead",
+1729:          "Lead reassigned",
+1730:          `Lead ${existing.externalId} has been reassigned.${payload.reassignmentReason ? ` Reason: ${payload.reassignmentReason}` : ""}`,
+1732:            type: "INTERNAL",
+1734:            entityType: "lead",
+1749:      "Lead updated"
+1755:  "/:id",
+1756:  allowRoles("SUPER_ADMIN"),
+1769:      throw new AppError(404, "NOT_FOUND", "Lead not found");
+1784:      action: "LEAD_DELETED",
+1785:      entityType: "lead",
+1794:    return ok(res, { id }, "Lead deleted");
+1799:  "/",
+1800:  allowRoles("SUPER_ADMIN", "ADMIN", "DISTRICT_MANAGER", "FIELD_EXECUTIVE"),
+1810:        "NO_STATUS_CONFIG",
+1811:        'Lead status "New" (or "New Lead") is not configured'
+1819:        "NO_STATUS_CONFIG",
+1820:        'Lead status "Assigned" is not configured'
+1828:        "NO_ASSIGNEE_AVAILABLE",
+1829:        "No valid auto-assignment target is available. Ensure the district has at least one active district manager and active assignees."
+1840:        "AUTO_ASSIGN_TRANSITION_NOT_ALLOWED",
+1841:        'Transition "New -> Assigned" is not allowed in lead status transition config'
+1846:      autoAssignment.mode === "EXECUTIVE"
+1847:        ? "Auto-assigned to field executive"
+1874:              notes: "Lead created"
+1914:        "Executive unavailable in district",
+1921:      entityType: "lead",
+1923:      action: "LEAD_CREATED",
+1936:      entityType: "lead",
+1938:      action: "LEAD_AUTO_ASSIGNED",
+1955:        entityType: "lead",
+1957:        action: "LEAD_AUTO_ASSIGNMENT_FALLBACK",
+1976:      "Lead created"
+1982:  "/:id/transition",
+1983:  allowRoles("SUPER_ADMIN", "ADMIN", "DISTRICT_MANAGER", "FIELD_EXECUTIVE"),
+1990:      throw new AppError(401, "UNAUTHORIZED", "Login required");
+2002:        throw new AppError(404, "NOT_FOUND", "Lead not found");
+2007:          "INVALID_LEAD_STATUS",
+2008:          "Lead has invalid current status mapping"
+2023:        throw new AppError(400, "INVALID_STATUS", "Target status not found");
+2029:          "NO_STATUS_CHANGE",
+2030:          "Target status must be different from current status"
+2036:        typeof parsed.overrideReason === "string" &&
+2039:      if (movingFromTerminal && req.user.role !== "SUPER_ADMIN") {
+2042:          "TERMINAL_STATUS_LOCKED",
+2043:          "Cannot move a lead out of terminal status without Super Admin override"
+2049:          "OVERRIDE_REASON_REQUIRED",
+2050:          "overrideReason is required when overriding terminal status movement"
+2058:          "INVALID_STATUS_TRANSITION",
+2059:          "Transition not allowed by workflow configuration"
+2066:          "TRANSITION_NOTE_REQUIRED",
+2067:          `A note is required when moving to "${toStatus.name}"`
+2081:            "TRANSITION_DOCUMENT_REQUIRED",
+2082:            `At least one document must be uploaded before moving to "${toStatus.name}"`
+2090:            .join(" | ")
+2113:        entityType: "lead",
+2116:          ? "LEAD_STATUS_CHANGED_WITH_TERMINAL_OVERRIDE"
+2117:          : "LEAD_STATUS_CHANGED",
+2137:        actorRole === "SUPER_ADMIN" || actorRole === "ADMIN" || actorRole === "MANAGER";
+2159:      return ok(res, updated, "Status updated");
+2168:          "TRANSITION_WRITE_FAILED",
+2176:          "TRANSITION_VALIDATION_FAILED",
+2177:          "Transition payload or relation mapping is invalid"
+2183:        "TRANSITION_UNEXPECTED_ERROR",
+2184:        error instanceof Error ? error.message : "Unexpected transition failure"

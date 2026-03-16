@@ -10,6 +10,11 @@ import { sendCustomerNotification } from "./customer-notification-delivery.servi
 
 export type NotificationEventType =
   | "NEW_LEAD"
+  | "LEAD_STATUS_UPDATED"
+  | "LOAN_STATUS_UPDATED"
+  | "UTR_REJECTED"
+  | "DOCUMENT_REJECTED"
+  | "LEAD_INACTIVITY_REMINDER"
   | "DOC_PENDING_REVIEW"
   | "UTR_PENDING_VERIFICATION"
   | "LEAD_OVERDUE"
@@ -656,6 +661,104 @@ export async function triggerNewLeadNotification(input: {
       entityId: input.leadId,
       metadata: {
         externalId: input.externalId
+      }
+    }
+  );
+}
+
+export async function triggerExecutiveLeadStatusUpdatedNotification(input: {
+  leadId: string;
+  externalId: string;
+  assignedExecutiveId?: string | null;
+  fromStatusName: string;
+  toStatusName: string;
+  changedByRole: string;
+  changedByUserId?: string | null;
+}) {
+  if (!input.assignedExecutiveId) return [];
+  if (input.changedByUserId && input.changedByUserId === input.assignedExecutiveId) {
+    return [];
+  }
+
+  return notifyUsers(
+    [input.assignedExecutiveId],
+    "Lead status updated",
+    `Lead ${input.externalId} moved from "${input.fromStatusName}" to "${input.toStatusName}" by ${input.changedByRole}.`,
+    {
+      type: "LEAD_STATUS_UPDATED",
+      leadId: input.leadId,
+      entityType: "lead",
+      entityId: input.leadId,
+      metadata: {
+        externalId: input.externalId,
+        fromStatus: input.fromStatusName,
+        toStatus: input.toStatusName,
+        changedByRole: input.changedByRole
+      }
+    }
+  );
+}
+
+function isLoanStatusName(statusName: string) {
+  return statusName.trim().toLowerCase().includes("loan");
+}
+
+export async function triggerExecutiveLoanStatusUpdatedNotification(input: {
+  leadId: string;
+  externalId: string;
+  assignedExecutiveId?: string | null;
+  statusName: string;
+  changedByRole: string;
+  changedByUserId?: string | null;
+}) {
+  if (!input.assignedExecutiveId) return [];
+  if (!isLoanStatusName(input.statusName)) return [];
+  if (input.changedByUserId && input.changedByUserId === input.assignedExecutiveId) {
+    return [];
+  }
+
+  return notifyUsers(
+    [input.assignedExecutiveId],
+    "Loan status updated",
+    `Loan stage for lead ${input.externalId} is now "${input.statusName}".`,
+    {
+      type: "LOAN_STATUS_UPDATED",
+      leadId: input.leadId,
+      entityType: "loan",
+      entityId: input.leadId,
+      metadata: {
+        externalId: input.externalId,
+        statusName: input.statusName,
+        changedByRole: input.changedByRole
+      }
+    }
+  );
+}
+
+export async function triggerExecutiveInactivityReminderNotification(input: {
+  leadId: string;
+  externalId: string;
+  assignedExecutiveId?: string | null;
+  inactivityDays: number;
+  statusName: string;
+  lastActivityAt: Date;
+}) {
+  if (!input.assignedExecutiveId) return [];
+
+  return notifyUsers(
+    [input.assignedExecutiveId],
+    "Inactivity reminder",
+    `Lead ${input.externalId} has no activity for ${input.inactivityDays} day(s). Current status: "${input.statusName}".`,
+    {
+      type: "LEAD_INACTIVITY_REMINDER",
+      leadId: input.leadId,
+      entityType: "lead",
+      entityId: input.leadId,
+      metadata: {
+        externalId: input.externalId,
+        inactivityDays: input.inactivityDays,
+        statusName: input.statusName,
+        lastActivityAt: input.lastActivityAt.toISOString()
       }
     }
   );

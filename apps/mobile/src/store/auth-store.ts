@@ -5,6 +5,7 @@ import { create } from "zustand";
 import { api, setAuthFailureHandler, type AuthFailureInfo } from "../services/api";
 import { useQueueStore } from "./queue-store";
 import { clearOfflineCacheForOwner } from "../services/offline-cache";
+import { clearStoredPushToken, unregisterCurrentPushToken } from "../services/push-notifications";
 
 const BIOMETRIC_ENABLED_KEY = "auth.biometric_enabled";
 const HAS_LOGGED_IN_ONCE_KEY = "auth.has_logged_in_once";
@@ -235,6 +236,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   logout: async () => {
     const currentUserId = get().user?.id;
+    await unregisterCurrentPushToken();
     try {
       await api.post("/api/auth/logout");
     } catch {
@@ -313,6 +315,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       void useQueueStore.getState().clearByOwner(currentUserId);
       void clearOfflineCacheForOwner(currentUserId);
     }
+    void clearStoredPushToken();
 
     const notice = blockedAccountNotice(info) ?? null;
     void persistAuthNotice(notice);

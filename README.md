@@ -111,6 +111,25 @@ Notes:
     lead_status_history, customer_details, documents, payments, notification_templates,
     notification_logs, loan_details, audit_logs, user_device_tokens
 
+## Migration Manager (Prisma Only)
+This project is Prisma-managed for schema/migrations. It is not configured with Supabase CLI
+migration tracking (`supabase/` folder is intentionally absent).
+
+Important:
+- Do not run Supabase migration status/list commands for this repo in deployment hooks.
+- Do not query `supabase_migrations.schema_migrations` from app/runtime health checks.
+- Use Prisma migration commands only.
+
+Safe production command:
+```bash
+pnpm --filter @solar/api exec prisma migrate deploy --schema ./prisma/schema.prisma
+```
+
+If you intentionally use schema sync instead of SQL migrations:
+```bash
+pnpm --filter @solar/api exec prisma db push --schema ./prisma/schema.prisma
+```
+
 ## Storage
 Storage:
 Supabase Storage

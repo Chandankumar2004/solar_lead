@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { FlatList, RefreshControl, StyleSheet, Text, View } from "react-native";
+import { FlatList, Pressable, RefreshControl, StyleSheet, Text, View } from "react-native";
 import { api } from "../services/api";
+import { useNotificationStore } from "../store/notification-store";
 import { AppScreen, Badge, Card, SectionTitle, useAppPalette } from "../ui/primitives";
 import { spacing } from "../ui/theme";
 
@@ -20,6 +21,9 @@ function formatDate(value: string) {
 
 export function NotificationsScreen() {
   const colors = useAppPalette();
+  const unreadCount = useNotificationStore((s) => s.unreadCount);
+  const localPushRecent = useNotificationStore((s) => s.recent);
+  const markAllRead = useNotificationStore((s) => s.markAllRead);
   const [items, setItems] = useState<FeedItem[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -53,7 +57,40 @@ export function NotificationsScreen() {
     <AppScreen style={{ paddingBottom: 0 }}>
       <Card>
         <SectionTitle title="Notifications" subtitle="Recent communication and internal alerts" />
+        <View style={styles.headerMeta}>
+          <Badge label={`Unread: ${unreadCount}`} tone={unreadCount > 0 ? "warning" : "success"} />
+          {unreadCount > 0 ? (
+            <Pressable
+              onPress={() => {
+                void markAllRead();
+              }}
+              style={styles.markAllButton}
+            >
+              <Text style={{ color: colors.primary, fontWeight: "700" }}>Mark all read</Text>
+            </Pressable>
+          ) : null}
+        </View>
       </Card>
+      {localPushRecent.length > 0 ? (
+        <Card>
+          <SectionTitle title="Device Push Inbox" subtitle="Latest push events received on this device" />
+          {localPushRecent.slice(0, 5).map((item) => (
+            <View key={item.id} style={styles.localRow}>
+              <View style={styles.topRow}>
+                <Badge label={item.type ?? "INTERNAL"} tone="info" />
+                <Badge label={item.isRead ? "READ" : "UNREAD"} tone={item.isRead ? "neutral" : "warning"} />
+              </View>
+              <Text style={[styles.message, { color: colors.text }]}>
+                {item.title ?? "Notification"}
+              </Text>
+              {item.body ? (
+                <Text style={[styles.message, { color: colors.textMuted }]}>{item.body}</Text>
+              ) : null}
+              <Text style={[styles.date, { color: colors.textMuted }]}>{formatDate(item.createdAt)}</Text>
+            </View>
+          ))}
+        </Card>
+      ) : null}
       {error ? <Text style={[styles.error, { color: colors.danger }]}>{error}</Text> : null}
       <FlatList
         data={items}
@@ -104,6 +141,22 @@ export function NotificationsScreen() {
 
 const styles = StyleSheet.create({
   error: {},
+  headerMeta: {
+    marginTop: 8,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between"
+  },
+  markAllButton: {
+    paddingHorizontal: 8,
+    paddingVertical: 4
+  },
+  localRow: {
+    borderTopWidth: 1,
+    borderTopColor: "#E5E7EB",
+    paddingTop: spacing.sm,
+    marginTop: spacing.xs
+  },
   emptyText: {
     marginTop: 16
   },

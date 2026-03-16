@@ -46,6 +46,7 @@ type ApiCustomerDetail = {
   fatherHusbandName?: string | null;
   aadhaarMasked?: string | null;
   panNumber?: string | null;
+  panMasked?: string | null;
   addressLine1?: string | null;
   addressLine2?: string | null;
   villageLocality?: string | null;
@@ -197,6 +198,10 @@ function sanitizeIfsc(input: string) {
 
 function sanitizeAadhaar(input: string) {
   return input.replace(/\D/g, "").slice(0, 12);
+}
+
+function sanitizeBankAccountNumber(input: string) {
+  return input.replace(/\D/g, "").slice(0, 34);
 }
 
 function normalizeCaseInsensitiveOption(
@@ -367,7 +372,7 @@ function buildCustomerDetailsPayload(
   const discomName = normalizeText(values.discomName);
   if (discomName) payload.discomName = discomName;
 
-  const bankAccountNumber = normalizeText(values.bankAccountNumber)?.replace(/\s/g, "");
+  const bankAccountNumber = sanitizeBankAccountNumber(values.bankAccountNumber);
   if (bankAccountNumber) payload.bankAccountNumber = bankAccountNumber;
 
   const bankName = normalizeText(values.bankName);
@@ -485,6 +490,7 @@ export function CustomerDetailsScreen({ route }: CustomerDetailsScreenProps) {
   const [isEditable, setIsEditable] = useState(true);
   const [aadhaarFocused, setAadhaarFocused] = useState(false);
   const [existingAadhaarMasked, setExistingAadhaarMasked] = useState<string | null>(null);
+  const [existingPanMasked, setExistingPanMasked] = useState<string | null>(null);
   const [existingBankMasked, setExistingBankMasked] = useState<string | null>(null);
   const [leadPrefill, setLeadPrefill] = useState<ApiCustomerDetailsResponse["leadPrefill"] | null>(
     null
@@ -535,6 +541,7 @@ export function CustomerDetailsScreen({ route }: CustomerDetailsScreenProps) {
     setSitePhotoMin(payload.sitePhotographs?.minRequired ?? 3);
     setSitePhotoMax(payload.sitePhotographs?.maxAllowed ?? 10);
     setExistingAadhaarMasked(payload.customerDetail?.aadhaarMasked ?? null);
+    setExistingPanMasked(payload.customerDetail?.panMasked ?? null);
     setExistingBankMasked(payload.customerDetail?.bankAccountMasked ?? null);
   }, []);
 
@@ -872,6 +879,15 @@ export function CustomerDetailsScreen({ route }: CustomerDetailsScreenProps) {
       return;
     }
 
+    const bankAccountNumber = sanitizeBankAccountNumber(values.bankAccountNumber);
+    if (
+      bankAccountNumber &&
+      (bankAccountNumber.length < 6 || bankAccountNumber.length > 34)
+    ) {
+      Alert.alert("Invalid Bank Account", "Bank account number must be 6 to 34 digits.");
+      return;
+    }
+
     const ifsc = sanitizeIfsc(values.ifscCode);
     if (ifsc && !IFSC_REGEX.test(ifsc)) {
       Alert.alert("Invalid IFSC", "IFSC must follow standard 11-character format.");
@@ -959,7 +975,7 @@ export function CustomerDetailsScreen({ route }: CustomerDetailsScreenProps) {
     if (!normalizeText(values.gender)) missingRequired.push("Gender");
     if (!normalizeText(values.fatherHusbandName)) missingRequired.push("Father / Husband Name");
     if (!aadhaar && !existingAadhaarMasked) missingRequired.push("Aadhaar Number");
-    if (!pan) missingRequired.push("PAN Number");
+    if (!pan && !existingPanMasked) missingRequired.push("PAN Number");
     if (!normalizeText(values.addressLine1)) missingRequired.push("Complete Address");
     if (!normalizeText(values.villageLocality)) missingRequired.push("Village / Locality");
     if (!normalizeText(values.pincode)) missingRequired.push("Pin Code");
@@ -978,7 +994,7 @@ export function CustomerDetailsScreen({ route }: CustomerDetailsScreenProps) {
       missingRequired.push("Current Electricity Connection Type");
     if (!normalizeText(values.consumerNumber)) missingRequired.push("Electricity Consumer Number");
     if (!normalizeText(values.discomName)) missingRequired.push("DISCOM / Electricity Board Name");
-    if (!normalizeText(values.bankAccountNumber) && !existingBankMasked)
+    if (!bankAccountNumber && !existingBankMasked)
       missingRequired.push("Bank Account Number");
     if (!normalizeText(values.bankName)) missingRequired.push("Bank Name");
     if (!ifsc) missingRequired.push("IFSC Code");
@@ -1215,7 +1231,13 @@ export function CustomerDetailsScreen({ route }: CustomerDetailsScreenProps) {
           />
         </LabeledInput>
 
-        <LabeledInput label="PAN (uppercase)" labelColor={colors.text} helperColor={colors.textMuted} errorColor={colors.danger}>
+        <LabeledInput
+          label="PAN (uppercase)"
+          helper={existingPanMasked ? `Saved PAN: ${existingPanMasked}` : undefined}
+          labelColor={colors.text}
+          helperColor={colors.textMuted}
+          errorColor={colors.danger}
+        >
           <Controller
             control={control}
             name="panNumber"
@@ -1508,7 +1530,7 @@ export function CustomerDetailsScreen({ route }: CustomerDetailsScreenProps) {
             render={({ field: { value, onChange } }) => (
               <TextInput
                 value={value}
-                onChangeText={onChange}
+                onChangeText={(text) => onChange(sanitizeBankAccountNumber(text))}
                 editable={isEditable}
                 keyboardType="number-pad"
                 placeholder="Enter account number to update"

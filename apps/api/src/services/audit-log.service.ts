@@ -1,4 +1,5 @@
 import { Request } from "express";
+import { randomUUID } from "node:crypto";
 import { getSupabaseAdminClient } from "../lib/supabase.js";
 
 export async function createAuditLog(input: {
@@ -23,6 +24,7 @@ export async function createAuditLog(input: {
     const { data, error } = await adminClient
       .from("audit_logs")
       .insert({
+        id: randomUUID(),
         actor_user_id: input.actorUserId ?? null,
         action: input.action,
         entity_type: input.entityType,

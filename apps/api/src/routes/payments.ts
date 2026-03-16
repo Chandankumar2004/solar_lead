@@ -791,7 +791,7 @@ paymentsRouter.post(
         "UTR rejected",
         `Payment UTR for lead ${existing.lead.externalId} was rejected.${rejectionReasonText}`,
         {
-          type: "INTERNAL",
+          type: "UTR_REJECTED",
           leadId: existing.leadId,
           entityType: "payment",
           entityId: existing.id,

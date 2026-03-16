@@ -1,212 +1,112 @@
-# Mobile Audit: Section 6.4 Customer Data Collection Form
+# MOBILE_CUSTOMER_DATA_FORM_AUDIT
 
-## Scope
-- Audited and fixed scope target:
-  - `6.4 Customer Data Collection Form`
-- Out of scope:
-  - Other mobile modules unless directly required for this form.
+## 1. Current customer data collection form implementation found in code
+- Mobile screen exists: `apps/mobile/src/screens/CustomerDetailsScreen.tsx`.
+- Uses `react-hook-form` + controlled inputs, local draft autosave in `AsyncStorage`, and draft restore on reopen.
+- Uses same backend API as web: `GET/PUT /api/leads/:id/customer-details` in `apps/api/src/routes/leads.ts`.
+- Backend enforces assigned-lead scoping with `scopeLeadWhere(req.user!, { id })`.
+- Backend enforces terminal-status edit lock via `canEditCustomerDetails`.
+- Site photo upload uses existing secure upload pipeline (`uploadLeadDocument`) and queue fallback (`UPSERT_CUSTOMER_DETAILS`, `UPLOAD_LEAD_DOCUMENT`).
 
-## Current Implementation Found
+## 2. Which required features are already present
+- Lead-linked form submission and update flow.
+- Edit-until-terminal behavior (backend authoritative + mobile disabled state).
+- Required field checks (mobile and backend).
+- Aadhaar masking in display contexts.
+- PAN uppercase transformation.
+- IFSC lookup and bank name autofill.
+- Site photo count guard (min/max) in form submit flow.
+- Offline draft autosave and restore.
+- Assigned lead scoping on backend.
 
-### Mobile form screen
-- Screen exists: `apps/mobile/src/screens/CustomerDetailsScreen.tsx`.
-- Uses `react-hook-form` with `Controller` + `useWatch`.
-- Draft autosave to `AsyncStorage` is present (`customer_details_draft:<leadId>`), with restore on reopen.
-- Aadhaar input masking exists in UI (masked unless focused) and masked value from backend is displayed post-save.
-- PAN uppercase transform exists.
-- IFSC lookup exists and auto-fills bank name from Razorpay IFSC API response.
-- Terminal edit lock handling exists (`isEditable` from backend blocks edits and submit button).
-- Major gaps:
-  - Many required fields are not enforced before submit.
-  - District/state prefill display is missing.
-  - Installation type display in this form is missing.
-  - Site photographs section (min 3 / max 10 enforcement) is missing in this screen.
-  - Date field is plain text input (no picker UI).
-  - Several required single-select fields are implemented as free-text fields.
+## 3. Which required features are partially implemented
+- Date of Birth uses validated text format (`YYYY-MM-DD`), not a native date-picker UI.
+- IFSC flow auto-populates bank name; branch is only shown as helper metadata (no dedicated persisted branch field).
+- Sensitive-field protection is now encrypted for new/updated values; legacy rows can still be plaintext until updated/backfilled.
 
-### Backend customer-details API
-- Endpoint exists: `GET /api/leads/:id/customer-details`, `PUT /api/leads/:id/customer-details`.
-- Lead access is scoped through `scopeLeadWhere(req.user!, { id })`.
-- Terminal lock is enforced backend-side via `canEditCustomerDetails`.
-- Sensitive response masking exists for Aadhaar/bank account; PAN unmasked only for admin/super admin.
-- Validation exists for formats (aadhaar/pan/pincode/ifsc) but fields are largely optional.
-- Major gaps:
-  - Comprehensive required-field enforcement missing.
-  - Conditional requirement `loanAmountRequired` when `loanRequired=true` is not strictly enforced against effective final state.
-  - Site-photo minimum count requirement is not enforced backend-side.
-  - GET response does not include prefill metadata needed by form (`district`, `state`, `installationType`).
+## 4. Which required features are missing
+- Native date-picker UI control for DOB (still text input).
+- Dedicated persisted branch field for IFSC branch auto-population.
 
-### Database/schema alignment
-- `CustomerDetail` model exists with most required personal/property/bank fields.
-- `Lead` model already holds `district`, `state`, `installationType`.
-- No dedicated site-photo counter column; documents are tracked in `documents` table (category-based).
-- No schema blocker for implementing critical/high fixes in this section.
+## 5. Which required features are broken or insecure
+- Fixed: PAN re-entry bug for executives (masked PAN existed but mobile still required fresh PAN each submit).
+- Fixed: Bank account was not strictly digit-only in validation path.
+- Fixed: Sensitive fields (`aadhaar_encrypted`, `pan_encrypted`, `bank_account_encrypted`) were being written as plaintext.
 
-## Feature Coverage
+## 6. Which backend/schema changes are required
+- Applied backend changes:
+  - Added encryption/decryption helper service: `apps/api/src/services/sensitive-data.service.ts`.
+  - Applied encryption before storing sensitive fields in customer details upsert.
+  - Decryption-aware masking in API response generation.
+  - Strict bank account digit validation (`6-34` digits) in zod schema.
+- Schema migration not required for these fixes (existing columns reused).
+- Optional future schema enhancement:
+  - Add explicit `bankBranch` column if branch persistence is required.
 
-### Already present
-- Lead association and assigned-lead scope checks.
-- Terminal status edit block (backend + mobile UI behavior).
-- Draft autosave and draft restore.
-- Aadhaar masking in display after entry.
-- PAN uppercase transform.
-- IFSC lookup + bank auto-fill (partial metadata display).
-- Backend format-level validation for aadhaar/pan/pincode/ifsc.
+## 7. Which mobile UI changes are required
+- Applied mobile changes:
+  - Added `panMasked` handling from API payload.
+  - PAN required check now accepts existing masked PAN (no forced re-entry).
+  - Bank account input now sanitizes to digits only.
+  - Bank account length guard aligned with backend (`6-34` digits).
 
-### Partially implemented
-- Field validation before submit (some format checks only; requiredness incomplete).
-- IFSC integration (bank auto-fill exists; branch metadata is only informational).
-- Sensitive data protection (masking present; still relies on optional-field saves with no completeness checks).
+## 8. Which env/config changes are required
+- Added optional env support:
+  - `CUSTOMER_DATA_ENCRYPTION_KEY` in:
+    - `apps/api/src/config/env.ts`
+    - `apps/api/.env.example`
+- Behavior:
+  - If provided (recommended: 32-byte base64), used for customer sensitive field encryption.
+  - If absent, code falls back to JWT/service-role secret hashing.
 
-### Missing
-- Required-field completeness validation (mobile + backend).
-- District/state prefilled display from lead in customer form.
-- Installation type display/prefill in customer form.
-- Site photograph upload section in customer form with min 3 / max 10 validation.
-- Backend enforcement for minimum required site photos.
-- Strict conditional validation for loan amount (effective final state).
-- Standardized required-select UX for constrained fields.
+## 9. Security and authorization issues found
+- Authorization/scoping: correct (assigned-lead scope check exists).
+- Terminal edit lock: correct (backend-enforced).
+- Sensitive storage: previously insecure, now fixed for new writes via encryption helper.
 
-### Broken/Insecure risk points
-- Backend accepts incomplete customer detail payloads, enabling partial records where full form is required.
-- Mobile submit allows many required fields to remain empty.
-- Site photo requirement is not enforced in this form flow.
-
-## Backend/Schema Changes Required
-
-### Required backend changes (Critical/High)
-- Extend customer-details payload to support `installationType` updates (lead field) within this form flow.
-- Return lead prefill metadata in GET customer-details response:
-  - district name/state
-  - lead state
-  - lead installation type
-- Enforce required-field completeness server-side on PUT (against merged current+incoming values).
-- Enforce conditional rule:
-  - if loan required, loan amount required must be present and positive.
-- Enforce site photograph minimum count (>=3) before accepting final customer-details save.
-- Enforce constrained values for required select-like fields.
-
-### Schema changes
-- No mandatory schema migration for critical/high fixes.
-
-## Mobile UI Changes Required
-
-### Required mobile changes (Critical/High)
-- Add district/state/installation type prefill display (read-only).
-- Add explicit required-field validation and user-facing error checks before submit.
-- Add site photo upload section in this screen (camera/gallery/files via existing upload pipeline).
-- Enforce min 3 / max 10 site photos before submit.
-- Use constrained selection controls for required select fields to avoid invalid free-text.
-- Keep autosave/restore behavior intact.
-
-## Env/Config Changes Required
-- No new mandatory env vars required for critical/high fixes.
-- IFSC lookup currently uses public endpoint; failure handling already present and should remain graceful.
-
-## Security and Authorization Findings
-- Positive:
-  - Assigned-lead scoping present (`scopeLeadWhere`).
-  - Terminal edit restriction enforced backend-side.
-  - Sensitive masking for Aadhaar/bank account in responses.
-- Issues to fix:
-  - Incomplete form acceptance by backend (requiredness not enforced).
-  - Missing site-photo requirement enforcement in this form path.
-
-## Draft/Autosave Findings
-- Draft save on change and restore on reopen are implemented.
-- Draft clearing on successful submit is implemented.
-- No critical draft issue found.
-
-## Validation and Masking Findings
-- Aadhaar masking in display: implemented.
-- PAN uppercase: implemented.
-- Required field validation: incomplete.
-- Conditional loan amount validation: incomplete.
-
-## Terminal-Status Restriction Findings
-- Backend restriction exists and is authoritative.
-- Mobile respects `isEditable` flag.
+## 10. Draft/autosave issues found
 - No critical issue found.
+- Draft save/restore and offline queue integration working in current code path.
 
-## IFSC Lookup Integration Findings
-- IFSC lookup implemented client-side using Razorpay API.
-- Bank name auto-populates.
-- Branch/city/state metadata displayed as helper text.
-- Failure handling exists.
+## 11. Validation and masking issues found
+- Fixed PAN masked fallback handling on mobile required checks.
+- Fixed bank-account numeric-only enforcement (mobile + backend).
+- Aadhaar masking and PAN uppercase remain correct.
 
-## Priority of Fixes
-- **Critical**
-  - Backend required-field completeness enforcement for customer form save.
-  - Mobile required-field submit validation.
-  - Site photo upload + min/max enforcement in customer form flow.
-  - Backend minimum site-photo enforcement before save.
-- **High**
-  - Prefilled district/state/installation type in form response and UI.
-  - Constrained select controls + backend value constraints for required categorical fields.
-  - Strict conditional `loanAmountRequired` enforcement when `loanRequired=true`.
-- **Medium**
-  - Date picker component upgrade (currently text date with format validation).
-- **Low**
-  - Additional UX polish and helper copy enhancements.
+## 12. Terminal-status edit restriction issues found
+- No critical issue found.
+- Backend still blocks updates for non-admin roles once lead is terminal.
+
+## 13. IFSC lookup integration issues found
+- Lookup integration works and auto-fills bank name.
+- Branch is not persisted as dedicated field (partial vs requirement wording).
+
+## 14. Priority of fixes
+- Critical (fixed):
+  - Sensitive value plaintext storage in `*_encrypted` columns.
+  - PAN re-entry requirement bug for existing masked records.
+- High (fixed):
+  - Bank account numeric validation parity between mobile and backend.
+- Medium (open):
+  - Native DOB date picker UI.
+  - Persisted IFSC branch field.
+- Low:
+  - UX polish for helper messaging and field hints.
 
 ## Verification Table
 
-| Feature | Required behavior | Current implementation | Status | Files involved | Fix required |
+| Feature | Required behavior | Current implementation | Status (Correct / Partial / Missing / Broken) | Files involved | Fix required |
 |---|---|---|---|---|---|
-| Lead association and scope | Form tied to lead + assigned FE scope | Scoped via `scopeLeadWhere` | Correct | `apps/api/src/routes/leads.ts`, `apps/api/src/services/lead-access.service.ts` | No |
-| Terminal edit lock | Block edits once terminal | Implemented backend + mobile `isEditable` | Correct | `apps/api/src/routes/leads.ts`, `apps/mobile/src/screens/CustomerDetailsScreen.tsx` | No |
-| Draft autosave | Save on field changes | Implemented with `useWatch` + AsyncStorage | Correct | `apps/mobile/src/screens/CustomerDetailsScreen.tsx` | No |
-| Draft restore | Restore on reopen/resume | Implemented merge of server + local draft | Correct | `apps/mobile/src/screens/CustomerDetailsScreen.tsx` | No |
-| Aadhaar masking | Mask display after entry/save | Implemented | Correct | `apps/mobile/src/screens/CustomerDetailsScreen.tsx`, `apps/api/src/routes/leads.ts` | No |
-| PAN uppercase | Auto-uppercase | Implemented | Correct | `apps/mobile/src/screens/CustomerDetailsScreen.tsx`, `apps/api/src/routes/leads.ts` | No |
-| IFSC lookup | Lookup + bank/branch metadata | Bank auto-fill + metadata helper present | Partial | `apps/mobile/src/screens/CustomerDetailsScreen.tsx` | High |
-| Required fields (mobile) | Must validate before submit | Only partial checks | Missing | `apps/mobile/src/screens/CustomerDetailsScreen.tsx` | Critical |
-| Required fields (backend) | Must enforce server-side too | Mostly optional payload allowed | Missing | `apps/api/src/routes/leads.ts` | Critical |
-| Loan amount conditional | Required if loan required | Not fully enforced on effective state | Partial | `apps/api/src/routes/leads.ts`, `apps/mobile/src/screens/CustomerDetailsScreen.tsx` | High |
-| District/state prefill | Pre-filled from lead | Not returned/displayed in form | Missing | `apps/api/src/routes/leads.ts`, `apps/mobile/src/screens/CustomerDetailsScreen.tsx` | High |
-| Installation type in form | Required section value | Not shown in customer form | Missing | `apps/api/src/routes/leads.ts`, `apps/mobile/src/screens/CustomerDetailsScreen.tsx` | High |
-| Site photos min/max | 3-10 photos required | Not implemented in customer form | Missing | `apps/mobile/src/screens/CustomerDetailsScreen.tsx`, `apps/api/src/routes/leads.ts` | Critical |
-| Backend photo requirement | Enforce min photos on save | Not enforced | Missing | `apps/api/src/routes/leads.ts` | Critical |
-
-## Implementation Update (Critical/High Fixes Applied)
-
-Implemented after the audit:
-
-- Backend (`apps/api/src/routes/leads.ts`)
-  - Added strict categorical validation for:
-    - `gender`
-    - `propertyOwnership`
-    - `installationType`
-    - `roofType`
-    - `connectionType`
-  - Added `leadPrefill` and `sitePhotographs` metadata in `GET /:id/customer-details`.
-  - Enforced required field completeness on `PUT /:id/customer-details` using effective final state.
-  - Enforced conditional `loanAmountRequired` when `loanRequired=true`.
-  - Enforced site photo minimum (`>=3`) and maximum (`<=10`) before save.
-  - Persisted lead `installationType` update through this form flow.
-
-- Backend upload guard (`apps/api/src/routes/lead-documents.ts`)
-  - Added site-photo category detection by prefix (`site_photo*`, `site_photograph*`).
-  - Added max-site-photo enforcement (`10`) in `/complete`, while still allowing same-category replacement.
-
-- Mobile (`apps/mobile/src/screens/CustomerDetailsScreen.tsx`)
-  - Consumed `leadPrefill` and `sitePhotographs` metadata.
-  - Added read-only district/state prefilled display.
-  - Added installation type field in the form.
-  - Converted categorical fields to single-select controls:
-    - gender
-    - installation type
-    - property ownership
-    - shadow-free area
-    - roof type
-    - connection type
-  - Added strict required-field checks before submit.
-  - Added categorical value validation for required select-like fields.
-  - Added conditional loan amount check.
-  - Added site photo upload section (camera/gallery/file) using existing upload service.
-  - Enforced photo upload min/max before submit.
-  - Preserved draft autosave/restore behavior.
-
-Remaining non-critical gap:
-- Date picker UI is still text-based (`YYYY-MM-DD`) instead of a dedicated picker component (Medium).
-- IFSC branch is shown in helper metadata but not persisted as a dedicated DB field (Medium).
+| Lead-linked form | Form tied to lead | Uses `/api/leads/:id/customer-details` + leadId route param | Correct | `apps/mobile/src/screens/CustomerDetailsScreen.tsx`, `apps/api/src/routes/leads.ts` | No |
+| Assigned scope | Only assigned FE can access/update | `scopeLeadWhere(req.user!, { id })` enforced | Correct | `apps/api/src/routes/leads.ts`, `apps/api/src/services/lead-access.service.ts` | No |
+| Terminal lock | Editable until terminal status only | `canEditCustomerDetails` + UI disable state | Correct | `apps/api/src/routes/leads.ts`, `apps/mobile/src/screens/CustomerDetailsScreen.tsx` | No |
+| Autosave draft | Save local progress on field change | AsyncStorage draft key with debounce + restore | Correct | `apps/mobile/src/screens/CustomerDetailsScreen.tsx` | No |
+| Aadhaar masking | Mask display after entry/save | UI mask + API masked response | Correct | `apps/mobile/src/screens/CustomerDetailsScreen.tsx`, `apps/api/src/routes/leads.ts` | No |
+| PAN uppercase | Auto uppercase | `sanitizePan` on input/payload | Correct | `apps/mobile/src/screens/CustomerDetailsScreen.tsx` | No |
+| PAN re-entry | Do not force re-entry if already stored/masked | Uses `panMasked` fallback in required checks | Correct | `apps/mobile/src/screens/CustomerDetailsScreen.tsx` | Fixed |
+| IFSC lookup | Lookup and auto-populate bank data | Bank name autofill + metadata helper | Partial | `apps/mobile/src/screens/CustomerDetailsScreen.tsx` | Medium |
+| Bank account validation | Numeric-only + valid length | Mobile sanitize digits + backend regex `^\\d{6,34}$` | Correct | `apps/mobile/src/screens/CustomerDetailsScreen.tsx`, `apps/api/src/routes/leads.ts` | Fixed |
+| Site photos rule | Min 3 / Max 10 enforced | Form and backend count checks present | Correct | `apps/mobile/src/screens/CustomerDetailsScreen.tsx`, `apps/api/src/routes/leads.ts` | No |
+| Backend required validation | Backend must enforce required fields | Missing-required + loan conditional checks | Correct | `apps/api/src/routes/leads.ts` | No |
+| Sensitive storage | Protect Aadhaar/PAN/bank data at rest | Encrypt on write + decrypt/mask on read | Partial (legacy rows) | `apps/api/src/services/sensitive-data.service.ts`, `apps/api/src/routes/leads.ts` | Backfill optional |
+| DOB input control | Date picker UI | Text input with regex validation only | Missing | `apps/mobile/src/screens/CustomerDetailsScreen.tsx` | Medium |

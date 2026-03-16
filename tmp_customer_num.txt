@@ -1,0 +1,293 @@
+1:import React, { useCallback, useEffect, useMemo, useState } from "react";
+9:} from "react-native";
+10:import AsyncStorage from "@react-native-async-storage/async-storage";
+11:import * as DocumentPicker from "expo-document-picker";
+12:import * as ImagePicker from "expo-image-picker";
+13:import NetInfo from "@react-native-community/netinfo";
+14:import { NativeStackScreenProps } from "@react-navigation/native-stack";
+15:import { Controller, useForm, useWatch } from "react-hook-form";
+16:import { api } from "../services/api";
+17:import { uploadLeadDocument } from "../services/document-upload";
+18:import { useQueueStore } from "../store/queue-store";
+19:import { useAuthStore } from "../store/auth-store";
+20:import { readOfflineCache, writeOfflineCache } from "../services/offline-cache";
+28:} from "../ui/primitives";
+39:  "CustomerDetails"
+136:const DRAFT_KEY_PREFIX = "customer_details_draft:";
+137:const CUSTOMER_DETAILS_CACHE_PREFIX = "customer-details";
+138:const ALLOWED_INSTALLATION_TYPES = ["Residential", "Industrial", "Agricultural", "Other"] as const;
+139:const ALLOWED_GENDERS = ["Male", "Female", "Other"] as const;
+140:const ALLOWED_PROPERTY_OWNERSHIP = ["Owned", "Rented", "Leased"] as const;
+141:const ALLOWED_SHADOW_FREE = ["Yes", "Partial", "No"] as const;
+142:const ALLOWED_ROOF_TYPE = ["RCC", "Tin", "Other"] as const;
+143:const ALLOWED_CONNECTION_TYPE = ["Single Phase", "Three Phase"] as const;
+147:  fullName: "",
+148:  dateOfBirth: "",
+149:  gender: "",
+150:  fatherHusbandName: "",
+151:  aadhaarNumber: "",
+152:  panNumber: "",
+153:  addressLine1: "",
+154:  addressLine2: "",
+155:  villageLocality: "",
+156:  pincode: "",
+157:  alternatePhone: "",
+158:  installationType: "",
+159:  propertyOwnership: "",
+160:  roofArea: "",
+161:  recommendedCapacity: "",
+162:  shadowFreeArea: "",
+163:  roofType: "",
+164:  verifiedMonthlyBill: "",
+165:  connectionType: "",
+166:  consumerNumber: "",
+167:  discomName: "",
+168:  bankAccountNumber: "",
+169:  bankName: "",
+170:  ifscCode: "",
+171:  accountHolderName: "",
+173:  loanAmountRequired: "",
+174:  preferredLender: ""
+191:  return input.toUpperCase().replace(/\s/g, "").slice(0, 10);
+195:  return input.toUpperCase().replace(/\s/g, "").slice(0, 11);
+199:  return input.replace(/\D/g, "").slice(0, 12);
+207:  if (!normalized) return "";
+213:  if (value === null || value === undefined || value === "") return "";
+216:    if (numeric <= 0) return "No";
+217:    if (numeric < 1) return "Partial";
+218:    return "Yes";
+221:  if (normalized === "yes") return "Yes";
+222:  if (normalized === "partial") return "Partial";
+223:  if (normalized === "no") return "No";
+224:  return "";
+230:  if (normalized === "yes") return 1;
+231:  if (normalized === "partial") return 0.5;
+232:  if (normalized === "no") return 0;
+237:  if (!value) return "";
+239:  return `${"*".repeat(value.length - 4)}${value.slice(-4)}`;
+243:  if (value === null || value === undefined) return "";
+270:    installationType: "",
+292:    aadhaarNumber: "",
+293:    bankAccountNumber: ""
+299:  leadPrefill?: ApiCustomerDetailsResponse["leadPrefill"]
+370:  const bankAccountNumber = normalizeText(values.bankAccountNumber)?.replace(/\s/g, "");
+400:  const labelColor = props.labelColor ?? "#111827";
+401:  const helperColor = props.helperColor ?? "#6b7280";
+402:  const errorColor = props.errorColor ?? "#b91c1c";
+405:      <Text style={{ fontWeight: "700", color: labelColor }}>{props.label}</Text>
+434:      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+455:                  fontWeight: selected ? "700" : "500"
+483:  const [currentStatusName, setCurrentStatusName] = useState<string>("-");
+489:  const [leadPrefill, setLeadPrefill] = useState<ApiCustomerDetailsResponse["leadPrefill"] | null>(
+521:          item.kind === "UPLOAD_LEAD_DOCUMENT" &&
+523:          item.payload.category.startsWith("site_photo") &&
+530:    setCurrentStatusName(payload.currentStatus?.name ?? "-");
+567:          const draftValues = parsed && "values" in parsed ? parsed.values : parsed;
+568:          if (draftValues && typeof draftValues === "object") {
+602:              const draftValues = parsed && "values" in parsed ? parsed.values : parsed;
+603:              if (draftValues && typeof draftValues === "object") {
+612:          setOfflineNotice("Offline mode: showing cached customer details.");
+618:      setError(extractErrorMessage(err, "Failed to load customer details."));
+643:    const ifsc = sanitizeIfsc(getValues("ifscCode"));
+644:    setValue("ifscCode", ifsc, { shouldDirty: true });
+647:      Alert.alert("Invalid IFSC", "Enter a valid IFSC code before lookup.");
+655:        throw new Error("No bank found for this IFSC code.");
+659:      if (typeof data.BANK === "string" && data.BANK.trim()) {
+660:        setValue("bankName", data.BANK.trim(), { shouldDirty: true });
+664:        .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+665:        .join(", ");
+668:      Alert.alert("IFSC lookup failed", extractErrorMessage(err, "Unable to fetch IFSC details."));
+676:      Alert.alert("Editing disabled", "Site photos cannot be uploaded for this lead right now.");
+681:        "Limit reached",
+691:    if (normalizedMime === "image/jpg") return "image/jpeg";
+692:    if (normalizedMime === "image/jpeg" || normalizedMime === "image/png") {
+695:    const lower = (fileName ?? "").toLowerCase();
+696:    if (lower.endsWith(".png")) return "image/png";
+697:    return "image/jpeg";
+705:      if (!["image/jpeg", "image/png"].includes(resolvedType)) {
+706:        Alert.alert("Unsupported file type", "Only JPEG and PNG images are allowed.");
+709:      if (typeof file.size === "number" && file.size > MAX_UPLOAD_SIZE_BYTES) {
+710:        Alert.alert("File too large", "Each file must be 10 MB or smaller.");
+723:          fileSize: typeof file.size === "number" && file.size > 0 ? file.size : 0
+732:              kind: "UPLOAD_LEAD_DOCUMENT",
+745:          Alert.alert("Saved offline", "Site photo queued for upload when internet reconnects.");
+755:        Alert.alert("Upload complete", "Site photograph uploaded successfully.");
+768:            fileSize: typeof file.size === "number" && file.size > 0 ? file.size : 0
+773:              kind: "UPLOAD_LEAD_DOCUMENT",
+786:          Alert.alert("Saved offline", "Site photo queued for upload when internet reconnects.");
+790:        Alert.alert("Upload failed", extractErrorMessage(err, "Unable to upload site photograph."));
+801:      Alert.alert("Permission required", "Camera permission is required to capture photos.");
+821:      Alert.alert("Permission required", "Media library permission is required to select photos.");
+840:      type: ["image/jpeg", "image/png"],
+857:        "Editing disabled",
+858:        "This lead is in terminal status. Only allowed roles can edit customer details."
+865:      Alert.alert("Invalid Aadhaar", "Aadhaar must be exactly 12 digits.");
+871:      Alert.alert("Invalid PAN", "PAN must follow format like ABCDE1234F.");
+877:      Alert.alert("Invalid IFSC", "IFSC must follow standard 11-character format.");
+883:      Alert.alert("Invalid Date", "Date of birth must be in YYYY-MM-DD format.");
+895:        "Invalid Installation Type",
+896:        "Installation Type must be Residential, Industrial, Agricultural, or Other."
+906:      Alert.alert("Invalid Gender", "Gender must be Male, Female, or Other.");
+917:      Alert.alert("Invalid Property Ownership", "Property ownership must be Owned, Rented, or Leased.");
+926:      Alert.alert("Invalid Roof Type", "Roof type must be RCC, Tin, or Other.");
+938:        "Invalid Connection Type",
+939:        "Connection type must be Single Phase or Three Phase."
+950:        "Invalid Shadow-Free Area",
+951:        "Shadow-Free Area must be Yes, Partial, or No."
+957:    if (!normalizeText(values.fullName)) missingRequired.push("Full Name");
+958:    if (!normalizeText(values.dateOfBirth)) missingRequired.push("Date of Birth");
+959:    if (!normalizeText(values.gender)) missingRequired.push("Gender");
+960:    if (!normalizeText(values.fatherHusbandName)) missingRequired.push("Father / Husband Name");
+961:    if (!aadhaar && !existingAadhaarMasked) missingRequired.push("Aadhaar Number");
+962:    if (!pan) missingRequired.push("PAN Number");
+963:    if (!normalizeText(values.addressLine1)) missingRequired.push("Complete Address");
+964:    if (!normalizeText(values.villageLocality)) missingRequired.push("Village / Locality");
+965:    if (!normalizeText(values.pincode)) missingRequired.push("Pin Code");
+966:    if (!leadPrefill?.districtName) missingRequired.push("District");
+967:    if (!leadPrefill?.state) missingRequired.push("State");
+968:    if (!normalizeText(values.installationType)) missingRequired.push("Installation Type");
+969:    if (!normalizeText(values.propertyOwnership)) missingRequired.push("Property Ownership");
+970:    if (!toPositiveNumber(values.roofArea)) missingRequired.push("Total Roof / Land Area");
+972:      missingRequired.push("Recommended Solar Capacity");
+973:    if (!normalizeText(values.shadowFreeArea)) missingRequired.push("Shadow-Free Area");
+974:    if (!normalizeText(values.roofType)) missingRequired.push("Type of Roof");
+976:      missingRequired.push("Current Monthly Electricity Bill");
+978:      missingRequired.push("Current Electricity Connection Type");
+979:    if (!normalizeText(values.consumerNumber)) missingRequired.push("Electricity Consumer Number");
+980:    if (!normalizeText(values.discomName)) missingRequired.push("DISCOM / Electricity Board Name");
+982:      missingRequired.push("Bank Account Number");
+983:    if (!normalizeText(values.bankName)) missingRequired.push("Bank Name");
+984:    if (!ifsc) missingRequired.push("IFSC Code");
+985:    if (!normalizeText(values.accountHolderName)) missingRequired.push("Account Holder Name");
+988:      Alert.alert("Required fields missing", missingRequired.join(", "));
+994:        "Loan Amount Required",
+995:        "Loan amount is required when Loan Required is set to Yes."
+1002:        "Site photographs required",
+1018:            kind: "UPSERT_CUSTOMER_DETAILS",
+1030:          "Saved offline",
+1031:          "Customer details were queued and will sync when internet reconnects."
+1051:      Alert.alert("Saved", "Customer details submitted successfully.");
+1060:            kind: "UPSERT_CUSTOMER_DETAILS",
+1072:          "Saved offline",
+1073:          "Customer details were queued and will sync when internet reconnects."
+1078:      Alert.alert("Submit failed", extractErrorMessage(err, "Unable to submit customer details."));
+1086:      <AppScreen contentContainerStyle={{ alignItems: "center", justifyContent: "center", gap: 12 }}>
+1087:        <ActivityIndicator size="large" color={colors.primary} />
+1097:        <AppButton title="Retry" onPress={() => void load()} />
+1105:        <SectionTitle title={leadName || "Lead Customer Details"} subtitle={`Status: ${currentStatusName}`} />
+1107:          <Text style={{ color: colors.warning, fontWeight: "700" }}>{offlineNotice}</Text>
+1110:          <Text style={{ color: colors.warning, fontWeight: "700" }}>Lead is in terminal status.</Text>
+1118:          District: {leadPrefill?.districtName || "Not set"} | State: {leadPrefill?.state || "Not set"}
+1121:          Installation Type: {normalizeText(getValues("installationType")) || "Not set"}
+1126:        <Text style={{ fontSize: 16, fontWeight: "700", color: colors.text }}>Personal & Address</Text>
+1128:        <LabeledInput label="Full Name" error={errors.fullName?.message} labelColor={colors.text} helperColor={colors.textMuted} errorColor={colors.danger}>
+1131:            name="fullName"
+1137:                placeholder="Full name"
+1144:        <LabeledInput label="Date of Birth (YYYY-MM-DD)" error={errors.dateOfBirth?.message} labelColor={colors.text} helperColor={colors.textMuted} errorColor={colors.danger}>
+1147:            name="dateOfBirth"
+1153:                placeholder="1999-12-31"
+1154:                autoCapitalize="none"
+1163:          name="gender"
+1166:              label="Gender"
+1176:        <LabeledInput label="Father / Husband Name" labelColor={colors.text} helperColor={colors.textMuted} errorColor={colors.danger}>
+1179:            name="fatherHusbandName"
+1185:                placeholder="Relative name"
+1193:          label="Aadhaar Number"
+1197:              : "Aadhaar is masked after save; only last 4 digits are shown."
+1202:            name="aadhaarNumber"
+1210:                keyboardType="number-pad"
+1211:                placeholder="Enter 12-digit Aadhaar"
+1218:        <LabeledInput label="PAN (uppercase)" labelColor={colors.text} helperColor={colors.textMuted} errorColor={colors.danger}>
+1221:            name="panNumber"
+1227:                placeholder="ABCDE1234F"
+1228:                autoCapitalize="characters"
+1235:        <LabeledInput label="Address Line 1" labelColor={colors.text} helperColor={colors.textMuted} errorColor={colors.danger}>
+1238:            name="addressLine1"
+1244:                placeholder="House / street"
+1251:        <LabeledInput label="Address Line 2" labelColor={colors.text} helperColor={colors.textMuted} errorColor={colors.danger}>
+1254:            name="addressLine2"
+1260:                placeholder="Area / landmark"
+1267:        <LabeledInput label="Village / Locality" labelColor={colors.text} helperColor={colors.textMuted} errorColor={colors.danger}>
+1270:            name="villageLocality"
+1276:                placeholder="Village / locality"
+1283:        <LabeledInput label="Pincode" labelColor={colors.text} helperColor={colors.textMuted} errorColor={colors.danger}>
+1286:            name="pincode"
+1290:                onChangeText={(text) => onChange(text.replace(/\D/g, "").slice(0, 6))}
+1292:                keyboardType="number-pad"
+1293:                placeholder="6-digit pincode"
+1300:        <LabeledInput label="District (Prefilled)" labelColor={colors.text} helperColor={colors.textMuted} errorColor={colors.danger}>
+1302:            value={leadPrefill?.districtName ?? ""}
+1304:            placeholder="District from lead"
+1309:        <LabeledInput label="State (Prefilled)" labelColor={colors.text} helperColor={colors.textMuted} errorColor={colors.danger}>
+1311:            value={leadPrefill?.state ?? ""}
+1313:            placeholder="State from lead"
+1318:        <LabeledInput label="Alternate Phone" labelColor={colors.text} helperColor={colors.textMuted} errorColor={colors.danger}>
+1321:            name="alternatePhone"
+1327:                keyboardType="phone-pad"
+1328:                placeholder="Alternate contact number"
+1337:        <Text style={{ fontSize: 16, fontWeight: "700", color: colors.text }}>Technical Details</Text>
+1341:          name="installationType"
+1344:              label="Installation Type"
+1356:          name="propertyOwnership"
+1359:              label="Property Ownership"
+1369:        <LabeledInput label="Roof Area (sq ft)" labelColor={colors.text} helperColor={colors.textMuted} errorColor={colors.danger}>
+1372:            name="roofArea"
+1378:                keyboardType="numeric"
+1379:                placeholder="Roof area"
+1386:        <LabeledInput label="Recommended Capacity (kW)" labelColor={colors.text} helperColor={colors.textMuted} errorColor={colors.danger}>
+1389:            name="recommendedCapacity"
+1395:                keyboardType="numeric"
+1396:                placeholder="Recommended capacity"
+1405:          name="shadowFreeArea"
+1408:              label="Shadow-Free Area Available"
+1420:          name="roofType"
+1423:              label="Type of Roof"
+1433:        <LabeledInput label="Verified Monthly Bill" labelColor={colors.text} helperColor={colors.textMuted} errorColor={colors.danger}>
+1436:            name="verifiedMonthlyBill"
+1442:                keyboardType="numeric"
+1443:                placeholder="Verified monthly bill"
+1452:          name="connectionType"
+1455:              label="Current Electricity Connection Type"
+1465:        <LabeledInput label="Consumer Number" labelColor={colors.text} helperColor={colors.textMuted} errorColor={colors.danger}>
+1468:            name="consumerNumber"
+1474:                placeholder="Electricity consumer number"
+1481:        <LabeledInput label="DISCOM Name" labelColor={colors.text} helperColor={colors.textMuted} errorColor={colors.danger}>
+1484:            name="discomName"
+1490:                placeholder="DISCOM name"
+1499:        <Text style={{ fontSize: 16, fontWeight: "700", color: colors.text }}>Bank & Loan</Text>
+1502:          label="Bank Account Number"
+1507:            name="bankAccountNumber"
+1513:                keyboardType="number-pad"
+1514:                placeholder="Enter account number to update"
+1521:        <LabeledInput label="IFSC Code" labelColor={colors.text} helperColor={colors.textMuted} errorColor={colors.danger}>
+1524:            name="ifscCode"
+1530:                placeholder="SBIN0000123"
+1531:                autoCapitalize="characters"
+1549:          <Text style={{ textAlign: "center", color: "white", fontWeight: "700" }}>
+1550:            {ifscLookupLoading ? "Looking up IFSC..." : "Lookup IFSC"}
+1555:        <LabeledInput label="Bank Name" labelColor={colors.text} helperColor={colors.textMuted} errorColor={colors.danger}>
+1558:            name="bankName"
+1564:                placeholder="Bank name"
+1571:        <LabeledInput label="Account Holder Name" labelColor={colors.text} helperColor={colors.textMuted} errorColor={colors.danger}>
+1574:            name="accountHolderName"
+1580:                placeholder="Account holder name"
+1589:          name="loanRequired"
+1602:              <Text style={{ fontWeight: "700", color: value ? colors.primary : colors.text }}>
+1603:                Loan Required: {value ? "Yes" : "No"}
+1609:        <LabeledInput label="Loan Amount Required" labelColor={colors.text} helperColor={colors.textMuted} errorColor={colors.danger}>
+1612:            name="loanAmountRequired"
+1618:                keyboardType="numeric"
+1619:                placeholder="Loan amount"
+1629:        <LabeledInput label="Preferred Lender" labelColor={colors.text} helperColor={colors.textMuted} errorColor={colors.danger}>
+1632:            name="preferredLender"
+1638:                placeholder="Preferred lender"
+1647:        <Text style={{ fontSize: 16, fontWeight: "700", color: colors.text }}>Site Photographs</Text>
+1652:          <Text style={{ color: colors.warning, fontWeight: "700" }}>
+1676:          <Text style={{ textAlign: "center", color: "#fff", fontWeight: "700" }}>
+1677:            {photoUploading ? "Uploading..." : "Capture Photo"}
+1692:          <Text style={{ textAlign: "center", color: "#fff", fontWeight: "700" }}>
+1693:            {photoUploading ? "Uploading..." : "Choose from Gallery"}
+1708:          <Text style={{ textAlign: "center", color: "#fff", fontWeight: "700" }}>
+1709:            {photoUploading ? "Uploading..." : "Choose from Files"}
+1725:        <Text style={{ color: "#fff", textAlign: "center", fontWeight: "700" }}>
+1726:          {submitting ? "Submitting..." : "Submit Customer Details"}

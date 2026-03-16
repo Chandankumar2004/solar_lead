@@ -1,6 +1,11 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, AppState, Pressable, Text, View } from "react-native";
-import { NavigationContainer, DefaultTheme as NavigationDefaultTheme } from "@react-navigation/native";
+import {
+  NavigationContainer,
+  DefaultTheme as NavigationDefaultTheme,
+  NavigatorScreenParams,
+  createNavigationContainerRef
+} from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
 import { Ionicons } from "@expo/vector-icons";
@@ -17,7 +22,13 @@ import { BiometricUnlockScreen } from "./screens/BiometricUnlockScreen";
 import { useAuthStore } from "./store/auth-store";
 import { useQueueStore } from "./store/queue-store";
 import { usePreferencesStore } from "./store/preferences-store";
+import { useNotificationStore } from "./store/notification-store";
 import { AppPalette, getPalette, radius } from "./ui/theme";
+import {
+  initializePushNotifications,
+  unregisterCurrentPushToken,
+  type PushNotificationPayload
+} from "./services/push-notifications";
 
 type AuthStackParamList = {
   Login: undefined;
@@ -32,7 +43,7 @@ type LeadsStackParamList = {
 
 type RootTabParamList = {
   Home: undefined;
-  Leads: undefined;
+  Leads: NavigatorScreenParams<LeadsStackParamList>;
   Notifications: undefined;
   Profile: undefined;
 };
@@ -40,6 +51,7 @@ type RootTabParamList = {
 const AuthStack = createNativeStackNavigator<AuthStackParamList>();
 const LeadsStack = createNativeStackNavigator<LeadsStackParamList>();
 const Tab = createBottomTabNavigator<RootTabParamList>();
+const navigationRef = createNavigationContainerRef<RootTabParamList>();
 
 function LeadsNavigator({ colors }: { colors: AppPalette }) {
   return (
@@ -74,6 +86,7 @@ function LeadsNavigator({ colors }: { colors: AppPalette }) {
 }
 
 function MainTabs({ colors }: { colors: AppPalette }) {
+  const unreadCount = useNotificationStore((s) => s.unreadCount);
   return (
     <Tab.Navigator
       screenOptions={({ route }) => ({
@@ -114,7 +127,13 @@ function MainTabs({ colors }: { colors: AppPalette }) {
       <Tab.Screen name="Leads" options={{ headerShown: false }}>
         {() => <LeadsNavigator colors={colors} />}
       </Tab.Screen>
-      <Tab.Screen name="Notifications" component={NotificationsScreen} />
+      <Tab.Screen
+        name="Notifications"
+        component={NotificationsScreen}
+        options={{
+          tabBarBadge: unreadCount > 0 ? unreadCount : undefined
+        }}
+      />
       <Tab.Screen name="Profile" component={ProfileScreen} />
     </Tab.Navigator>
   );
@@ -175,6 +194,11 @@ export default function App() {
   const flush = useQueueStore((s) => s.flush);
   const queueItems = useQueueStore((s) => s.items);
   const [isOffline, setIsOffline] = useState(false);
+  const [pushNotice, setPushNotice] = useState<string | null>(null);
+  const pendingLeadIdFromPushRef = useRef<string | null>(null);
+  const hydrateNotifications = useNotificationStore((s) => s.hydrate);
+  const addForegroundNotification = useNotificationStore((s) => s.addForegroundNotification);
+  const addOpenedNotification = useNotificationStore((s) => s.addOpenedNotification);
 
   const colors = useMemo(() => getPalette(themeMode), [themeMode]);
   const navTheme = useMemo(
@@ -191,9 +215,47 @@ export default function App() {
     }),
     [colors]
   );
+  const linking = useMemo(
+    () => ({
+      prefixes: ["solarleadmobile://"],
+      config: {
+        screens: {
+          Home: "home",
+          Leads: {
+            screens: {
+              LeadList: "leads",
+              LeadCreate: "leads/new",
+              LeadDetail: "leads/:leadId",
+              CustomerDetails: "leads/:leadId/customer-details"
+            }
+          },
+          Notifications: "notifications",
+          Profile: "profile"
+        }
+      }
+    }),
+    []
+  );
+
+  const openLeadFromPush = useCallback((payload: PushNotificationPayload) => {
+    if (!payload.leadId) {
+      return;
+    }
+
+    if (navigationRef.isReady()) {
+      navigationRef.navigate("Leads", {
+        screen: "LeadDetail",
+        params: { leadId: payload.leadId }
+      });
+      return;
+    }
+
+    pendingLeadIdFromPushRef.current = payload.leadId;
+  }, []);
 
   useEffect(() => {
     void hydratePreferences();
+    void hydrateNotifications();
     void bootstrap();
     void hydrate();
 
@@ -224,7 +286,61 @@ export default function App() {
       netUnsub();
       appStateSub.remove();
     };
-  }, [bootstrap, flush, hydrate, hydratePreferences, lockBiometric, user?.id]);
+  }, [bootstrap, flush, hydrate, hydrateNotifications, hydratePreferences, lockBiometric, user?.id]);
+
+  useEffect(() => {
+    let mounted = true;
+    let teardown = () => {};
+
+    const run = async () => {
+      if (!user?.id) {
+        await unregisterCurrentPushToken();
+        if (mounted) {
+          setPushNotice(null);
+        }
+        return;
+      }
+
+      const initialized = await initializePushNotifications({
+        onForegroundMessage: (payload) => {
+          void addForegroundNotification(payload);
+        },
+        onNotificationTap: (payload) => {
+          void addOpenedNotification(payload);
+          openLeadFromPush(payload);
+        }
+      });
+      teardown = initialized.teardown;
+
+      if (!mounted) {
+        return;
+      }
+
+      if (!initialized.result.available) {
+        setPushNotice("Push is unavailable in this runtime. Use a native dev build, not Expo Go.");
+        return;
+      }
+
+      if (initialized.result.permission === "denied") {
+        setPushNotice("Push permission denied. Enable notifications in device settings.");
+        return;
+      }
+
+      if (!initialized.result.tokenRegistered) {
+        setPushNotice("Push token not registered yet. Notifications may be delayed.");
+        return;
+      }
+
+      setPushNotice(null);
+    };
+
+    void run();
+
+    return () => {
+      mounted = false;
+      teardown();
+    };
+  }, [openLeadFromPush, user?.id]);
 
   const pendingQueueCount = useMemo(() => {
     if (!user?.id) return 0;
@@ -256,8 +372,36 @@ export default function App() {
           </Text>
         </View>
       ) : null}
+      {pushNotice ? (
+        <View
+          style={{
+            backgroundColor: colors.info,
+            paddingVertical: 8,
+            paddingHorizontal: 12,
+            borderBottomWidth: 1,
+            borderBottomColor: colors.border
+          }}
+        >
+          <Text style={{ color: "#fff", fontWeight: "700" }}>{pushNotice}</Text>
+        </View>
+      ) : null}
 
-      <NavigationContainer theme={navTheme}>
+      <NavigationContainer
+        ref={navigationRef}
+        theme={navTheme}
+        linking={linking}
+        onReady={() => {
+          const pendingLeadId = pendingLeadIdFromPushRef.current;
+          if (!pendingLeadId || !navigationRef.isReady()) {
+            return;
+          }
+          pendingLeadIdFromPushRef.current = null;
+          navigationRef.navigate("Leads", {
+            screen: "LeadDetail",
+            params: { leadId: pendingLeadId }
+          });
+        }}
+      >
         {user ? <MainTabs colors={colors} /> : <AuthNavigator />}
       </NavigationContainer>
     </View>
