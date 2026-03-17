@@ -1,7 +1,10 @@
 import dotenv from "dotenv";
 import { z } from "zod";
 
-dotenv.config();
+const runtimeEnv = process.env.NODE_ENV ?? "development";
+if (runtimeEnv !== "production") {
+  dotenv.config();
+}
 const resolvedPort = Number(process.env.PORT) || 4000;
 
 const envSchema = z.object({

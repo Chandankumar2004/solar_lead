@@ -51,9 +51,27 @@ if (env.NODE_ENV === "production") {
   app.set("trust proxy", 1);
 }
 
+const originEnv = [env.WEB_ORIGIN, env.CORS_ORIGIN, env.FRONTEND_URL]
+  .filter(Boolean)
+  .join(",");
+const allowedOrigins = originEnv
+  .split(",")
+  .map((value) => value.trim())
+  .filter(Boolean);
+
 const corsOptions: CorsOptions = {
-  // Reflect request Origin to avoid deploy-time allowlist mismatches.
-  origin: true,
+  origin: (origin, callback) => {
+    if (!origin) {
+      return callback(null, true);
+    }
+    if (allowedOrigins.length === 0) {
+      return callback(null, true);
+    }
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    return callback(new Error("CORS_NOT_ALLOWED"));
+  },
   credentials: true,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
@@ -61,8 +79,9 @@ const corsOptions: CorsOptions = {
 };
 
 console.info("CORS_CONFIG", {
-  mode: "permissive",
-  credentials: true
+  mode: allowedOrigins.length ? "allowlist" : "permissive",
+  credentials: true,
+  origins: allowedOrigins.length ? allowedOrigins : ["*"]
 });
 
 app.use(requestLogger);

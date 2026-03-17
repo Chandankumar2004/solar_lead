@@ -1,0 +1,14 @@
+.git
+.gitignore
+node_modules
+**/node_modules
+apps/web
+apps/mobile
+docs
+tmp*
+*.log
+.env
+apps/api/.env
+apps/web/.env*
+apps/mobile/.env*
+.expo
