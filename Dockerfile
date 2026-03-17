@@ -2,6 +2,11 @@ FROM node:20-bookworm-slim
 
 WORKDIR /app
 
+# Prisma needs OpenSSL at runtime in slim images.
+RUN apt-get update -y \
+  && apt-get install -y --no-install-recommends openssl ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
 # Enable pnpm via corepack (ships with Node 20).
 RUN corepack enable
 
