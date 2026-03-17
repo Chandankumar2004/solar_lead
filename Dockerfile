@@ -6,7 +6,7 @@ WORKDIR /app
 RUN corepack enable
 
 # Copy workspace manifests first for better layer caching.
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
 COPY packages/shared/package.json packages/shared/
 COPY apps/api/package.json apps/api/
 
