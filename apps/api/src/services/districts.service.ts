@@ -13,6 +13,11 @@ type DistrictListFilters = {
   isActive?: boolean;
 };
 
+const PUBLIC_DISTRICTS_CACHE_TTL_MS = 60_000;
+const PUBLIC_DISTRICTS_FAILURE_LOG_INTERVAL_MS = 5 * 60 * 1000;
+let publicDistrictsCache: { value: PublicDistrict[]; expiresAt: number } | null = null;
+let lastPublicDistrictsFailureLogAt = 0;
+
 async function withReadFallback<T>(
   operation: string,
   run: (client: PrismaClient) => Promise<T>
@@ -87,12 +92,30 @@ async function listPublicDistricts(client: PrismaClient) {
 }
 
 async function listPublicDistrictsWithFallback() {
+  const now = Date.now();
+  if (publicDistrictsCache && publicDistrictsCache.expiresAt > now) {
+    return publicDistrictsCache.value;
+  }
+
   try {
-    return await listPublicDistricts(prisma);
+    const districts = await listPublicDistricts(prisma);
+    publicDistrictsCache = {
+      value: districts,
+      expiresAt: now + PUBLIC_DISTRICTS_CACHE_TTL_MS
+    };
+    return districts;
   } catch (primaryError) {
-    console.error("PUBLIC_DISTRICTS_PRIMARY_DB_FAILED", {
-      reason: primaryError instanceof Error ? primaryError.message : "UNKNOWN_ERROR"
-    });
+    if (now - lastPublicDistrictsFailureLogAt > PUBLIC_DISTRICTS_FAILURE_LOG_INTERVAL_MS) {
+      lastPublicDistrictsFailureLogAt = now;
+      console.error("PUBLIC_DISTRICTS_PRIMARY_DB_FAILED", {
+        reason: primaryError instanceof Error ? primaryError.message : "UNKNOWN_ERROR"
+      });
+    }
+
+    if (publicDistrictsCache) {
+      return publicDistrictsCache.value;
+    }
+
     throw primaryError;
   }
 }

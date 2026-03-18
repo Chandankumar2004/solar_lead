@@ -6,7 +6,17 @@ type PrismaFailure = {
   code: string | null;
 };
 
-export const prisma = new PrismaClient();
+const globalForPrisma = globalThis as typeof globalThis & { prisma?: PrismaClient };
+
+export const prisma =
+  globalForPrisma.prisma ??
+  new PrismaClient({
+    log: ["error"]
+  });
+
+if (process.env.NODE_ENV !== "production") {
+  globalForPrisma.prisma = prisma;
+}
 
 let prismaConnected = false;
 let prismaLastFailure: PrismaFailure | null = null;
