@@ -75,7 +75,7 @@ function resolveApiBaseUrl() {
   }
 
   return process.env.NODE_ENV === "production"
-    ? "https://solar-lead.onrender.com"
+    ? "https://solarlead-production.up.railway.app"
     : "http://localhost:4000";
 }
 
