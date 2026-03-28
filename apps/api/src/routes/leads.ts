@@ -452,12 +452,40 @@ function canEditCustomerDetails(role: string, isTerminal: boolean) {
   return role === "SUPER_ADMIN" || role === "ADMIN";
 }
 
-function maskSensitiveLast4(value: string | null | undefined) {
+function maskWithLast4(value: string | null | undefined, prefix = "XXXX") {
   if (!value) return null;
   const compact = value.replace(/\s/g, "");
   if (!compact) return null;
   if (compact.length <= 4) return compact;
-  return `${"*".repeat(compact.length - 4)}${compact.slice(-4)}`;
+  return `${prefix}${compact.slice(-4)}`;
+}
+
+function maskAadhaar(value: string | null | undefined) {
+  if (!value) return null;
+  const digits = value.replace(/\D/g, "");
+  if (!digits) return null;
+  if (digits.length < 4) return digits;
+  return `XXXX XXXX ${digits.slice(-4)}`;
+}
+
+function maskPan(value: string | null | undefined) {
+  if (!value) return null;
+  const normalized = value.toUpperCase().replace(/\s/g, "");
+  if (!normalized) return null;
+  if (normalized.length < 6) {
+    return maskWithLast4(normalized, "XXXX");
+  }
+  return `${normalized.slice(0, 3)}****${normalized.slice(-3)}`;
+}
+
+function maskIfsc(value: string | null | undefined) {
+  if (!value) return null;
+  const normalized = value.toUpperCase().replace(/\s/g, "");
+  if (!normalized) return null;
+  if (normalized.length <= 4) {
+    return normalized;
+  }
+  return `${normalized.slice(0, 4)}XXXXXX`;
 }
 
 function canViewUnmaskedSensitiveLeadData(role: string) {
@@ -511,9 +539,10 @@ function toCustomerDetailResponse(detail: {
     dateOfBirth: detail.dateOfBirth ? detail.dateOfBirth.toISOString().slice(0, 10) : null,
     gender: detail.gender,
     fatherHusbandName: detail.fatherHusbandName,
-    aadhaarMasked: maskSensitiveLast4(aadhaarNumber),
+    aadhaarNumber: includeSensitiveFields ? aadhaarNumber : null,
+    aadhaarMasked: maskAadhaar(aadhaarNumber),
     panNumber: includeSensitiveFields ? panNumber : null,
-    panMasked: maskSensitiveLast4(panNumber),
+    panMasked: maskPan(panNumber),
     addressLine1: detail.addressLine1,
     addressLine2: detail.addressLine2,
     villageLocality: detail.villageLocality,
@@ -529,9 +558,11 @@ function toCustomerDetailResponse(detail: {
     connectionType: detail.connectionType,
     consumerNumber: detail.consumerNumber,
     discomName: detail.discomName,
-    bankAccountMasked: maskSensitiveLast4(bankAccountNumber),
+    bankAccountNumber: includeSensitiveFields ? bankAccountNumber : null,
+    bankAccountMasked: maskWithLast4(bankAccountNumber),
     bankName: detail.bankName,
-    ifscCode: detail.ifscCode,
+    ifscCode: includeSensitiveFields ? detail.ifscCode : null,
+    ifscMasked: maskIfsc(detail.ifscCode),
     accountHolderName: detail.accountHolderName,
     loanRequired: detail.loanRequired,
     loanAmountRequired: detail.loanAmountRequired ? Number(detail.loanAmountRequired) : null,

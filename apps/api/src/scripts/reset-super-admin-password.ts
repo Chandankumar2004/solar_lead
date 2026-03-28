@@ -57,7 +57,7 @@ async function main() {
   }
 
   const email = stripWrappingQuotes(
-    process.env.SEED_SUPER_ADMIN_EMAIL ?? "chandan32005c@gmail.com"
+    process.env.SEED_SUPER_ADMIN_EMAIL ?? "admin@example.com"
   ).toLowerCase();
   const fullName = stripWrappingQuotes(process.env.SEED_SUPER_ADMIN_NAME ?? "Super Admin") || "Super Admin";
   const phoneRaw = stripWrappingQuotes(process.env.SEED_SUPER_ADMIN_PHONE ?? "");

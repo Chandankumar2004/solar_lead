@@ -74,4 +74,46 @@ const envSchema = z.object({
   PAYMENT_GST: z.string().min(5).default("")
 });
 
-export const env = envSchema.parse(process.env);
+const parsedEnv = envSchema.parse(process.env);
+
+function parseOriginList(raw: string | undefined) {
+  if (!raw) return [];
+  return raw
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+function assertProductionSecurityEnv(values: typeof parsedEnv) {
+  if (values.NODE_ENV !== "production") {
+    return;
+  }
+
+  const issues: string[] = [];
+  if (!values.JWT_ACCESS_SECRET?.trim()) {
+    issues.push("JWT_ACCESS_SECRET is required in production");
+  }
+  if (!values.JWT_REFRESH_SECRET?.trim()) {
+    issues.push("JWT_REFRESH_SECRET is required in production");
+  }
+  if (!values.CUSTOMER_DATA_ENCRYPTION_KEY?.trim()) {
+    issues.push("CUSTOMER_DATA_ENCRYPTION_KEY is required in production");
+  }
+
+  const configuredOrigins = [
+    ...parseOriginList(values.WEB_ORIGIN),
+    ...parseOriginList(values.CORS_ORIGIN),
+    ...parseOriginList(values.FRONTEND_URL)
+  ];
+  if (configuredOrigins.length === 0) {
+    issues.push("At least one allowed web origin is required (WEB_ORIGIN/CORS_ORIGIN/FRONTEND_URL)");
+  }
+
+  if (issues.length > 0) {
+    throw new Error(`ENV_SECURITY_VALIDATION_FAILED: ${issues.join("; ")}`);
+  }
+}
+
+assertProductionSecurityEnv(parsedEnv);
+
+export const env = parsedEnv;

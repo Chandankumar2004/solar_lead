@@ -2,6 +2,7 @@ import { Request, Response, Router } from "express";
 import { z } from "zod";
 import { created, ok } from "../lib/http.js";
 import { validateBody, validateQuery } from "../middleware/validate.js";
+import { requireAuth } from "../middleware/auth.js";
 import { publicLeadSubmissionRateLimit } from "../middleware/rate-limit.js";
 import { createAuditLog, requestIp } from "../services/audit-log.service.js";
 import { AppError } from "../lib/errors.js";
@@ -198,6 +199,25 @@ function parseBooleanEnv(raw: string | undefined): boolean | null {
 
 const enforceRecaptchaOnPublicLead =
   parseBooleanEnv(process.env.RECAPTCHA_ENFORCE_PUBLIC_LEAD) ?? env.NODE_ENV === "production";
+
+function isAllowedUnauthenticatedPublicRequest(req: Request) {
+  const method = req.method.toUpperCase();
+  const path = req.path.toLowerCase();
+  const isDistrictMappingRoute =
+    method === "GET" &&
+    (path === "/districts" || path === "/district-mapping");
+  const isLeadSubmissionRoute =
+    method === "POST" &&
+    (path === "/leads" || path === "/lead-submission");
+  return isDistrictMappingRoute || isLeadSubmissionRoute;
+}
+
+publicRouter.use((req, res, next) => {
+  if (isAllowedUnauthenticatedPublicRequest(req)) {
+    return next();
+  }
+  return requireAuth(req, res, next);
+});
 
 publicRouter.get("/districts", async (_req: Request, res: Response) => {
   const payload = await getPublicDistrictsPayload();

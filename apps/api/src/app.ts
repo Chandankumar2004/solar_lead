@@ -1,6 +1,7 @@
 import "express-async-errors";
 import express from "express";
 import cors, { CorsOptions } from "cors";
+import helmet from "helmet";
 import morgan from "morgan";
 import cookieParser from "cookie-parser";
 import { env } from "./config/env.js";
@@ -9,7 +10,7 @@ import { authRouter } from "./routes/auth.js";
 import { errorHandler } from "./middleware/error.js";
 import { requestLogger } from "./middleware/request-logger.js";
 import { requireAuth } from "./middleware/auth.js";
-import { ok } from "./lib/http.js";
+import { fail, ok } from "./lib/http.js";
 
 export const app = express();
 
@@ -58,17 +59,43 @@ const configuredOrigins = originEnv
   .split(",")
   .map((value) => value.trim())
   .filter(Boolean);
-const allowedOrigins = Array.from(
-  new Set([
-    "http://localhost:3000",
-    "https://solar-lead-web.vercel.app",
-    ...configuredOrigins
-  ])
-);
+const defaultOrigins = env.NODE_ENV === "production" ? [] : ["http://localhost:3000"];
+const allowedOrigins = Array.from(new Set([...defaultOrigins, ...configuredOrigins]));
+const allowedOriginSet = new Set(allowedOrigins);
+const csrfSafeMethods = new Set(["GET", "HEAD", "OPTIONS"]);
+const accessCookieName = (env.ACCESS_COOKIE_NAME ?? "accessToken").trim() || "accessToken";
+const refreshCookieName = (env.REFRESH_COOKIE_NAME ?? "refreshToken").trim() || "refreshToken";
+
+function isAllowedOrigin(origin: string) {
+  return allowedOriginSet.has(origin);
+}
+
+function resolveRequestOrigin(req: express.Request) {
+  const explicitOrigin = req.header("origin")?.trim();
+  if (explicitOrigin) {
+    return explicitOrigin;
+  }
+
+  const referer = req.header("referer")?.trim();
+  if (!referer) {
+    return null;
+  }
+
+  try {
+    return new URL(referer).origin;
+  } catch {
+    return null;
+  }
+}
+
+function hasBearerAuthorization(req: express.Request) {
+  const raw = req.header("authorization");
+  return typeof raw === "string" && raw.trim().toLowerCase().startsWith("bearer ");
+}
 
 const corsOptions: CorsOptions = {
   origin: (origin, callback) => {
-    if (!origin || allowedOrigins.includes(origin)) {
+    if (!origin || isAllowedOrigin(origin)) {
       return callback(null, true);
     }
     return callback(new Error("CORS not allowed"));
@@ -86,6 +113,11 @@ console.info("CORS_CONFIG", {
 });
 
 app.use(requestLogger);
+app.use(
+  helmet({
+    crossOriginResourcePolicy: false
+  })
+);
 app.use(cors(corsOptions));
 app.options("*", cors(corsOptions));
 
@@ -103,6 +135,38 @@ app.use(
 app.use(express.json({ limit: "2mb" }));
 app.use(cookieParser());
 app.use(morgan("dev"));
+
+app.use((req, res, next) => {
+  if (csrfSafeMethods.has(req.method.toUpperCase())) {
+    return next();
+  }
+
+  if (hasBearerAuthorization(req)) {
+    return next();
+  }
+
+  const hasSessionCookie = Boolean(
+    req.cookies?.[accessCookieName] || req.cookies?.[refreshCookieName]
+  );
+  if (!hasSessionCookie) {
+    return next();
+  }
+
+  const requestOrigin = resolveRequestOrigin(req);
+  if (!requestOrigin || !isAllowedOrigin(requestOrigin)) {
+    console.warn("CSRF_ORIGIN_BLOCKED", {
+      method: req.method,
+      path: req.originalUrl,
+      origin: requestOrigin ?? null,
+      requestId: req.requestId ?? null
+    });
+    return fail(res, 403, "CSRF_BLOCKED", "Untrusted request origin", {
+      requestId: req.requestId ?? null
+    });
+  }
+
+  return next();
+});
 
 app.get("/", (_req, res) => {
   return ok(res, { service: "Solar Lead API" });

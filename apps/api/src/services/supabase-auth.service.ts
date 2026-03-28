@@ -254,7 +254,7 @@ function stripWrappingQuotes(raw: string | undefined | null) {
 
 async function ensureSeedSuperAdminAppProfile(email: string): Promise<SessionUser | null> {
   const seedEmail = normalizeEmail(
-    stripWrappingQuotes(process.env.SEED_SUPER_ADMIN_EMAIL) || "chandan32005c@gmail.com"
+    stripWrappingQuotes(process.env.SEED_SUPER_ADMIN_EMAIL) || "admin@example.com"
   );
   const normalizedEmail = normalizeEmail(email);
   if (!seedEmail || normalizedEmail !== seedEmail) {
@@ -478,7 +478,7 @@ async function provisionAppProfileFromSupabaseUser(
   const metadata =
     (supabaseUser.user_metadata as Record<string, unknown> | null | undefined) ?? {};
   const seedEmail = normalizeEmail(
-    stripWrappingQuotes(process.env.SEED_SUPER_ADMIN_EMAIL) || "chandan32005c@gmail.com"
+    stripWrappingQuotes(process.env.SEED_SUPER_ADMIN_EMAIL) || "admin@example.com"
   );
   const isSeedAdmin = seedEmail.length > 0 && email === seedEmail;
 
