@@ -1,5 +1,7 @@
 import axios, { AxiosRequestConfig, AxiosRequestHeaders } from "axios";
 
+axios.defaults.withCredentials = true;
+
 function normalizeBaseUrl(raw: string | undefined) {
   return (raw ?? "").trim().replace(/\/+$/, "");
 }

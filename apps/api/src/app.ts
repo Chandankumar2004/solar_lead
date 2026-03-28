@@ -54,23 +54,24 @@ if (env.NODE_ENV === "production") {
 const originEnv = [env.WEB_ORIGIN, env.CORS_ORIGIN, env.FRONTEND_URL]
   .filter(Boolean)
   .join(",");
-const allowedOrigins = originEnv
+const configuredOrigins = originEnv
   .split(",")
   .map((value) => value.trim())
   .filter(Boolean);
+const allowedOrigins = Array.from(
+  new Set([
+    "http://localhost:3000",
+    "https://your-frontend.vercel.app",
+    ...configuredOrigins
+  ])
+);
 
 const corsOptions: CorsOptions = {
   origin: (origin, callback) => {
-    if (!origin) {
+    if (!origin || allowedOrigins.includes(origin)) {
       return callback(null, true);
     }
-    if (allowedOrigins.length === 0) {
-      return callback(null, true);
-    }
-    if (allowedOrigins.includes(origin)) {
-      return callback(null, true);
-    }
-    return callback(new Error("CORS_NOT_ALLOWED"));
+    return callback(new Error("CORS not allowed"));
   },
   credentials: true,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
@@ -79,9 +80,9 @@ const corsOptions: CorsOptions = {
 };
 
 console.info("CORS_CONFIG", {
-  mode: allowedOrigins.length ? "allowlist" : "permissive",
+  mode: "allowlist",
   credentials: true,
-  origins: allowedOrigins.length ? allowedOrigins : ["*"]
+  origins: allowedOrigins
 });
 
 app.use(requestLogger);

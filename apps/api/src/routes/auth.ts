@@ -26,8 +26,7 @@ export const authRouter = Router();
 const accessCookieName = (env.ACCESS_COOKIE_NAME ?? "accessToken").trim() || "accessToken";
 const refreshCookieName = (env.REFRESH_COOKIE_NAME ?? "refreshToken").trim() || "refreshToken";
 
-const isSecureCookieEnv = env.NODE_ENV === "production";
-const cookieSameSite = isSecureCookieEnv ? ("none" as const) : ("lax" as const);
+const isProductionEnv = env.NODE_ENV === "production";
 
 function parseBooleanEnv(raw: string | undefined): boolean | null {
   if (typeof raw !== "string") {
@@ -51,28 +50,28 @@ function parseBooleanEnv(raw: string | undefined): boolean | null {
 }
 
 const enforceRecaptchaOnLogin =
-  parseBooleanEnv(process.env.RECAPTCHA_ENFORCE_LOGIN) ?? isSecureCookieEnv;
+  parseBooleanEnv(process.env.RECAPTCHA_ENFORCE_LOGIN) ?? isProductionEnv;
 
 const refreshCookieConfig = {
   httpOnly: true,
-  secure: isSecureCookieEnv,
-  sameSite: cookieSameSite,
+  secure: true,
+  sameSite: "none" as const,
   maxAge: 7 * 24 * 60 * 60 * 1000,
   path: "/"
 };
 
 const accessCookieConfig = {
   httpOnly: true,
-  secure: isSecureCookieEnv,
-  sameSite: cookieSameSite,
+  secure: true,
+  sameSite: "none" as const,
   maxAge: 15 * 60 * 1000,
   path: "/"
 };
 
 const clearCookieConfig = {
   httpOnly: true,
-  secure: isSecureCookieEnv,
-  sameSite: cookieSameSite,
+  secure: true,
+  sameSite: "none" as const,
   path: "/"
 };
 
@@ -221,7 +220,7 @@ authRouter.post("/login", async (req: Request, res: Response) => {
 
           // In local/dev environments, browser-level reCAPTCHA failures are often caused by
           // localhost key/domain mismatch or blocked scripts. Keep production strict.
-          if (!isSecureCookieEnv && (hasBrowserError || hasTimeoutOrDuplicate)) {
+          if (!isProductionEnv && (hasBrowserError || hasTimeoutOrDuplicate)) {
             console.warn("AUTH_LOGIN_RECAPTCHA_BYPASS_DEV", {
               ...recaptchaMeta,
               reason: "DEV_BROWSER_RECAPTCHA_BYPASS"
