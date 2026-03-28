@@ -36,7 +36,7 @@ function isRemoteApiUrl(raw: string) {
 const configuredApiBaseUrl = normalizeBaseUrl(
   process.env.NEXT_PUBLIC_API_BASE_URL ?? process.env.NEXT_PUBLIC_API_URL
 );
-const hostedFallbackApiBaseUrl = "https://solarlead-production.up.railway.app";
+const hostedFallbackApiBaseUrl = "https://solar-lead.onrender.com";
 const fallbackApiBaseUrl =
   process.env.NODE_ENV === "production"
     ? hostedFallbackApiBaseUrl
