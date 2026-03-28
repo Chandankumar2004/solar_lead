@@ -61,7 +61,7 @@ const configuredOrigins = originEnv
 const allowedOrigins = Array.from(
   new Set([
     "http://localhost:3000",
-    "https://your-frontend.vercel.app",
+    "https://solar-lead-web.vercel.app",
     ...configuredOrigins
   ])
 );
