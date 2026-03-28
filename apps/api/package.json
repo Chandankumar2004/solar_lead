@@ -22,6 +22,7 @@
     "auth:reset-super-admin": "tsx src/scripts/reset-super-admin-password.ts",
     "auth:backfill-supabase": "tsx src/scripts/backfill-supabase-auth-users.ts",
     "districts:export:web": "tsx src/scripts/export-districts-mapping.ts",
+    "districts:sync:csv": "tsx src/scripts/sync-districts-from-csv.ts",
     "lint": "eslint \"src/**/*.{ts,js}\""
   },
   "dependencies": {

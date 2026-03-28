@@ -391,8 +391,8 @@ export function PublicLeadForm({ districtMapping }: PublicLeadFormProps) {
         <label className="flex items-start gap-2 rounded-xl border border-[#dbe5ef] bg-slate-50 p-3 sm:p-3.5">
           <input type="checkbox" className="mt-1 h-4 w-4" {...register("consent_given")} />
           <span className="text-xs text-slate-700 sm:text-sm">
-            I consent to be contacted regarding solar installation consultation and agree to
-            processing of the details submitted here.
+            I agree to receive inquiry-related updates for my solar installation request via SMS,
+            Email, and WhatsApp, and I consent to processing of the details submitted here.
           </span>
         </label>
         {errors.consent_given ? (

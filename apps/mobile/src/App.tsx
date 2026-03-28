@@ -19,6 +19,8 @@ import { HomeScreen } from "./screens/HomeScreen";
 import { NotificationsScreen } from "./screens/NotificationsScreen";
 import { ProfileScreen } from "./screens/ProfileScreen";
 import { BiometricUnlockScreen } from "./screens/BiometricUnlockScreen";
+import { ChatListScreen, type ChatStackParamList } from "./screens/ChatListScreen";
+import { ChatThreadScreen } from "./screens/ChatThreadScreen";
 import { useAuthStore } from "./store/auth-store";
 import { useQueueStore } from "./store/queue-store";
 import { usePreferencesStore } from "./store/preferences-store";
@@ -29,6 +31,7 @@ import {
   unregisterCurrentPushToken,
   type PushNotificationPayload
 } from "./services/push-notifications";
+import { useMobileI18n } from "./i18n";
 
 type AuthStackParamList = {
   Login: undefined;
@@ -44,16 +47,19 @@ type LeadsStackParamList = {
 type RootTabParamList = {
   Home: undefined;
   Leads: NavigatorScreenParams<LeadsStackParamList>;
+  Chat: NavigatorScreenParams<ChatStackParamList>;
   Notifications: undefined;
   Profile: undefined;
 };
 
 const AuthStack = createNativeStackNavigator<AuthStackParamList>();
 const LeadsStack = createNativeStackNavigator<LeadsStackParamList>();
+const ChatStack = createNativeStackNavigator<ChatStackParamList>();
 const Tab = createBottomTabNavigator<RootTabParamList>();
 const navigationRef = createNavigationContainerRef<RootTabParamList>();
 
 function LeadsNavigator({ colors }: { colors: AppPalette }) {
+  const { t } = useMobileI18n();
   return (
     <LeadsStack.Navigator
       screenOptions={{
@@ -66,27 +72,44 @@ function LeadsNavigator({ colors }: { colors: AppPalette }) {
         name="LeadList"
         component={LeadListScreen}
         options={({ navigation }) => ({
-          title: "Leads",
+          title: t("leads.title"),
           headerRight: () => (
             <Pressable onPress={() => navigation.navigate("LeadCreate")}>
-              <Text style={{ color: colors.primary, fontWeight: "700" }}>New</Text>
+              <Text style={{ color: colors.primary, fontWeight: "700" }}>{t("leads.new")}</Text>
             </Pressable>
           )
         })}
       />
-      <LeadsStack.Screen name="LeadCreate" component={LeadCreateScreen} options={{ title: "Create Lead" }} />
-      <LeadsStack.Screen name="LeadDetail" component={LeadDetailScreen} options={{ title: "Lead Detail" }} />
+      <LeadsStack.Screen name="LeadCreate" component={LeadCreateScreen} options={{ title: t("leads.createLead") }} />
+      <LeadsStack.Screen name="LeadDetail" component={LeadDetailScreen} options={{ title: t("leads.detail") }} />
       <LeadsStack.Screen
         name="CustomerDetails"
         component={CustomerDetailsScreen}
-        options={{ title: "Customer Details" }}
+        options={{ title: t("leads.customerDetails") }}
       />
     </LeadsStack.Navigator>
   );
 }
 
+function ChatNavigator({ colors }: { colors: AppPalette }) {
+  const { t } = useMobileI18n();
+  return (
+    <ChatStack.Navigator
+      screenOptions={{
+        headerStyle: { backgroundColor: colors.surface },
+        headerTintColor: colors.text,
+        headerTitleStyle: { fontWeight: "700" }
+      }}
+    >
+      <ChatStack.Screen name="ChatList" component={ChatListScreen} options={{ title: t("tabs.chat") }} />
+      <ChatStack.Screen name="ChatThread" component={ChatThreadScreen} options={{ title: t("chat.conversation") }} />
+    </ChatStack.Navigator>
+  );
+}
+
 function MainTabs({ colors }: { colors: AppPalette }) {
   const unreadCount = useNotificationStore((s) => s.unreadCount);
+  const { t } = useMobileI18n();
   return (
     <Tab.Navigator
       screenOptions={({ route }) => ({
@@ -112,6 +135,10 @@ function MainTabs({ colors }: { colors: AppPalette }) {
                 ? focused
                   ? "list"
                   : "list-outline"
+                : route.name === "Chat"
+                  ? focused
+                    ? "chatbubble"
+                    : "chatbubble-outline"
                 : route.name === "Notifications"
                   ? focused
                     ? "notifications"
@@ -123,18 +150,22 @@ function MainTabs({ colors }: { colors: AppPalette }) {
         }
       })}
     >
-      <Tab.Screen name="Home" component={HomeScreen} />
-      <Tab.Screen name="Leads" options={{ headerShown: false }}>
+      <Tab.Screen name="Home" component={HomeScreen} options={{ title: t("tabs.home") }} />
+      <Tab.Screen name="Leads" options={{ headerShown: false, title: t("tabs.leads") }}>
         {() => <LeadsNavigator colors={colors} />}
+      </Tab.Screen>
+      <Tab.Screen name="Chat" options={{ headerShown: false, title: t("tabs.chat") }}>
+        {() => <ChatNavigator colors={colors} />}
       </Tab.Screen>
       <Tab.Screen
         name="Notifications"
         component={NotificationsScreen}
         options={{
+          title: t("tabs.notifications"),
           tabBarBadge: unreadCount > 0 ? unreadCount : undefined
         }}
       />
-      <Tab.Screen name="Profile" component={ProfileScreen} />
+      <Tab.Screen name="Profile" component={ProfileScreen} options={{ title: t("tabs.profile") }} />
     </Tab.Navigator>
   );
 }
@@ -147,7 +178,7 @@ function AuthNavigator() {
   );
 }
 
-function BootScreen({ colors }: { colors: AppPalette }) {
+function BootScreen({ colors, message }: { colors: AppPalette; message: string }) {
   return (
     <View
       style={{
@@ -170,7 +201,7 @@ function BootScreen({ colors }: { colors: AppPalette }) {
         }}
       >
         <ActivityIndicator size="large" color={colors.primary} />
-        <Text style={{ marginTop: 10, color: colors.text }}>Loading session...</Text>
+        <Text style={{ marginTop: 10, color: colors.text }}>{message}</Text>
       </View>
     </View>
   );
@@ -202,6 +233,7 @@ export default function App() {
   const addOpenedNotification = useNotificationStore((s) => s.addOpenedNotification);
 
   const colors = useMemo(() => getPalette(themeMode), [themeMode]);
+  const { t } = useMobileI18n();
   const navTheme = useMemo(
     () => ({
       ...NavigationDefaultTheme,
@@ -231,12 +263,40 @@ export default function App() {
             }
           },
           Notifications: "notifications",
+          Chat: {
+            screens: {
+              ChatList: "chat",
+              ChatThread: "chat/:conversationId"
+            }
+          },
           Profile: "profile"
         }
       }
     }),
     []
   );
+
+  const openChatFromPush = useCallback((payload: PushNotificationPayload) => {
+    const entityConversationId =
+      payload.data.entityType === "chat_conversation" ? payload.data.entityId : null;
+    const conversationId =
+      payload.data.conversationId ??
+      payload.data.meta_conversationId ??
+      entityConversationId ??
+      null;
+    if (!conversationId) {
+      return false;
+    }
+
+    if (navigationRef.isReady()) {
+      navigationRef.navigate("Chat", {
+        screen: "ChatThread",
+        params: { conversationId }
+      });
+      return true;
+    }
+    return false;
+  }, []);
 
   const openLeadFromPush = useCallback((payload: PushNotificationPayload) => {
     if (!payload.leadId) {
@@ -294,6 +354,15 @@ export default function App() {
             lockBiometric();
           }
         }
+
+        if (user?.id) {
+          void NetInfo.fetch().then((state) => {
+            const connected = Boolean(state.isConnected) && state.isInternetReachable !== false;
+            if (connected) {
+              void flush(user.id);
+            }
+          });
+        }
       }
     });
 
@@ -322,6 +391,9 @@ export default function App() {
         },
         onNotificationTap: (payload) => {
           void addOpenedNotification(payload);
+          if (openChatFromPush(payload)) {
+            return;
+          }
           openLeadFromPush(payload);
         }
       });
@@ -332,17 +404,17 @@ export default function App() {
       }
 
       if (!initialized.result.available) {
-        setPushNotice("Push is unavailable in this runtime. Use a native dev build, not Expo Go.");
+        setPushNotice(t("common.pushUnavailable"));
         return;
       }
 
       if (initialized.result.permission === "denied") {
-        setPushNotice("Push permission denied. Enable notifications in device settings.");
+        setPushNotice(t("common.pushPermissionDenied"));
         return;
       }
 
       if (!initialized.result.tokenRegistered) {
-        setPushNotice("Push token not registered yet. Notifications may be delayed.");
+        setPushNotice(t("common.pushTokenPending"));
         return;
       }
 
@@ -355,7 +427,7 @@ export default function App() {
       mounted = false;
       teardown();
     };
-  }, [openLeadFromPush, user?.id]);
+  }, [openChatFromPush, openLeadFromPush, t, user?.id]);
 
   const pendingQueueCount = useMemo(() => {
     if (!user?.id) return 0;
@@ -363,7 +435,7 @@ export default function App() {
   }, [queueItems, user?.id]);
 
   if (isBootstrapping || !prefsHydrated) {
-    return <BootScreen colors={colors} />;
+    return <BootScreen colors={colors} message={t("common.loadingSession")} />;
   }
 
   if (user && biometricEnabled && !isBiometricUnlocked) {
@@ -383,7 +455,10 @@ export default function App() {
           }}
         >
           <Text style={{ color: "#fff", fontWeight: "700" }}>
-            Offline mode{pendingQueueCount > 0 ? ` | Pending sync: ${pendingQueueCount}` : ""}
+            {t("common.offlineMode")}
+            {pendingQueueCount > 0
+              ? ` | ${t("common.pendingSync", { count: pendingQueueCount })}`
+              : ""}
           </Text>
         </View>
       ) : null}

@@ -15,6 +15,7 @@ import { useAuthStore } from "../store/auth-store";
 import { readOfflineCache, writeOfflineCache } from "../services/offline-cache";
 import { AppScreen, Badge, Card, SectionTitle, useAppPalette } from "../ui/primitives";
 import { spacing } from "../ui/theme";
+import { useMobileI18n } from "../i18n";
 
 type Lead = {
   id: string;
@@ -51,6 +52,7 @@ export function LeadListScreen() {
   const colors = useAppPalette();
   const navigation = useNavigation<NativeStackNavigationProp<LeadsStackParamList>>();
   const user = useAuthStore((s) => s.user);
+  const { t, formatDateTime } = useMobileI18n();
 
   const [leads, setLeads] = useState<Lead[]>([]);
   const [selectedStatus, setSelectedStatus] = useState<string>(ALL_STATUSES);
@@ -109,21 +111,21 @@ export function LeadListScreen() {
       await writeOfflineCache(user.id, LEAD_LIST_CACHE_KEY, deduped);
 
       if (partialPageLoadFailed) {
-        setError("Some leads could not be loaded. Pull to refresh.");
+        setError(t("leadList.partialLoad"));
       }
     } catch {
       const cached = await readOfflineCache<Lead[]>(user.id, LEAD_LIST_CACHE_KEY);
       if (cached && cached.length > 0) {
         setLeads(cached);
-        setError("Offline mode: showing cached leads.");
+        setError(t("leadList.offlineCached"));
       } else {
-        setError("Failed to load leads.");
+        setError(t("leadList.failed"));
         setLeads([]);
       }
     } finally {
       setRefreshing(false);
     }
-  }, [user?.id]);
+  }, [t, user?.id]);
 
   const filteredLeads = useMemo(() => {
     if (selectedStatus === ALL_STATUSES) {
@@ -182,23 +184,29 @@ export function LeadListScreen() {
           <Text style={[styles.name, { color: colors.text }]}>{item.name}</Text>
           <Text style={[styles.phone, { color: colors.text }]}>{item.phone}</Text>
           <Text style={[styles.metaLine, { color: colors.textMuted }]}>
-            {item.district?.name ? `${item.district.name}, ${item.district.state}` : "District not set"}
+            {item.district?.name
+              ? `${item.district.name}, ${item.district.state}`
+              : t("leadList.districtNotSet")}
           </Text>
           <Text style={[styles.metaLine, { color: colors.textMuted }]}>
-            Updated: {new Date(item.updatedAt).toLocaleString()}
+            {t("leadList.updated", { value: formatDateTime(item.updatedAt) })}
           </Text>
         </Card>
       </Pressable>
     ),
-    [colors.text, colors.textMuted, navigation]
+    [colors.text, colors.textMuted, formatDateTime, navigation, t]
   );
 
   return (
     <AppScreen style={{ paddingBottom: 0 }}>
       <Card>
         <SectionTitle
-          title="Assigned Leads"
-          subtitle={sortOrder === SORT_OLDEST ? "Sorted by oldest update first" : "Sorted by newest update first"}
+          title={t("leadList.title")}
+          subtitle={
+            sortOrder === SORT_OLDEST
+              ? t("leadList.subtitleOldest")
+              : t("leadList.subtitleNewest")
+          }
         />
       </Card>
 
@@ -225,7 +233,7 @@ export function LeadListScreen() {
               sortOrder === SORT_NEWEST && { color: colors.primaryDark }
             ]}
           >
-            Newest
+            {t("leadList.newest")}
           </Text>
         </Pressable>
         <Pressable
@@ -246,7 +254,7 @@ export function LeadListScreen() {
               sortOrder === SORT_OLDEST && { color: colors.primaryDark }
             ]}
           >
-            Oldest
+            {t("leadList.oldest")}
           </Text>
         </Pressable>
       </ScrollView>
@@ -258,7 +266,7 @@ export function LeadListScreen() {
       >
         {statusFilters.map((statusName) => {
           const isActive = statusName === selectedStatus;
-          const label = statusName === ALL_STATUSES ? "All Statuses" : statusName;
+          const label = statusName === ALL_STATUSES ? t("leadList.allStatuses") : statusName;
           return (
             <Pressable
               key={statusName}
@@ -308,7 +316,7 @@ export function LeadListScreen() {
         }
         ListEmptyComponent={
           <Text style={[styles.emptyText, { color: colors.textMuted }]}>
-            {refreshing ? "Loading leads..." : "No assigned leads found."}
+            {refreshing ? t("leadList.loading") : t("leadList.empty")}
           </Text>
         }
         renderItem={renderItem}

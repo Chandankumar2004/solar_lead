@@ -87,3 +87,26 @@
 ## Remaining Work (Targeted, Not Startup-Critical)
 - Legacy business routes still include Prisma data access internals.
 - Startup is now Supabase-first and non-blocking, but full route-layer Prisma removal requires incremental per-route replacement to Supabase queries/RPC.
+
+## Payment Records/Security Migration (2026-03-23)
+- Added migration: `apps/api/prisma/migrations/20260323153000_payment_records_security_hardening/migration.sql`
+- Change:
+  - New partial unique index `payments_lead_id_verified_unique` on `payments(lead_id)` where `status = verified`.
+- Purpose:
+  - Enforce one verified token payment per lead across all payment methods.
+  - Prevent race-condition duplicates during manual/webhook verification paths.
+
+## Multilingual + Chat Migration (2026-03-25)
+- Added migration: `apps/api/prisma/migrations/20260325123000_chat_module/migration.sql`
+- Added Prisma models:
+  - `ChatConversation`
+  - `ChatConversationParticipant`
+  - `ChatMessage`
+- Added key constraints/indexes:
+  - Unique `chat_conversations.conversation_key` (prevents duplicate direct/lead pair threads)
+  - Participant uniqueness per conversation
+  - Message/conversation read/performance indexes
+- Runtime route integration:
+  - New authenticated API namespace: `/api/chat`
+  - RBAC + district scoping checks for peer resolution and conversation creation
+  - Unread/read tracking via participant `last_read_at`

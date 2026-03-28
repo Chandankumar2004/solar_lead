@@ -1,7 +1,7 @@
 import { env } from "../config/env.js";
 import { UserRole, UserStatus } from "../types.js";
 
-type EmailProviderKind = "console" | "sendgrid" | "ses";
+type EmailProviderKind = "console" | "sendgrid" | "ses" | "resend";
 
 export type EmailMessage = {
   to: string;
@@ -43,17 +43,127 @@ class SendGridEmailProvider implements EmailProvider {
   kind: EmailProviderKind = "sendgrid";
 
   async send(message: EmailMessage) {
-    // Placeholder integration: wire official SendGrid client here when credentials are enabled.
-    console.info("[email:sendgrid-placeholder]", {
-      messageId: `sg-${Date.now()}`,
-      from: env.EMAIL_FROM,
-      hasApiKey: Boolean(env.SENDGRID_API_KEY),
-      to: message.to,
-      subject: message.subject
+    if (!env.SENDGRID_API_KEY) {
+      throw new Error("SENDGRID_API_KEY is required when EMAIL_PROVIDER=sendgrid");
+    }
+
+    const metadata = Object.fromEntries(
+      Object.entries(message.metadata ?? {}).map(([key, value]) => [key, String(value)])
+    );
+
+    const response = await fetch("https://api.sendgrid.com/v3/mail/send", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.SENDGRID_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        personalizations: [
+          {
+            to: [{ email: message.to }],
+            subject: message.subject
+          }
+        ],
+        from: {
+          email: env.EMAIL_FROM
+        },
+        content: [
+          {
+            type: "text/plain",
+            value: message.text
+          },
+          {
+            type: "text/html",
+            value: message.html ?? message.text
+          }
+        ],
+        ...(message.tags?.length ? { categories: message.tags.slice(0, 10) } : {}),
+        ...(Object.keys(metadata).length ? { custom_args: metadata } : {})
+      })
     });
+
+    const rawBody = await response.text();
+    if (!response.ok) {
+      let parsed: Record<string, unknown> | null = null;
+      try {
+        parsed = rawBody ? (JSON.parse(rawBody) as Record<string, unknown>) : null;
+      } catch {
+        parsed = null;
+      }
+      const firstError =
+        Array.isArray(parsed?.errors) && parsed?.errors.length
+          ? (parsed.errors[0] as Record<string, unknown>)
+          : null;
+      const messageText =
+        String(firstError?.message ?? "").trim() || rawBody || "Unknown SendGrid error";
+      throw new Error(`SendGrid request failed (${response.status}): ${messageText}`);
+    }
+
+    const providerMessageId =
+      response.headers.get("x-message-id") ??
+      `sg-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+
     return {
       provider: this.kind,
-      messageId: `sg-${Date.now()}`
+      messageId: providerMessageId
+    };
+  }
+}
+
+class ResendEmailProvider implements EmailProvider {
+  kind: EmailProviderKind = "resend";
+
+  async send(message: EmailMessage) {
+    if (!env.RESEND_API_KEY) {
+      throw new Error("RESEND_API_KEY is required when EMAIL_PROVIDER=resend");
+    }
+
+    const response = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.RESEND_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        from: env.EMAIL_FROM,
+        to: [message.to],
+        subject: message.subject,
+        text: message.text,
+        html: message.html ?? message.text,
+        ...(message.tags?.length
+          ? {
+              tags: message.tags.slice(0, 10).map((tag) => ({
+                name: "tag",
+                value: tag
+              }))
+            }
+          : {})
+      })
+    });
+
+    const rawBody = await response.text();
+    let parsedBody: Record<string, unknown> | null = null;
+    try {
+      parsedBody = rawBody ? (JSON.parse(rawBody) as Record<string, unknown>) : null;
+    } catch {
+      parsedBody = null;
+    }
+
+    if (!response.ok) {
+      const messageText =
+        String(parsedBody?.message ?? parsedBody?.error ?? "").trim() ||
+        rawBody ||
+        "Unknown Resend error";
+      throw new Error(`Resend request failed (${response.status}): ${messageText}`);
+    }
+
+    const providerMessageId =
+      String(parsedBody?.id ?? "").trim() ||
+      `resend-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+
+    return {
+      provider: this.kind,
+      messageId: providerMessageId
     };
   }
 }
@@ -80,6 +190,9 @@ class SesEmailProvider implements EmailProvider {
 function resolveEmailProvider(): EmailProvider {
   if (env.EMAIL_PROVIDER === "sendgrid") {
     return new SendGridEmailProvider();
+  }
+  if (env.EMAIL_PROVIDER === "resend") {
+    return new ResendEmailProvider();
   }
   if (env.EMAIL_PROVIDER === "ses") {
     return new SesEmailProvider();

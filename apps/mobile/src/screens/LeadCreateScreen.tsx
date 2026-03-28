@@ -1,5 +1,6 @@
-import React, { useEffect, useMemo, useState } from "react";
-import { View, Text, TextInput, Pressable, Alert, StyleSheet } from "react-native";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { AppState, View, Text, TextInput, Pressable, Alert, StyleSheet } from "react-native";
 import { useForm, Controller } from "react-hook-form";
 import * as DocumentPicker from "expo-document-picker";
 import * as ImagePicker from "expo-image-picker";
@@ -10,6 +11,7 @@ import { api } from "../services/api";
 import { useQueueStore } from "../store/queue-store";
 import { useAuthStore } from "../store/auth-store";
 import { uploadLeadDocument } from "../services/document-upload";
+import { ensurePersistentLeadAttachmentFile } from "../services/upload-persistence";
 import {
   AppButton,
   AppScreen,
@@ -69,11 +71,29 @@ type Attachment = {
 };
 
 const MAX_UPLOAD_SIZE_BYTES = 10 * 1024 * 1024;
+const LEAD_CREATE_DRAFT_KEY_PREFIX = "lead_create_draft:v1";
 const ALLOWED_UPLOAD_MIME_TYPES = new Set([
   "application/pdf",
   "image/jpeg",
   "image/png"
 ]);
+
+const defaultFormValues: FormValues = {
+  districtId: "",
+  source: "Mobile",
+  fullName: "",
+  phone: "",
+  address: ""
+};
+
+type LeadCreateDraft = {
+  values?: Partial<FormValues>;
+  coord?: {
+    latitude: number;
+    longitude: number;
+  };
+  attachments?: Attachment[];
+};
 
 function isUuid(value: string) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
@@ -221,9 +241,15 @@ export function LeadCreateScreen() {
   const [districtsLoading, setDistrictsLoading] = useState(false);
   const [districtFetchError, setDistrictFetchError] = useState<string | null>(null);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [isDraftHydrated, setIsDraftHydrated] = useState(false);
+  const draftKey = useMemo(
+    () => (user?.id ? `${LEAD_CREATE_DRAFT_KEY_PREFIX}:${user.id}` : null),
+    [user?.id]
+  );
   const { control, handleSubmit, reset, watch, setValue } = useForm<FormValues>({
-    defaultValues: { districtId: "", source: "Mobile", fullName: "", phone: "", address: "" }
+    defaultValues: defaultFormValues
   });
+  const watchedFormValues = watch();
 
   useEffect(() => {
     let active = true;
@@ -254,6 +280,115 @@ export function LeadCreateScreen() {
       active = false;
     };
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    setIsDraftHydrated(false);
+
+    const hydrateDraft = async () => {
+      if (!draftKey) {
+        if (active) {
+          setIsDraftHydrated(true);
+        }
+        return;
+      }
+
+      try {
+        const raw = await AsyncStorage.getItem(draftKey);
+        if (!raw) {
+          if (active) {
+            reset(defaultFormValues);
+            setAttachments([]);
+          }
+          return;
+        }
+
+        const parsed = JSON.parse(raw) as LeadCreateDraft;
+        const safeValues =
+          parsed?.values && typeof parsed.values === "object"
+            ? {
+                districtId: typeof parsed.values.districtId === "string" ? parsed.values.districtId : "",
+                source: typeof parsed.values.source === "string" ? parsed.values.source : "Mobile",
+                fullName: typeof parsed.values.fullName === "string" ? parsed.values.fullName : "",
+                phone: typeof parsed.values.phone === "string" ? parsed.values.phone : "",
+                address: typeof parsed.values.address === "string" ? parsed.values.address : ""
+              }
+            : defaultFormValues;
+        const safeCoord = parsed?.coord;
+        const restoredAttachments = Array.isArray(parsed?.attachments)
+          ? parsed.attachments.filter(
+              (file): file is Attachment =>
+                Boolean(file?.uri) &&
+                typeof file.fileName === "string" &&
+                typeof file.mimeType === "string" &&
+                typeof file.sizeBytes === "number"
+            )
+          : [];
+
+        if (!active) return;
+
+        reset(safeValues);
+        if (
+          safeCoord &&
+          Number.isFinite(safeCoord.latitude) &&
+          Number.isFinite(safeCoord.longitude)
+        ) {
+          setCoord({
+            latitude: safeCoord.latitude,
+            longitude: safeCoord.longitude
+          });
+        }
+        setAttachments(restoredAttachments);
+      } catch {
+        if (active) {
+          reset(defaultFormValues);
+          setAttachments([]);
+        }
+      } finally {
+        if (active) {
+          setIsDraftHydrated(true);
+        }
+      }
+    };
+
+    void hydrateDraft();
+    return () => {
+      active = false;
+    };
+  }, [draftKey, reset]);
+
+  const persistDraftNow = useCallback(async () => {
+    if (!draftKey || !isDraftHydrated) return;
+    await AsyncStorage.setItem(
+      draftKey,
+      JSON.stringify({
+        values: watchedFormValues,
+        coord,
+        attachments,
+        updatedAt: new Date().toISOString()
+      })
+    );
+  }, [attachments, coord, draftKey, isDraftHydrated, watchedFormValues]);
+
+  useEffect(() => {
+    if (!draftKey || !isDraftHydrated) return;
+    const timer = setTimeout(() => {
+      void persistDraftNow();
+    }, 200);
+    return () => clearTimeout(timer);
+  }, [draftKey, isDraftHydrated, persistDraftNow, watchedFormValues, coord, attachments]);
+
+  useEffect(() => {
+    const appStateSub = AppState.addEventListener("change", (nextState) => {
+      if (nextState === "background" || nextState === "inactive") {
+        void persistDraftNow();
+      }
+    });
+
+    return () => {
+      appStateSub.remove();
+    };
+  }, [persistDraftNow]);
 
   const pickFiles = async () => {
     const docs = await DocumentPicker.getDocumentAsync({
@@ -306,7 +441,13 @@ export function LeadCreateScreen() {
         skipped.slice(0, 3).join("\n") + (skipped.length > 3 ? `\n+${skipped.length - 3} more` : "")
       );
     }
-    setAttachments(valid);
+    const persistentFiles: Attachment[] = [];
+    for (const file of valid) {
+      const persistentFile = await ensurePersistentLeadAttachmentFile(file);
+      persistentFiles.push(persistentFile);
+    }
+
+    setAttachments(persistentFiles);
   };
 
   const onSubmit = handleSubmit(async (values) => {
@@ -350,6 +491,10 @@ export function LeadCreateScreen() {
       );
       Alert.alert("Saved offline", "Lead will sync when internet is back.");
       reset();
+      setAttachments([]);
+      if (draftKey) {
+        await AsyncStorage.removeItem(draftKey);
+      }
       return;
     }
 
@@ -423,6 +568,9 @@ export function LeadCreateScreen() {
       }
       reset();
       setAttachments([]);
+      if (draftKey) {
+        await AsyncStorage.removeItem(draftKey);
+      }
     } catch (error) {
       if (await shouldQueueSubmission(error)) {
         await enqueue(

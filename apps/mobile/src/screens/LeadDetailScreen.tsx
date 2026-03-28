@@ -106,6 +106,9 @@ type PaymentItem = {
 
 type PaymentMerchantDetails = {
   registeredName?: string | null;
+  upiId?: string | null;
+  upiDisplayName?: string | null;
+  qrImageUrl?: string | null;
   cin?: string | null;
   pan?: string | null;
   tan?: string | null;
@@ -230,6 +233,18 @@ function sanitizeUtr(value: string) {
   return value.trim().replace(/\s+/g, "").slice(0, 120);
 }
 
+function isValidUtrNumber(value: string) {
+  return /^[a-z0-9][a-z0-9._/-]{5,119}$/i.test(value);
+}
+
+function sanitizeUpiId(value: string) {
+  return value.trim().replace(/\s+/g, "").toLowerCase().slice(0, 120);
+}
+
+function isValidUpiId(value: string) {
+  return /^[a-z0-9._-]{2,256}@[a-z][a-z0-9.-]{1,63}$/i.test(value);
+}
+
 function normalizeCategory(value: string) {
   const normalized = value.trim().toLowerCase().replace(/\s+/g, "_");
   if (normalized.length >= 2) {
@@ -299,6 +314,26 @@ function inferMimeType(fileName: string, fallback?: string | null) {
   return "image/jpeg";
 }
 
+function normalizeQrImageUrl(value: string) {
+  const raw = value.trim();
+  if (!raw) return "";
+
+  try {
+    const parsed = new URL(raw);
+    if (parsed.hostname.toLowerCase().includes("drive.google.com")) {
+      const filePathMatch = parsed.pathname.match(/\/file\/d\/([^/]+)/i);
+      const fileId = filePathMatch?.[1] || parsed.searchParams.get("id");
+      if (fileId) {
+        return `https://drive.google.com/uc?export=view&id=${encodeURIComponent(fileId)}`;
+      }
+    }
+  } catch {
+    // Keep original value if URL parsing fails.
+  }
+
+  return raw;
+}
+
 function validatePickedUploadFile(file: LeadDocumentUploadFile) {
   if (!ALLOWED_UPLOAD_MIME_TYPES.has(file.fileType)) {
     return "Unsupported file type. Only JPEG, PNG, and PDF are allowed.";
@@ -348,10 +383,14 @@ export function LeadDetailScreen({ route, navigation }: LeadDetailScreenProps) {
   const user = useAuthStore((s) => s.user);
   const scrollRef = useRef<ScrollView>(null);
   const sectionOffsetsRef = useRef<{ documents?: number }>({});
-  const companyUpiId = process.env.EXPO_PUBLIC_COMPANY_UPI_ID?.trim() || "";
-  const companyUpiName =
+  const envCompanyUpiId = process.env.EXPO_PUBLIC_COMPANY_UPI_ID?.trim() || "";
+  const envCompanyUpiName =
     process.env.EXPO_PUBLIC_COMPANY_UPI_NAME?.trim() || "Solar Payments";
-  const explicitQrUrl = process.env.EXPO_PUBLIC_COMPANY_UPI_QR_URL?.trim() || "";
+  const envExplicitQrUrl = process.env.EXPO_PUBLIC_COMPANY_UPI_QR_URL?.trim() || "";
+  const tokenAmountInr = Number(process.env.EXPO_PUBLIC_TOKEN_PAYMENT_AMOUNT_INR ?? "1000");
+  const normalizedTokenAmount = Number.isFinite(tokenAmountInr) && tokenAmountInr > 0
+    ? tokenAmountInr
+    : 1000;
 
   const [lead, setLead] = useState<LeadDetail | null>(null);
   const [documents, setDocuments] = useState<LeadDocumentSummary[]>([]);
@@ -376,13 +415,14 @@ export function LeadDetailScreen({ route, navigation }: LeadDetailScreenProps) {
   const [downloadStates, setDownloadStates] = useState<
     Record<string, "idle" | "downloading" | "failed">
   >({});
-  const [paymentAmount, setPaymentAmount] = useState("");
+  const [paymentAmount, setPaymentAmount] = useState(
+    normalizedTokenAmount.toFixed(2)
+  );
+  const [paymentMethod, setPaymentMethod] = useState<"QR_UTR" | "UPI_GATEWAY">("QR_UTR");
   const [utrNumber, setUtrNumber] = useState("");
+  const [customerUpiId, setCustomerUpiId] = useState("");
   const [paymentSubmitting, setPaymentSubmitting] = useState(false);
   const [gatewaySubmitting, setGatewaySubmitting] = useState(false);
-  const [gatewayProvider, setGatewayProvider] = useState<"razorpay" | "payu">(
-    "razorpay"
-  );
   const [paymentSnapshot, setPaymentSnapshot] = useState<Record<string, string>>({});
   const [paymentSnapshotInitialized, setPaymentSnapshotInitialized] =
     useState(false);
@@ -390,6 +430,7 @@ export function LeadDetailScreen({ route, navigation }: LeadDetailScreenProps) {
   const queueItems = useQueueStore((s) => s.items);
   const enqueue = useQueueStore((s) => s.enqueue);
   const flushQueue = useQueueStore((s) => s.flush);
+  const removeQueueItem = useQueueStore((s) => s.remove);
 
   const queuedUploadCount = useMemo(
     () =>
@@ -401,6 +442,97 @@ export function LeadDetailScreen({ route, navigation }: LeadDetailScreenProps) {
       ).length,
     [queueItems, leadId, user?.id]
   );
+
+  useEffect(() => {
+    const scopedQueuedUploads = queueItems.filter(
+      (
+        item: QueueItem
+      ): item is Extract<QueueItem, { kind: "UPLOAD_LEAD_DOCUMENT" }> =>
+        item.kind === "UPLOAD_LEAD_DOCUMENT" &&
+        item.payload.leadId === leadId &&
+        (!item.ownerUserId || item.ownerUserId === user?.id)
+    );
+
+    setUploadItems((prev) => {
+      const queuedMap = new Map<string, Extract<QueueItem, { kind: "UPLOAD_LEAD_DOCUMENT" }>>(
+        scopedQueuedUploads.map((item) => [`queued-${item.id}`, item] as const)
+      );
+      let changed = false;
+
+      const updated: UploadUiItem[] = prev.map((entry) => {
+        if (!entry.id.startsWith("queued-")) {
+          return entry;
+        }
+
+        const queued = queuedMap.get(entry.id);
+        if (!queued) {
+          if (entry.state !== "queued") {
+            return entry;
+          }
+          changed = true;
+          return {
+            ...entry,
+            state: "uploaded" as const,
+            progress: 100,
+            error: undefined
+          };
+        }
+
+        const nextCategory = queued.payload.category;
+        const nextFile = queued.payload.file;
+        const hasSameFile =
+          entry.file.uri === nextFile.uri &&
+          entry.file.fileName === nextFile.fileName &&
+          entry.file.fileType === nextFile.fileType &&
+          entry.file.fileSize === nextFile.fileSize;
+        if (
+          entry.state === "queued" &&
+          entry.progress === 0 &&
+          entry.error === "Upload pending sync." &&
+          entry.category === nextCategory &&
+          hasSameFile
+        ) {
+          return entry;
+        }
+
+        changed = true;
+        return {
+          ...entry,
+          source: "document",
+          category: nextCategory,
+          file: nextFile,
+          state: "queued" as const,
+          progress: 0,
+          error: "Upload pending sync."
+        };
+      });
+
+      const existingIds = new Set(updated.map((entry) => entry.id));
+      const additions: UploadUiItem[] = [];
+
+      queuedMap.forEach((queued, queuedId) => {
+        if (existingIds.has(queuedId)) {
+          return;
+        }
+        changed = true;
+        additions.push({
+          id: queuedId,
+          source: "document",
+          category: queued.payload.category,
+          file: queued.payload.file,
+          state: "queued",
+          progress: 0,
+          error: "Upload pending sync."
+        });
+      });
+
+      if (!changed) {
+        return prev;
+      }
+
+      return additions.length > 0 ? [...additions, ...updated] : updated;
+    });
+  }, [leadId, queueItems, user?.id]);
 
   const buildSitePhotoIndexSet = useCallback(() => {
     const used = new Set<number>();
@@ -632,6 +764,22 @@ export function LeadDetailScreen({ route, navigation }: LeadDetailScreenProps) {
       rejected: payments.filter((item) => item.status === "REJECTED").length
     };
   }, [lead?.payments]);
+
+  const companyUpiId = useMemo(
+    () => merchantDetails?.upiId?.trim() || envCompanyUpiId,
+    [envCompanyUpiId, merchantDetails?.upiId]
+  );
+  const companyUpiName = useMemo(
+    () => merchantDetails?.upiDisplayName?.trim() || envCompanyUpiName,
+    [envCompanyUpiName, merchantDetails?.upiDisplayName]
+  );
+  const explicitQrUrl = useMemo(
+    () =>
+      normalizeQrImageUrl(
+        merchantDetails?.qrImageUrl?.trim() || envExplicitQrUrl
+      ),
+    [envExplicitQrUrl, merchantDetails?.qrImageUrl]
+  );
 
   const destination = useMemo(() => {
     if (!lead) return "";
@@ -898,6 +1046,68 @@ export function LeadDetailScreen({ route, navigation }: LeadDetailScreenProps) {
     await load();
   };
 
+  const resetDocumentUploadSection = useCallback(() => {
+    Alert.alert(
+      "Reset uploads",
+      "This will clear current upload selections, queued uploads, and uploaded documents for this lead.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Reset",
+          style: "destructive",
+          onPress: () => {
+            void (async () => {
+              setUploadCategory(DEFAULT_DOCUMENT_CATEGORY);
+              setUploadItems([]);
+
+              const queuedForLead = queueItems.filter(
+                (
+                  item: QueueItem
+                ): item is Extract<QueueItem, { kind: "UPLOAD_LEAD_DOCUMENT" }> =>
+                  item.kind === "UPLOAD_LEAD_DOCUMENT" &&
+                  item.payload.leadId === leadId &&
+                  (!item.ownerUserId || item.ownerUserId === user?.id)
+              );
+              if (queuedForLead.length > 0) {
+                await Promise.all(queuedForLead.map((item) => removeQueueItem(item.id)));
+              }
+
+              const currentDocuments = [...documents];
+              const deleteFailures: string[] = [];
+              for (const doc of currentDocuments) {
+                try {
+                  await api.post(`/api/documents/${doc.id}/delete`);
+                } catch (error) {
+                  const status = (error as { response?: { status?: number } })?.response?.status;
+                  if (status === 404) {
+                    try {
+                      await api.delete(`/api/documents/${doc.id}`);
+                      continue;
+                    } catch {
+                      // Fallback also failed; capture below.
+                    }
+                  }
+                  deleteFailures.push(doc.fileName);
+                }
+              }
+
+              await load();
+
+              if (deleteFailures.length > 0) {
+                Alert.alert(
+                  "Reset partially completed",
+                  `Could not delete ${deleteFailures.length} document(s).`
+                );
+              } else {
+                Alert.alert("Reset completed", "Uploads and uploaded documents were cleared.");
+              }
+            })();
+          }
+        }
+      ]
+    );
+  }, [documents, leadId, load, queueItems, removeQueueItem, user?.id]);
+
   const openDialer = async () => {
     const phone = (lead?.phone || "").trim();
     if (!phone) {
@@ -955,6 +1165,13 @@ export function LeadDetailScreen({ route, navigation }: LeadDetailScreenProps) {
       Alert.alert("Invalid UTR", "UTR number must be at least 6 characters.");
       return;
     }
+    if (!isValidUtrNumber(cleanUtr)) {
+      Alert.alert(
+        "Invalid UTR",
+        "Use 6-120 characters with letters, numbers, '.', '_', '/', '-' only."
+      );
+      return;
+    }
 
     setPaymentSubmitting(true);
     try {
@@ -982,56 +1199,41 @@ export function LeadDetailScreen({ route, navigation }: LeadDetailScreenProps) {
       Alert.alert("Invalid amount", "Enter a valid payment amount.");
       return;
     }
+    const normalizedUpiId = sanitizeUpiId(customerUpiId);
+    if (!isValidUpiId(normalizedUpiId)) {
+      Alert.alert("Invalid UPI ID", "Enter a valid customer UPI ID (example: customer@upi).");
+      return;
+    }
 
     setGatewaySubmitting(true);
     try {
-      const response = await api.post(`/api/payments/gateway/${gatewayProvider}/order`, {
+      const response = await api.post("/api/payments/gateway/razorpay/order", {
         leadId,
         amount,
         currency: "INR",
+        customerUpiId: normalizedUpiId,
         notes: {
-          source: "mobile_placeholder"
+          source: "mobile_upi_collect"
         }
       });
 
-      const orderId = response.data?.data?.orderId as string | undefined;
-      const provider = response.data?.data?.provider as string | undefined;
-      if (!orderId) {
-        throw new Error("Gateway placeholder orderId not found.");
-      }
-
-      if (!companyUpiId) {
-        Alert.alert(
-          "Order created",
-          `${provider ?? gatewayProvider} order ${orderId} created. Configure EXPO_PUBLIC_COMPANY_UPI_ID to open UPI intent automatically.`
-        );
-        return;
-      }
-
-      const upiUrl = `upi://pay?pa=${encodeURIComponent(
-        companyUpiId
-      )}&pn=${encodeURIComponent(companyUpiName)}&am=${encodeURIComponent(
-        amount.toFixed(2)
-      )}&cu=INR&tn=${encodeURIComponent(`Order ${orderId}`)}`;
-
-      const canOpen = await Linking.canOpenURL(upiUrl);
-      if (!canOpen) {
-        Alert.alert(
-          "UPI app unavailable",
-          `Order ${orderId} created, but no UPI app is available on this device.`
-        );
-        return;
-      }
-
-      await Linking.openURL(upiUrl);
+      const requestId =
+        (response.data?.data?.requestId as string | undefined) ??
+        (response.data?.data?.collectRequest?.id as string | undefined);
+      const orderId =
+        (response.data?.data?.orderId as string | undefined) ??
+        (response.data?.data?.collectRequest?.orderId as string | undefined);
       Alert.alert(
-        "Gateway order created",
-        `Opened UPI app for order ${orderId}. Submit final UTR if needed.`
+        "Collect request sent",
+        `UPI collect request${requestId ? ` ${requestId}` : ""} sent to customer UPI ID ${normalizedUpiId}${
+          orderId ? ` (order ${orderId})` : ""
+        }.`
       );
+      await load();
     } catch (err) {
       Alert.alert(
-        "Gateway order failed",
-        extractErrorMessage(err, "Unable to create gateway placeholder order.")
+        "Collect request failed",
+        extractErrorMessage(err, "Unable to create UPI collect request.")
       );
     } finally {
       setGatewaySubmitting(false);
@@ -1334,145 +1536,167 @@ export function LeadDetailScreen({ route, navigation }: LeadDetailScreenProps) {
           Merchant: {merchantDetails?.registeredName || companyUpiName}
         </Text>
         {merchantDetails?.gst ? <Text style={{ color: colors.textMuted }}>GST: {merchantDetails.gst}</Text> : null}
+        <Text style={{ color: colors.textMuted }}>
+          Token amount: INR {normalizedTokenAmount.toFixed(2)}
+        </Text>
 
-        {fallbackMerchantQrUrl ? (
-          <Image
-            source={{ uri: fallbackMerchantQrUrl }}
-            style={{ width: 220, height: 220, alignSelf: "center", borderRadius: 10 }}
-            resizeMode="contain"
-          />
-        ) : (
-          <View
-            style={{
-              alignSelf: "center",
-              width: 220,
-              height: 220,
-              borderWidth: 1,
-              borderColor: colors.border,
-              borderRadius: 10,
-              alignItems: "center",
-              justifyContent: "center",
-              padding: 12
-            }}
-          >
-            <Text style={{ textAlign: "center", color: colors.textMuted }}>
-              Unable to generate QR. Configure EXPO_PUBLIC_COMPANY_UPI_QR_URL or merchant details.
-            </Text>
-          </View>
-        )}
-
-        {companyUpiId ? <Text style={{ color: colors.text }}>UPI ID: {companyUpiId}</Text> : null}
-        {!companyUpiId ? (
-          <Text style={{ color: colors.warning }}>
-            UPI ID is not configured; QR shows merchant reference, and gateway UPI deep-link will stay disabled.
-          </Text>
-        ) : null}
-
-        <TextInput
-          value={paymentAmount}
-          onChangeText={setPaymentAmount}
-          placeholder="Amount (INR)"
-          keyboardType="decimal-pad"
-          style={textInputStyle}
-        />
-        <TextInput
-          value={utrNumber}
-          onChangeText={(text) => setUtrNumber(sanitizeUtr(text))}
-          placeholder="Enter UTR number"
-          autoCapitalize="characters"
-          style={textInputStyle}
-        />
-
-        <Pressable
-          onPress={() => {
-            void submitQrUtrPayment();
-          }}
-          disabled={paymentSubmitting}
-          style={{
-            backgroundColor: paymentSubmitting ? colors.textMuted : colors.primary,
-            borderRadius: 8,
-            padding: 12
-          }}
-        >
-          <Text style={{ color: "#fff", textAlign: "center", fontWeight: "700" }}>
-            {paymentSubmitting ? "Submitting..." : "Submit QR UTR"}
-          </Text>
-        </Pressable>
-
-        <View
-          style={{
-            borderTopWidth: 1,
-            borderTopColor: colors.border,
-            paddingTop: 10,
-            gap: 8
-          }}
-        >
-          <Text style={{ fontWeight: "700", color: colors.text }}>
-            Gateway Placeholder (Optional)
-          </Text>
-          <View style={{ flexDirection: "row", gap: 8 }}>
-            <Pressable
-              onPress={() => setGatewayProvider("razorpay")}
-              style={{
-                flex: 1,
-                borderWidth: 1,
-                borderColor: gatewayProvider === "razorpay" ? colors.primary : colors.border,
-                backgroundColor:
-                  gatewayProvider === "razorpay" ? colors.accent : colors.surface,
-                borderRadius: 8,
-                padding: 10
-              }}
-            >
-              <Text
-                style={{
-                  textAlign: "center",
-                  fontWeight: "700",
-                  color: gatewayProvider === "razorpay" ? colors.primary : colors.text
-                }}
-              >
-                Razorpay
-              </Text>
-            </Pressable>
-            <Pressable
-              onPress={() => setGatewayProvider("payu")}
-              style={{
-                flex: 1,
-                borderWidth: 1,
-                borderColor: gatewayProvider === "payu" ? colors.primary : colors.border,
-                backgroundColor:
-                  gatewayProvider === "payu" ? colors.accent : colors.surface,
-                borderRadius: 8,
-                padding: 10
-              }}
-            >
-              <Text
-                style={{
-                  textAlign: "center",
-                  fontWeight: "700",
-                  color: gatewayProvider === "payu" ? colors.primary : colors.text
-                }}
-              >
-                PayU
-              </Text>
-            </Pressable>
-          </View>
-
+        <View style={{ flexDirection: "row", gap: 8 }}>
           <Pressable
-            onPress={() => {
-              void createGatewayOrderAndOpenUpi();
-            }}
-            disabled={gatewaySubmitting}
+            onPress={() => setPaymentMethod("QR_UTR")}
             style={{
-              backgroundColor: gatewaySubmitting ? colors.textMuted : colors.info,
+              flex: 1,
               borderRadius: 8,
-              padding: 12
+              borderWidth: 1,
+              borderColor:
+                paymentMethod === "QR_UTR" ? colors.primary : colors.border,
+              backgroundColor:
+                paymentMethod === "QR_UTR" ? colors.accent : colors.surface,
+              padding: 10
             }}
           >
-            <Text style={{ color: "#fff", textAlign: "center", fontWeight: "700" }}>
-              {gatewaySubmitting ? "Creating Order..." : "Create Gateway Order & Open UPI"}
+            <Text
+              style={{
+                textAlign: "center",
+                fontWeight: "700",
+                color: paymentMethod === "QR_UTR" ? colors.primary : colors.text
+              }}
+            >
+              QR Payment
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={() => setPaymentMethod("UPI_GATEWAY")}
+            style={{
+              flex: 1,
+              borderRadius: 8,
+              borderWidth: 1,
+              borderColor:
+                paymentMethod === "UPI_GATEWAY" ? colors.primary : colors.border,
+              backgroundColor:
+                paymentMethod === "UPI_GATEWAY" ? colors.accent : colors.surface,
+              padding: 10
+            }}
+          >
+            <Text
+              style={{
+                textAlign: "center",
+                fontWeight: "700",
+                color:
+                  paymentMethod === "UPI_GATEWAY" ? colors.primary : colors.text
+              }}
+            >
+              UPI Collect
             </Text>
           </Pressable>
         </View>
+
+        {paymentMethod === "QR_UTR" ? (
+          <View style={{ gap: 8 }}>
+            {fallbackMerchantQrUrl ? (
+              <Image
+                source={{ uri: fallbackMerchantQrUrl }}
+                style={{ width: 220, height: 220, alignSelf: "center", borderRadius: 10 }}
+                resizeMode="contain"
+              />
+            ) : (
+              <View
+                style={{
+                  alignSelf: "center",
+                  width: 220,
+                  height: 220,
+                  borderWidth: 1,
+                  borderColor: colors.border,
+                  borderRadius: 10,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  padding: 12
+                }}
+              >
+                <Text style={{ textAlign: "center", color: colors.textMuted }}>
+                  Unable to generate QR. Configure official company QR in backend config.
+                </Text>
+              </View>
+            )}
+
+            {companyUpiId ? <Text style={{ color: colors.text }}>UPI ID: {companyUpiId}</Text> : null}
+            {!companyUpiId ? (
+              <Text style={{ color: colors.warning }}>
+                UPI ID is not configured; QR will show merchant reference text only.
+              </Text>
+            ) : null}
+
+            <TextInput
+              value={paymentAmount}
+              editable={false}
+              placeholder="Fixed token amount (INR)"
+              keyboardType="decimal-pad"
+              style={textInputStyle}
+            />
+            <TextInput
+              value={utrNumber}
+              onChangeText={(text) => setUtrNumber(sanitizeUtr(text))}
+              placeholder="Enter UTR number"
+              autoCapitalize="characters"
+              style={textInputStyle}
+            />
+
+            <Pressable
+              onPress={() => {
+                void submitQrUtrPayment();
+              }}
+              disabled={paymentSubmitting}
+              style={{
+                backgroundColor: paymentSubmitting ? colors.textMuted : colors.primary,
+                borderRadius: 8,
+                padding: 12
+              }}
+            >
+              <Text style={{ color: "#fff", textAlign: "center", fontWeight: "700" }}>
+                {paymentSubmitting ? "Submitting..." : "Submit QR UTR"}
+              </Text>
+            </Pressable>
+          </View>
+        ) : (
+          <View
+            style={{
+              borderTopWidth: 1,
+              borderTopColor: colors.border,
+              paddingTop: 10,
+              gap: 8
+            }}
+          >
+            <Text style={{ fontWeight: "700", color: colors.text }}>
+              UPI Collect Request
+            </Text>
+            <TextInput
+              value={customerUpiId}
+              onChangeText={(text) => setCustomerUpiId(sanitizeUpiId(text))}
+              placeholder="Customer UPI ID (example: customer@upi)"
+              autoCapitalize="none"
+              autoCorrect={false}
+              style={textInputStyle}
+            />
+            <Text style={{ color: colors.textMuted, fontSize: 12 }}>
+              Sends a Razorpay UPI collect request to the customer's UPI app.
+            </Text>
+
+            <Pressable
+              onPress={() => {
+                void createGatewayOrderAndOpenUpi();
+              }}
+              disabled={gatewaySubmitting}
+              style={{
+                backgroundColor: gatewaySubmitting ? colors.textMuted : colors.info,
+                borderRadius: 8,
+                padding: 12
+              }}
+            >
+              <Text style={{ color: "#fff", textAlign: "center", fontWeight: "700" }}>
+                {gatewaySubmitting ? "Sending Request..." : "Send UPI Collect Request"}
+              </Text>
+            </Pressable>
+          </View>
+        )}
       </View>
 
       <View
@@ -1557,7 +1781,23 @@ export function LeadDetailScreen({ route, navigation }: LeadDetailScreenProps) {
           gap: 10
         }}
       >
-        <Text style={{ fontSize: 16, fontWeight: "700" }}>Document Upload</Text>
+        <View
+          style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}
+        >
+          <Text style={{ fontSize: 16, fontWeight: "700" }}>Document Upload</Text>
+          <Pressable
+            onPress={resetDocumentUploadSection}
+            style={{
+              paddingVertical: 4,
+              paddingHorizontal: 10,
+              borderRadius: 8,
+              borderWidth: 1,
+              borderColor: colors.border
+            }}
+          >
+            <Text style={{ fontWeight: "700", color: colors.text }}>Reset</Text>
+          </Pressable>
+        </View>
         <View style={{ gap: 8 }}>
           <Text style={{ color: colors.textMuted, fontWeight: "600" }}>Category</Text>
           <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>

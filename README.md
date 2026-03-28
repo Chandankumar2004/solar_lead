@@ -1,220 +1,188 @@
 # Solar Lead Management System
 
-Production-style monorepo for a Solar Panel Installation Lead Management System.
+Production-focused monorepo for internal solar lead lifecycle management across web admin, mobile executive app, and a shared backend API.
 
-## Tech Stack
-- Web Admin + Landing: Next.js, Tailwind CSS, React Hook Form + Zod, Axios/SWR, Recharts, Firebase client
-- Backend API: Node.js 20+, Express, Supabase Auth, PostgreSQL (Supabase), Redis, BullMQ, Supabase Storage signed URL flow
-- Mobile App: Expo (React Native), React Navigation, Zustand, React Hook Form, AsyncStorage offline queue, document/image picker, maps, biometric unlock
-- Shared package: `@solar/shared` (types, constants, schemas)
+## What This Repo Contains
 
-## Current Implementation Status
-- See `IMPLEMENTATION_STATUS.md` for frontend/backend/database completion tracking and pending gaps.
+- `apps/api`: Express + Prisma API (Supabase Postgres, Supabase Auth mapping, Redis/BullMQ, Firebase admin push, chat, reports, payments, documents).
+- `apps/web`: Next.js admin portal + public lead capture.
+- `apps/mobile`: Expo React Native app for field executives.
+- `packages/shared`: shared TypeScript contracts and utilities.
+- `scripts`: helper scripts for local development and utilities.
 
 ## Monorepo Structure
+
 ```txt
 .
 ├─ apps/
-│  ├─ api/        # Express backend (Supabase Auth + data services)
-│  ├─ web/        # Next.js admin + public landing
-│  └─ mobile/     # Expo mobile app
+│  ├─ api/
+│  ├─ web/
+│  └─ mobile/
 ├─ packages/
-│  └─ shared/     # shared TS types + zod schemas
+│  └─ shared/
+├─ scripts/
 ├─ docs/
-│  └─ database-er-diagram.mmd
-├─ scripts/       # helper start scripts
+├─ Dockerfile
+├─ railway.json
 └─ README.md
 ```
 
-## Core Product Behavior
-- JWT auth with HTTP-only cookies
-  - access token: 15 minutes
-  - refresh token: 7 days
-- RBAC roles:
-  - Super Admin
-  - Admin
-  - District Manager
-  - Field Executive
-- Consistent API response envelope:
-  - `{ success, data, message, error, pagination }`
-- Lead workflow graph with allowed transitions only
-- Auto-assignment engine:
-  - assign to active executive with lowest active non-terminal leads
-  - fallback to district manager + admin alert when no executive available
-- Supabase Storage document upload via signed URLs
-- Offline queue in mobile for lead/doc submission and retry on reconnect
-- Audit logging for auth and user actions
+## Core Functional Areas
+
+- Role-based access control (`SUPER_ADMIN`, `ADMIN`, `MANAGER`, `EXECUTIVE`)
+- District-scoped lead management workflow
+- Public lead capture with anti-spam validation
+- Lead status transitions and SLA/overdue handling
+- Document upload/review pipeline with Supabase Storage
+- Payment tracking + Razorpay webhook ingestion
+- Internal notifications + queue processing
+- Internal chat (conversation, message, unread/read)
+- Audit log trail for sensitive operations
+
+## Tech Stack
+
+- **API**: Node.js 20+, Express, Prisma, PostgreSQL, Redis/BullMQ, Supabase, Firebase Admin, Zod
+- **Web**: Next.js 14, React 18, Tailwind, RHF + Zod, Zustand, Axios/SWR
+- **Mobile**: Expo SDK 51, React Native 0.74, React Navigation, Zustand, AsyncStorage, Firebase messaging
+- **Shared**: TypeScript workspace package
 
 ## Prerequisites
-- Node.js `>=20`
-- pnpm `>=9`
-- PostgreSQL (Supabase Postgres is supported)
-- Redis (`localhost:6379` by default)
-- Expo Go / Android Studio (for mobile)
 
-## 1) Install Dependencies
+- Node.js `20.x`
+- pnpm `9.x`
+- PostgreSQL (Supabase recommended)
+- Redis (recommended for worker/notifications)
+- Expo Go / Android Studio / Xcode tools (for mobile)
+
+## Setup
+
+### 1) Install dependencies
+
 ```bash
 pnpm install
 ```
 
-## 2) Environment Setup
+### 2) Configure environment files
 
-### API env
-Copy:
+Copy these files and fill real values:
+
 - `apps/api/.env.example` -> `apps/api/.env`
-
-Required keys to verify in `apps/api/.env`:
-- `PORT`
-- `DATABASE_URL`
-- `DIRECT_URL`
-- `REDIS_URL`
-- `JWT_ACCESS_SECRET`
-- `JWT_REFRESH_SECRET`
-- `WEB_ORIGIN` (must include your web origin, e.g. `http://localhost:3200`)
-- Supabase keys (`SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`)
-- Firebase admin keys (`FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`, `FIREBASE_PRIVATE_KEY`)
-- Seed admin keys (`SEED_SUPER_ADMIN_*`)
-
-### Web env
-Copy:
 - `apps/web/.env.example` -> `apps/web/.env.local`
-
-Required keys:
-- `NEXT_PUBLIC_API_BASE_URL` (e.g. `http://localhost:4000`)
-- Firebase public keys
-- `NEXT_PUBLIC_RECAPTCHA_SITE_KEY`
-
-### Mobile env
-Copy:
 - `apps/mobile/.env.example` -> `apps/mobile/.env`
 
-Required keys:
-- `EXPO_PUBLIC_API_BASE_URL`
-  - Android emulator: `http://10.0.2.2:4000`
-  - iOS simulator: `http://localhost:4000`
-  - Physical device: `http://<YOUR_LAN_IP>:4000`
-- Firebase public keys
-- Optional UPI fields:
-  - `EXPO_PUBLIC_COMPANY_UPI_QR_URL`
-  - `EXPO_PUBLIC_COMPANY_UPI_ID`
-  - `EXPO_PUBLIC_COMPANY_UPI_NAME`
+### 3) API env essentials (must be valid)
 
-## 3) Database (Supabase Postgres)
-Run from repo root:
-```bash
-pnpm --filter @solar/api build
-```
+Minimum keys for API startup:
 
-Notes:
-- Existing application tables include:
-  - users, districts, user_district_assignments, lead_statuses, lead_status_transitions, leads,
-    lead_status_history, customer_details, documents, payments, notification_templates,
-    notification_logs, loan_details, audit_logs, user_device_tokens
-
-## Migration Manager (Prisma Only)
-This project is Prisma-managed for schema/migrations. It is not configured with Supabase CLI
-migration tracking (`supabase/` folder is intentionally absent).
-
-Important:
-- Do not run Supabase migration status/list commands for this repo in deployment hooks.
-- Do not query `supabase_migrations.schema_migrations` from app/runtime health checks.
-- Use Prisma migration commands only.
-
-Safe production command:
-```bash
-pnpm --filter @solar/api exec prisma migrate deploy --schema ./prisma/schema.prisma
-```
-
-If you intentionally use schema sync instead of SQL migrations:
-```bash
-pnpm --filter @solar/api exec prisma db push --schema ./prisma/schema.prisma
-```
-
-## Storage
-Storage:
-Supabase Storage
-
-Files uploaded to:
-`documents` bucket
-
-Setup instructions:
-1. Open Supabase dashboard
-2. Go to Storage
-3. Create bucket named `documents`
-4. Set public access if needed
-
-Manual setup path:
-Supabase Dashboard -> Storage -> Create bucket -> `documents`
-
-Required storage environment variables:
+- `NODE_ENV`
+- `PORT`
+- `DATABASE_URL`
+- `DIRECT_URL` (recommended for migrations/introspection)
 - `SUPABASE_URL`
 - `SUPABASE_ANON_KEY`
 - `SUPABASE_SERVICE_ROLE_KEY`
+- `FIREBASE_PROJECT_ID`
+- `FIREBASE_CLIENT_EMAIL`
+- `FIREBASE_PRIVATE_KEY`
+- `WEB_ORIGIN` (and/or `CORS_ORIGIN`, `FRONTEND_URL`)
 
-## 4) Run the Project (Local)
-Use 3 terminals:
+Optional but commonly required by features:
 
-Terminal 1 (API)
+- `REDIS_URL`
+- payment vars (`RAZORPAY_*`, `PAYMENT_*`)
+- communication vars (`SMS_PROVIDER`, `EMAIL_PROVIDER`, `WHATSAPP_PROVIDER`, related keys)
+
+### 4) Web env essentials
+
+- `NEXT_PUBLIC_API_BASE_URL` (local usually `http://localhost:4000`)
+- Firebase web public keys
+- reCAPTCHA site key(s) if enabled
+
+### 5) Mobile env essentials
+
+- `EXPO_PUBLIC_API_BASE_URL`
+  - Android emulator: `http://10.0.2.2:4000`
+  - iOS simulator: `http://localhost:4000`
+  - Physical device: `http://<LAN_IP>:4000`
+- Firebase mobile public keys
+
+## Run Locally
+
+Use three terminals:
+
+### API
+
 ```bash
 pnpm --filter @solar/api dev
 ```
 
-Terminal 2 (Web on port 3200)
+### Web
+
 ```bash
-pnpm --filter @solar/web dev -p 3200
+pnpm --filter @solar/web dev
 ```
 
-Terminal 3 (Mobile)
+Optional port override:
+
+```bash
+pnpm --filter @solar/web dev -- -p 3200
+```
+
+### Mobile
+
+```bash
+pnpm --filter @solar/mobile dev
+```
+
+If tunnel is needed:
+
 ```bash
 pnpm --filter @solar/mobile dev -- --tunnel
 ```
 
-Default local URLs:
-- Web: `http://localhost:3200`
-- API: `http://localhost:4000`
-- API health: `http://localhost:4000/health`
-- Metro status: `http://localhost:8081/status`
+## Useful Root Scripts
 
-## Detached Start Helpers (Windows)
-Available helper scripts in `scripts/`:
-- `start-api.ps1`
-- `start-web.ps1`
-- `start-mobile.ps1`
-- `start-api-detached.cjs`
-- `start-web-detached.cjs`
-- `start-mobile-detached.cjs`
-
-## Quality Commands
 ```bash
+pnpm dev:api
+pnpm dev:api:worker
+pnpm dev:web
+pnpm dev:mobile
+pnpm build:api
+pnpm build:web
+pnpm build:all
 pnpm lint
 pnpm typecheck
-pnpm --filter @solar/api build
-pnpm --filter @solar/web build
-pnpm --filter @solar/mobile typecheck
+pnpm prisma:migrate:deploy
 ```
 
-## API Surface (High-Level)
-- Auth:
-  - `/api/auth/login`
-  - `/api/auth/refresh`
-  - `/api/auth/logout`
-  - `/api/auth/me`
-  - `/api/auth/change-password`
-- Public:
-  - `/public/districts`
-  - `/public/leads`
-  - `/public/leads/duplicate-check`
-- Protected:
-  - `/api/dashboard`
-  - `/api/users`
-  - `/api/districts`
-  - `/api/lead-statuses`
-  - `/api/leads`
-  - `/api/payments`
-  - `/api/documents`
-  - `/api/notifications`
+## Database and Migrations (Prisma)
 
-## API Response Envelope
+This repo uses **Prisma migrations** as the source of truth.
+
+Common commands:
+
+```bash
+pnpm --filter @solar/api exec prisma validate --schema prisma/schema.prisma
+pnpm --filter @solar/api exec prisma migrate status --schema prisma/schema.prisma
+pnpm --filter @solar/api exec prisma migrate deploy --schema prisma/schema.prisma
+pnpm --filter @solar/api exec prisma db pull --print --schema prisma/schema.prisma
+```
+
+## API Endpoint Groups (High Level)
+
+- Auth: `/api/auth/*`
+- Public lead endpoints: `/public/*` and `/api/public/*`
+- Users/districts/dashboard: `/api/users`, `/api/districts`, `/api/dashboard`
+- Lead operations: `/api/leads`, `/api/lead-statuses`, `/api/leads/:leadId/documents`
+- Documents/uploads: `/api/documents`, `/api/uploads`
+- Payments + webhook: `/api/payments`, `/api/payments/webhook/razorpay`
+- Notifications: `/api/notifications`
+- Chat: `/api/chat`
+- Reports: `/api/reports`
+- Health: `/health`, `/api/health`
+
+Standard API response envelope:
+
 ```json
 {
   "success": true,
@@ -225,39 +193,62 @@ pnpm --filter @solar/mobile typecheck
 }
 ```
 
-## Document Upload Flow
-1. Request pre-signed URL from API
-2. Upload file directly to Supabase Storage from client
-3. Call complete endpoint to persist metadata
-4. Review/verify/reject from admin queue
+## Deployment
 
-## Document Upload Access
-- Super Admin
-- Admin
-- District Manager
-- Field Executive
-- Customer: Not a system user (cannot upload via admin/mobile system roles)
+### API (Railway/Dockerfile path)
 
-## Database ER Diagram
-- Mermaid ERD file: `docs/database-er-diagram.mmd`
-- Prisma schema: `apps/api/prisma/schema.prisma`
+This repo ships with:
+
+- `Dockerfile` that builds `@solar/api` (and shared package)
+- `railway.json` with health check at `/health`
+
+Typical API deploy flow:
+
+1. Set all required API env vars in Railway/project settings.
+2. Deploy from repo root using Dockerfile.
+3. Run Prisma migrations in release/deploy step:
+
+```bash
+pnpm --filter @solar/api prisma:migrate:deploy
+```
+
+4. Start API:
+
+```bash
+node apps/api/dist/index.js
+```
+
+### Web
+
+- `vercel.json` is configured for `apps/web`.
+- Web build command: `pnpm --filter @solar/web build`.
+
+### Mobile
+
+- Built and distributed via Expo workflow.
+- Ensure `EXPO_PUBLIC_API_BASE_URL` points to deployed API base URL.
+
+## CI
+
+GitHub Actions workflow `.github/workflows/ci.yml` currently runs:
+
+- API build
+- Web build
+- Mobile typecheck
 
 ## Troubleshooting
-- CORS blocked from web:
-  - ensure frontend calls the correct API URL in `NEXT_PUBLIC_API_BASE_URL`
-- Web login `ERR_CONNECTION_REFUSED`:
-  - API is not running on `:4000`
-- Auth profile not found (`APP_PROFILE_NOT_FOUND`):
-  - run `pnpm --filter @solar/api auth:reset-super-admin` or use SQL in `apps/api/sql/001_supabase_auth_backfill.sql`
-- Expo cannot connect to Metro:
-  - ensure Metro running, same Wi-Fi, and correct `EXPO_PUBLIC_API_BASE_URL`
-- Android SDK/adb not found:
-  - set `ANDROID_HOME` and add `platform-tools` to `PATH`
-- Expo SDK mismatch:
-  - Expo Go version must match project SDK (currently SDK 51)
 
-## Security Checklist
-- Never commit real secrets in env files
-- Rotate JWT/Firebase/Supabase keys if exposed
-- Keep `SUPABASE_SERVICE_ROLE_KEY` only on backend
-- Mobile must use backend-generated signed URLs only
+- **CORS errors on web**: verify `WEB_ORIGIN`/`CORS_ORIGIN`/`FRONTEND_URL` in API env.
+- **Web cannot reach API**: verify `NEXT_PUBLIC_API_BASE_URL`.
+- **Mobile cannot reach API**: verify emulator/device base URL rules (`10.0.2.2` for Android emulator).
+- **Tunnel fails (`ngrok tunnel took too long`)**: start mobile without tunnel or retry with stable network.
+- **Prisma database errors**: run `prisma validate`, then `prisma migrate status`.
+- **401 loops**: check auth cookies, refresh route, and API base URL consistency.
+
+## Security Notes
+
+- Never commit real secrets.
+- Keep `SUPABASE_SERVICE_ROLE_KEY` server-side only.
+- Rotate leaked JWT/Firebase/Supabase/provider keys immediately.
+- Use least-privilege DB and storage policies.
+- Keep chat and internal APIs behind authenticated RBAC routes only.

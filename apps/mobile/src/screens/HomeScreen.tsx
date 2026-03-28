@@ -4,6 +4,7 @@ import { api } from "../services/api";
 import { useAuthStore } from "../store/auth-store";
 import { Badge, Card, SectionTitle, useAppPalette, AppScreen } from "../ui/primitives";
 import { spacing } from "../ui/theme";
+import { useMobileI18n } from "../i18n";
 
 type StatusSummary = {
   statusId: string;
@@ -53,15 +54,10 @@ type MobileSummary = {
   generatedAt: string;
 };
 
-function toReadableDateTime(value: string) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return `${date.toLocaleDateString()} ${date.toLocaleTimeString()}`;
-}
-
 export function HomeScreen() {
   const colors = useAppPalette();
   const user = useAuthStore((s) => s.user);
+  const { t, formatDateTime, formatNumber } = useMobileI18n();
 
   const [summary, setSummary] = useState<MobileSummary | null>(null);
   const [loading, setLoading] = useState(true);
@@ -75,13 +71,13 @@ export function HomeScreen() {
       const response = await api.get("/api/dashboard/mobile-summary");
       setSummary((response.data?.data ?? null) as MobileSummary | null);
     } catch {
-      setError("Unable to load dashboard summary.");
+      setError(t("home.summaryLoadFailed"));
       setSummary(null);
     } finally {
       setRefreshing(false);
       setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     void loadSummary();
@@ -105,12 +101,14 @@ export function HomeScreen() {
   return (
     <AppScreen scroll>
       <Card style={styles.heroCard}>
-        <SectionTitle title="Home" subtitle="Field operations dashboard" />
+        <SectionTitle title={t("home.title")} subtitle={t("home.subtitle")} />
         <Text style={[styles.welcomeText, { color: colors.text }]}>
-          {user?.fullName ? `Welcome, ${user.fullName}` : `Welcome, ${user?.email ?? "User"}`}
+          {user?.fullName
+            ? t("home.welcomeWithName", { name: user.fullName })
+            : t("home.welcomeWithEmail", { email: user?.email ?? t("home.fieldUser") })}
         </Text>
         <View style={styles.heroMeta}>
-          <Badge label={user?.roleLabel ?? user?.role ?? "Field User"} tone="info" />
+          <Badge label={user?.roleLabel ?? user?.role ?? t("home.fieldUser")} tone="info" />
           <Badge label={user?.status ?? "-"} tone="success" />
         </View>
       </Card>
@@ -123,7 +121,7 @@ export function HomeScreen() {
 
       <Card style={styles.summaryCard}>
         <View style={styles.sectionRow}>
-          <Text style={[styles.sectionHeading, { color: colors.text }]}>Active Leads</Text>
+          <Text style={[styles.sectionHeading, { color: colors.text }]}>{t("home.activeLeads")}</Text>
           <Pressable
             onPress={() => {
               void loadSummary();
@@ -132,7 +130,7 @@ export function HomeScreen() {
             disabled={refreshing}
           >
             <Text style={{ color: colors.primary, fontWeight: "700" }}>
-              {refreshing ? "Refreshing..." : "Refresh"}
+              {refreshing ? t("home.refreshing") : t("home.refresh")}
             </Text>
           </Pressable>
         </View>
@@ -140,27 +138,39 @@ export function HomeScreen() {
         <View style={styles.kpiRow}>
           <View style={styles.kpiItem}>
             <Text style={[styles.kpiValue, { color: colors.text }]}>
-              {summary?.totals.active ?? (loading ? "-" : "0")}
+              {summary?.totals.active !== undefined
+                ? formatNumber(summary.totals.active)
+                : loading
+                  ? "-"
+                  : "0"}
             </Text>
-            <Text style={[styles.kpiLabel, { color: colors.textMuted }]}>Active</Text>
+            <Text style={[styles.kpiLabel, { color: colors.textMuted }]}>{t("home.active")}</Text>
           </View>
           <View style={styles.kpiItem}>
             <Text style={[styles.kpiValue, { color: colors.warning }]}>
-              {summary?.urgency.overdue ?? (loading ? "-" : "0")}
+              {summary?.urgency.overdue !== undefined
+                ? formatNumber(summary.urgency.overdue)
+                : loading
+                  ? "-"
+                  : "0"}
             </Text>
-            <Text style={[styles.kpiLabel, { color: colors.textMuted }]}>Overdue</Text>
+            <Text style={[styles.kpiLabel, { color: colors.textMuted }]}>{t("home.overdue")}</Text>
           </View>
           <View style={styles.kpiItem}>
             <Text style={[styles.kpiValue, { color: colors.text }]}>
-              {summary?.totals.assigned ?? (loading ? "-" : "0")}
+              {summary?.totals.assigned !== undefined
+                ? formatNumber(summary.totals.assigned)
+                : loading
+                  ? "-"
+                  : "0"}
             </Text>
-            <Text style={[styles.kpiLabel, { color: colors.textMuted }]}>Assigned</Text>
+            <Text style={[styles.kpiLabel, { color: colors.textMuted }]}>{t("home.assigned")}</Text>
           </View>
         </View>
 
         {topStatusRows.length === 0 ? (
           <Text style={[styles.helper, { color: colors.textMuted }]}>
-            {loading ? "Loading status summary..." : "No active status summary yet."}
+            {loading ? t("home.loadingStatusSummary") : t("home.noStatusSummary")}
           </Text>
         ) : (
           <View style={styles.statusList}>
@@ -179,10 +189,10 @@ export function HomeScreen() {
       </Card>
 
       <Card>
-        <Text style={[styles.sectionHeading, { color: colors.text }]}>Today's Tasks / Visits</Text>
+        <Text style={[styles.sectionHeading, { color: colors.text }]}>{t("home.tasksTitle")}</Text>
         {taskRows.length === 0 ? (
           <Text style={[styles.helper, { color: colors.textMuted }]}>
-            {loading ? "Loading tasks..." : "No tasks scheduled right now."}
+            {loading ? t("home.loadingTasks") : t("home.noTasks")}
           </Text>
         ) : (
           taskRows.map((task) => (
@@ -191,54 +201,76 @@ export function HomeScreen() {
                 {task.customerName} ({task.statusName})
               </Text>
               <Text style={[styles.taskMeta, { color: colors.textMuted }]}>
-                {task.districtName}, {task.districtState} | {toReadableDateTime(task.updatedAt)}
+                {task.districtName}, {task.districtState} | {formatDateTime(task.updatedAt)}
               </Text>
-              {task.isOverdue ? <Text style={{ color: colors.warning }}>Overdue</Text> : null}
+              {task.isOverdue ? (
+                <Text style={{ color: colors.warning }}>{t("home.overdueFlag")}</Text>
+              ) : null}
             </View>
           ))
         )}
       </Card>
 
       <Card>
-        <Text style={[styles.sectionHeading, { color: colors.text }]}>Pending Actions</Text>
+        <Text style={[styles.sectionHeading, { color: colors.text }]}>
+          {t("home.pendingActionsTitle")}
+        </Text>
         <View style={styles.kpiRow}>
           <View style={styles.kpiItem}>
             <Text style={[styles.kpiValue, { color: colors.text }]}>
-              {summary?.pendingActions.documentsToUpload ?? (loading ? "-" : "0")}
+              {summary?.pendingActions.documentsToUpload !== undefined
+                ? formatNumber(summary.pendingActions.documentsToUpload)
+                : loading
+                  ? "-"
+                  : "0"}
             </Text>
-            <Text style={[styles.kpiLabel, { color: colors.textMuted }]}>Docs to Upload</Text>
+            <Text style={[styles.kpiLabel, { color: colors.textMuted }]}>
+              {t("home.docsToUpload")}
+            </Text>
           </View>
           <View style={styles.kpiItem}>
             <Text style={[styles.kpiValue, { color: colors.text }]}>
-              {summary?.pendingActions.paymentsToCollect ?? (loading ? "-" : "0")}
+              {summary?.pendingActions.paymentsToCollect !== undefined
+                ? formatNumber(summary.pendingActions.paymentsToCollect)
+                : loading
+                  ? "-"
+                  : "0"}
             </Text>
-            <Text style={[styles.kpiLabel, { color: colors.textMuted }]}>Payments</Text>
+            <Text style={[styles.kpiLabel, { color: colors.textMuted }]}>{t("home.payments")}</Text>
           </View>
           <View style={styles.kpiItem}>
             <Text style={[styles.kpiValue, { color: colors.text }]}>
-              {summary?.pendingActions.formsToComplete ?? (loading ? "-" : "0")}
+              {summary?.pendingActions.formsToComplete !== undefined
+                ? formatNumber(summary.pendingActions.formsToComplete)
+                : loading
+                  ? "-"
+                  : "0"}
             </Text>
-            <Text style={[styles.kpiLabel, { color: colors.textMuted }]}>Forms</Text>
+            <Text style={[styles.kpiLabel, { color: colors.textMuted }]}>{t("home.forms")}</Text>
           </View>
         </View>
       </Card>
 
       <Card>
-        <Text style={[styles.sectionHeading, { color: colors.text }]}>Recent Notifications</Text>
+        <Text style={[styles.sectionHeading, { color: colors.text }]}>
+          {t("home.recentNotificationsTitle")}
+        </Text>
         {notificationRows.length === 0 ? (
           <Text style={[styles.helper, { color: colors.textMuted }]}>
-            {loading ? "Loading notifications..." : "No recent notifications."}
+            {loading ? t("home.loadingNotifications") : t("home.noNotifications")}
           </Text>
         ) : (
           notificationRows.map((entry) => (
             <View key={entry.id} style={styles.notificationRow}>
               <View style={styles.sectionRow}>
-                <Badge label={entry.channel ?? "IN_APP"} tone="info" />
+                <Badge label={entry.channel ?? t("home.channelInApp")} tone="info" />
                 <Badge label={(entry.deliveryStatus ?? "SENT").toUpperCase()} tone="neutral" />
               </View>
-              <Text style={{ color: colors.text }}>{entry.contentSent ?? "Notification"}</Text>
+              <Text style={{ color: colors.text }}>
+                {entry.contentSent ?? t("home.notificationDefault")}
+              </Text>
               <Text style={[styles.taskMeta, { color: colors.textMuted }]}>
-                {toReadableDateTime(entry.createdAt)}
+                {formatDateTime(entry.createdAt)}
               </Text>
             </View>
           ))

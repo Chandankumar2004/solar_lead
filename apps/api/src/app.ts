@@ -88,6 +88,17 @@ app.use(requestLogger);
 app.use(cors(corsOptions));
 app.options("*", cors(corsOptions));
 
+app.use(
+  "/payments/webhook/razorpay",
+  express.raw({ type: "*/*", limit: "2mb" }),
+  lazyRouter(() => import("./routes/payment-webhooks.js"), "paymentWebhooksRouter")
+);
+app.use(
+  "/api/payments/webhook/razorpay",
+  express.raw({ type: "*/*", limit: "2mb" }),
+  lazyRouter(() => import("./routes/payment-webhooks.js"), "paymentWebhooksRouter")
+);
+
 app.use(express.json({ limit: "2mb" }));
 app.use(cookieParser());
 app.use(morgan("dev"));
@@ -183,6 +194,11 @@ app.use(
   "/api/notifications",
   requireAuth,
   lazyRouter(() => import("./routes/notifications.js"), "notificationsRouter")
+);
+app.use(
+  "/api/chat",
+  requireAuth,
+  lazyRouter(() => import("./routes/chat.js"), "chatRouter")
 );
 app.use(
   "/reports",

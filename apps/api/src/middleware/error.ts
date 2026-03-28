@@ -3,8 +3,16 @@ import { ZodError } from "zod";
 import { fail } from "../lib/http.js";
 import { AppError } from "../lib/errors.js";
 
-const DB_ERROR_LOG_INTERVAL_MS = 30_000;
-let lastDbErrorLogAt = 0;
+function safeMeta(meta: unknown) {
+  if (!meta || typeof meta !== "object") {
+    return null;
+  }
+  try {
+    return JSON.parse(JSON.stringify(meta)) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
 
 export function errorHandler(
   err: unknown,
@@ -52,17 +60,15 @@ export function errorHandler(
     (err.name.startsWith("PrismaClient") || err.message.toLowerCase().includes("prisma"))
   ) {
     const prismaLike = err as Error & { code?: string; meta?: unknown };
-    const now = Date.now();
-    if (now - lastDbErrorLogAt > DB_ERROR_LOG_INTERVAL_MS) {
-      lastDbErrorLogAt = now;
-      console.error("DB_ERROR", {
-        requestId: req.requestId ?? null,
-        name: prismaLike.name,
-        code: prismaLike.code ?? null,
-        message: err.message,
-        path: req.originalUrl
-      });
-    }
+    console.error("DB_ERROR", {
+      requestId: req.requestId ?? null,
+      name: prismaLike.name,
+      code: prismaLike.code ?? null,
+      message: err.message,
+      path: req.originalUrl,
+      method: req.method,
+      meta: safeMeta(prismaLike.meta)
+    });
     return fail(res, 500, "DATABASE_ERROR", "Database operation failed", {
       requestId: req.requestId ?? null
     });

@@ -10,27 +10,31 @@ export const ALL_ADMIN_ROLES: AdminRole[] = [
 export type NavItem = {
   href: Route;
   label: string;
+  labelKey: string;
   roles: AdminRole[];
 };
 
 export const ADMIN_NAV_ITEMS: NavItem[] = [
-  { href: "/dashboard", label: "Dashboard", roles: ALL_ADMIN_ROLES },
-  { href: "/leads", label: "Leads", roles: ALL_ADMIN_ROLES },
-  { href: "/users", label: "Users", roles: ["SUPER_ADMIN", "ADMIN"] },
-  { href: "/districts", label: "Districts", roles: ["SUPER_ADMIN"] },
-  { href: "/workflow", label: "Workflow", roles: ["SUPER_ADMIN"] },
+  { href: "/dashboard", label: "Dashboard", labelKey: "nav.dashboard", roles: ALL_ADMIN_ROLES },
+  { href: "/leads", label: "Leads", labelKey: "nav.leads", roles: ALL_ADMIN_ROLES },
+  { href: "/users", label: "Users", labelKey: "nav.users", roles: ["SUPER_ADMIN", "ADMIN"] },
+  { href: "/districts", label: "Districts", labelKey: "nav.districts", roles: ["SUPER_ADMIN"] },
+  { href: "/workflow", label: "Workflow", labelKey: "nav.workflow", roles: ["SUPER_ADMIN"] },
   {
     href: "/documents-review",
     label: "Documents Review",
+    labelKey: "nav.documentsReview",
     roles: ["SUPER_ADMIN", "ADMIN", "DISTRICT_MANAGER"]
   },
   {
     href: "/payments-verification",
     label: "Payments Verification",
+    labelKey: "nav.paymentsVerification",
     roles: ["SUPER_ADMIN", "ADMIN", "DISTRICT_MANAGER"]
   },
-  { href: "/notifications", label: "Notifications", roles: ALL_ADMIN_ROLES },
-  { href: "/reports", label: "Reports", roles: ALL_ADMIN_ROLES }
+  { href: "/chat", label: "Chat", labelKey: "nav.chat", roles: ALL_ADMIN_ROLES },
+  { href: "/notifications", label: "Notifications", labelKey: "nav.notifications", roles: ALL_ADMIN_ROLES },
+  { href: "/reports", label: "Reports", labelKey: "nav.reports", roles: ALL_ADMIN_ROLES }
 ];
 
 const ROUTE_ACCESS = [
@@ -46,6 +50,10 @@ const ROUTE_ACCESS = [
   {
     pattern: /^\/payments-verification$/,
     roles: ["SUPER_ADMIN", "ADMIN", "DISTRICT_MANAGER"] as AdminRole[]
+  },
+  {
+    pattern: /^\/chat$/,
+    roles: ALL_ADMIN_ROLES
   },
   {
     pattern: /^\/notifications$/,
@@ -66,10 +74,10 @@ export function hasRouteAccess(pathname: string, role: AdminRole) {
 }
 
 export function pageTitle(pathname: string) {
-  if (pathname.startsWith("/leads/")) return "Lead Detail";
-  if (pathname === "/users/create") return "Create User";
-  if (pathname.startsWith("/users/")) return "User Detail";
+  if (pathname.startsWith("/leads/")) return "portal.leadDetail";
+  if (pathname === "/users/create") return "portal.createUser";
+  if (pathname.startsWith("/users/")) return "portal.userDetail";
   const match = ADMIN_NAV_ITEMS.find((item) => item.href === pathname);
-  if (match) return match.label;
-  return "Admin";
+  if (match) return match.labelKey;
+  return "portal.admin";
 }

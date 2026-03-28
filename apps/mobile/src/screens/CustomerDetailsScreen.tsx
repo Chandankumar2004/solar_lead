@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  AppState,
   Pressable,
   Text,
   TextInput,
@@ -134,7 +135,7 @@ const AADHAAR_REGEX = /^\d{12}$/;
 const PAN_REGEX = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
 const IFSC_REGEX = /^[A-Z]{4}0[A-Z0-9]{6}$/;
 const DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
-const DRAFT_KEY_PREFIX = "customer_details_draft:";
+const DRAFT_KEY_PREFIX = "customer_details_draft:v2";
 const CUSTOMER_DETAILS_CACHE_PREFIX = "customer-details";
 const ALLOWED_INSTALLATION_TYPES = ["Residential", "Industrial", "Agricultural", "Other"] as const;
 const ALLOWED_GENDERS = ["Male", "Female", "Other"] as const;
@@ -255,6 +256,27 @@ function extractErrorMessage(error: unknown, fallback: string) {
     message?: string;
   };
   return value?.response?.data?.message || value?.message || fallback;
+}
+
+function stableSerialize(value: unknown): string {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableSerialize(item)).join(",")}]`;
+  }
+
+  const objectValue = value as Record<string, unknown>;
+  const keys = Object.keys(objectValue).sort();
+  const body = keys
+    .map((key) => `${JSON.stringify(key)}:${stableSerialize(objectValue[key])}`)
+    .join(",");
+  return `{${body}}`;
+}
+
+function payloadSignature(payload: Record<string, unknown>) {
+  return stableSerialize(payload);
 }
 
 function mapCustomerDetailToForm(detail: ApiCustomerDetail | null): FormValues {
@@ -477,7 +499,10 @@ export function CustomerDetailsScreen({ route }: CustomerDetailsScreenProps) {
   const user = useAuthStore((s) => s.user);
   const enqueue = useQueueStore((s) => s.enqueue);
   const queueItems = useQueueStore((s) => s.items);
-  const draftKey = useMemo(() => `${DRAFT_KEY_PREFIX}${leadId}`, [leadId]);
+  const draftKey = useMemo(
+    () => `${DRAFT_KEY_PREFIX}:${user?.id ?? "anonymous"}:${leadId}`,
+    [leadId, user?.id]
+  );
   const cacheKey = useMemo(() => `${CUSTOMER_DETAILS_CACHE_PREFIX}:${leadId}`, [leadId]);
 
   const [loading, setLoading] = useState(true);
@@ -501,6 +526,7 @@ export function CustomerDetailsScreen({ route }: CustomerDetailsScreenProps) {
   const [photoUploading, setPhotoUploading] = useState(false);
   const [isHydrated, setIsHydrated] = useState(false);
   const [offlineNotice, setOfflineNotice] = useState<string | null>(null);
+  const [lastSubmittedSignature, setLastSubmittedSignature] = useState<string | null>(null);
 
   const {
     control,
@@ -545,6 +571,15 @@ export function CustomerDetailsScreen({ route }: CustomerDetailsScreenProps) {
     setExistingBankMasked(payload.customerDetail?.bankAccountMasked ?? null);
   }, []);
 
+  const resetSeedValues = useMemo(() => {
+    const next = { ...defaultFormValues };
+    next.installationType = normalizeCaseInsensitiveOption(
+      toInputString(leadPrefill?.installationType),
+      ALLOWED_INSTALLATION_TYPES
+    );
+    return next;
+  }, [leadPrefill?.installationType]);
+
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -564,6 +599,9 @@ export function CustomerDetailsScreen({ route }: CustomerDetailsScreenProps) {
         ALLOWED_INSTALLATION_TYPES
       );
       applyPayloadMeta(payload);
+      setLastSubmittedSignature(
+        payloadSignature(buildCustomerDetailsPayload(remoteValues, payload.leadPrefill ?? undefined))
+      );
 
       let mergedValues = remoteValues;
       if (draftRaw) {
@@ -599,6 +637,11 @@ export function CustomerDetailsScreen({ route }: CustomerDetailsScreenProps) {
             ALLOWED_INSTALLATION_TYPES
           );
           applyPayloadMeta(cachedPayload);
+          setLastSubmittedSignature(
+            payloadSignature(
+              buildCustomerDetailsPayload(remoteValues, cachedPayload.leadPrefill ?? undefined)
+            )
+          );
 
           let mergedValues = remoteValues;
           if (draftRaw) {
@@ -632,19 +675,36 @@ export function CustomerDetailsScreen({ route }: CustomerDetailsScreenProps) {
     void load();
   }, [load]);
 
+  const persistDraftNow = useCallback(async () => {
+    if (!isHydrated) return;
+    await AsyncStorage.setItem(
+      draftKey,
+      JSON.stringify({
+        values: getValues(),
+        updatedAt: new Date().toISOString()
+      })
+    );
+  }, [draftKey, getValues, isHydrated]);
+
   useEffect(() => {
     if (!isHydrated) return;
     const timer = setTimeout(() => {
-      void AsyncStorage.setItem(
-        draftKey,
-        JSON.stringify({
-          values: watchedValues,
-          updatedAt: new Date().toISOString()
-        })
-      );
+      void persistDraftNow();
     }, 200);
     return () => clearTimeout(timer);
-  }, [draftKey, isHydrated, watchedValues]);
+  }, [isHydrated, persistDraftNow, watchedValues]);
+
+  useEffect(() => {
+    const appStateSub = AppState.addEventListener("change", (nextState) => {
+      if (nextState === "background" || nextState === "inactive") {
+        void persistDraftNow();
+      }
+    });
+
+    return () => {
+      appStateSub.remove();
+    };
+  }, [persistDraftNow]);
 
   const lookupIfsc = async () => {
     const ifsc = sanitizeIfsc(getValues("ifscCode"));
@@ -1022,6 +1082,11 @@ export function CustomerDetailsScreen({ route }: CustomerDetailsScreenProps) {
     }
 
     const payload = buildCustomerDetailsPayload(values, leadPrefill ?? undefined);
+    const currentPayloadSignature = payloadSignature(payload);
+    if (lastSubmittedSignature && currentPayloadSignature === lastSubmittedSignature) {
+      Alert.alert("No changes detected", "Please edit at least one field before submitting again.");
+      return;
+    }
 
     setSubmitting(true);
     try {
@@ -1046,6 +1111,7 @@ export function CustomerDetailsScreen({ route }: CustomerDetailsScreenProps) {
           "Saved offline",
           "Customer details were queued and will sync when internet reconnects."
         );
+        setLastSubmittedSignature(currentPayloadSignature);
         return;
       }
 
@@ -1061,9 +1127,13 @@ export function CustomerDetailsScreen({ route }: CustomerDetailsScreenProps) {
         toInputString(saved.leadPrefill?.installationType),
         ALLOWED_INSTALLATION_TYPES
       );
+      const savedPayloadSignature = payloadSignature(
+        buildCustomerDetailsPayload(savedValues, saved.leadPrefill ?? undefined)
+      );
       reset(savedValues);
       await AsyncStorage.removeItem(draftKey);
       setIsHydrated(true);
+      setLastSubmittedSignature(savedPayloadSignature);
       Alert.alert("Saved", "Customer details submitted successfully.");
     } catch (err) {
       const netState = await NetInfo.fetch();
@@ -1088,6 +1158,7 @@ export function CustomerDetailsScreen({ route }: CustomerDetailsScreenProps) {
           "Saved offline",
           "Customer details were queued and will sync when internet reconnects."
         );
+        setLastSubmittedSignature(currentPayloadSignature);
         return;
       }
 
@@ -1096,6 +1167,26 @@ export function CustomerDetailsScreen({ route }: CustomerDetailsScreenProps) {
       setSubmitting(false);
     }
   });
+
+  const handleManualReset = useCallback(() => {
+    Alert.alert(
+      "Reset Form",
+      "This will clear the current form values and local draft for this lead. Uploaded documents remain unchanged.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Reset",
+          style: "destructive",
+          onPress: () => {
+            reset(resetSeedValues);
+            setIfscLookupMeta(null);
+            setAadhaarFocused(false);
+            void AsyncStorage.removeItem(draftKey);
+          }
+        }
+      ]
+    );
+  }, [draftKey, reset, resetSeedValues]);
 
   if (loading) {
     return (
@@ -1748,6 +1839,15 @@ export function CustomerDetailsScreen({ route }: CustomerDetailsScreenProps) {
           {submitting ? "Submitting..." : "Submit Customer Details"}
         </Text>
       </Pressable>
+
+      <AppButton
+        title="Reset Form"
+        kind="ghost"
+        onPress={() => {
+          handleManualReset();
+        }}
+        disabled={submitting || !isEditable}
+      />
         </AppScreen>
   );
 }

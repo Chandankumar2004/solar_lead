@@ -18,6 +18,7 @@ export type NotificationEventType =
   | "DOC_PENDING_REVIEW"
   | "UTR_PENDING_VERIFICATION"
   | "LEAD_OVERDUE"
+  | "CHAT_MESSAGE"
   | "INTERNAL";
 
 export type CustomerNotificationJobPayload = {
@@ -89,6 +90,29 @@ function isInvalidTokenError(code?: string) {
   );
 }
 
+let firestorePersistenceUnavailable = false;
+let firestoreUnavailableLogged = false;
+
+function isFirestoreServiceDisabledError(error: unknown) {
+  const candidate = error as {
+    code?: number | string;
+    reason?: string;
+    details?: string;
+    message?: string;
+  };
+  const reason = String(candidate.reason ?? "").toUpperCase();
+  const details = String(candidate.details ?? "").toUpperCase();
+  const message = String(candidate.message ?? "").toUpperCase();
+  return (
+    reason === "SERVICE_DISABLED" ||
+    details.includes("FIRESTORE API HAS NOT BEEN USED") ||
+    details.includes("FIRESTORE.GOOGLEAPIS.COM") ||
+    message.includes("FIRESTORE API HAS NOT BEEN USED") ||
+    message.includes("FIRESTORE.GOOGLEAPIS.COM") ||
+    candidate.code === 7
+  );
+}
+
 async function processInternalNotification(payload: InAppNotificationJobPayload) {
   const firestoreDoc = {
     userId: payload.userId,
@@ -104,10 +128,44 @@ async function processInternalNotification(payload: InAppNotificationJobPayload)
     createdAt: new Date().toISOString()
   };
 
-  const ref = await firestore.collection("internal_notifications").add(firestoreDoc);
+  let providerMessageId: string | undefined;
+  let firestorePersisted = false;
+  if (!firestorePersistenceUnavailable) {
+    try {
+      const ref = await firestore.collection("internal_notifications").add(firestoreDoc);
+      providerMessageId = ref.id;
+      firestorePersisted = true;
+    } catch (error) {
+      if (isFirestoreServiceDisabledError(error)) {
+        firestorePersistenceUnavailable = true;
+        if (!firestoreUnavailableLogged) {
+          console.warn("internal_notification_firestore_disabled", {
+            reason: "SERVICE_DISABLED",
+            message:
+              "Firestore persistence disabled. Internal notifications will continue via FCM + PostgreSQL logs."
+          });
+          firestoreUnavailableLogged = true;
+        }
+      } else {
+        console.error("internal_notification_firestore_failed", {
+          userId: payload.userId,
+          error
+        });
+      }
+    }
+  }
 
-  const userTokens = await listDeviceTokensForUser(payload.userId);
-  let deliveryStatus = "firestore_only";
+  let userTokens: string[] = [];
+  try {
+    userTokens = await listDeviceTokensForUser(payload.userId);
+  } catch (error) {
+    console.error("device_token_lookup_failed", {
+      userId: payload.userId,
+      error
+    });
+  }
+
+  let deliveryStatus = firestorePersisted ? "firestore_only" : "queued";
   let attempts = 1;
 
   if (userTokens.length > 0) {
@@ -118,6 +176,25 @@ async function processInternalNotification(payload: InAppNotificationJobPayload)
         notification: {
           title: payload.title,
           body: payload.body
+        },
+        android: {
+          priority: "high",
+          notification: {
+            sound: "default",
+            defaultSound: true,
+            defaultVibrateTimings: true,
+            priority: "max"
+          }
+        },
+        apns: {
+          headers: {
+            "apns-priority": "10"
+          },
+          payload: {
+            aps: {
+              sound: "default"
+            }
+          }
         },
         data: toFcmData(payload)
       });
@@ -148,17 +225,28 @@ async function processInternalNotification(payload: InAppNotificationJobPayload)
       });
       deliveryStatus = "failed";
     }
+  } else if (!firestorePersisted) {
+    deliveryStatus = "failed_no_token";
   }
 
-  await logNotification({
-    leadId: payload.leadId,
-    channel: "PUSH",
-    recipient: payload.userId,
-    contentSent: `${payload.title}: ${payload.body}`,
-    deliveryStatus,
-    providerMessageId: ref.id,
-    attempts
-  });
+  try {
+    await logNotification({
+      leadId: payload.leadId,
+      channel: "PUSH",
+      recipient: payload.userId,
+      contentSent: `${payload.title}: ${payload.body}`,
+      deliveryStatus,
+      providerMessageId,
+      attempts
+    });
+  } catch (error) {
+    console.error("notification_log_write_failed", {
+      userId: payload.userId,
+      leadId: payload.leadId ?? null,
+      deliveryStatus,
+      error
+    });
+  }
 }
 
 async function processCustomerNotification(
@@ -259,6 +347,15 @@ function toTemplateValue(value: unknown) {
   return JSON.stringify(value);
 }
 
+function isLikelyPromotionalSms(input: {
+  templateName: string;
+  bodyTemplate: string;
+  subject?: string | null;
+}) {
+  const candidate = `${input.templateName} ${input.subject ?? ""} ${input.bodyTemplate}`.toLowerCase();
+  return /\b(promo|promotional|offer|discount|sale|campaign|marketing)\b/.test(candidate);
+}
+
 export function renderTemplateVariables(
   template: string,
   variables: Record<string, unknown>
@@ -266,6 +363,27 @@ export function renderTemplateVariables(
   return template.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_raw, key: string) => {
     if (!(key in variables)) return "";
     return toTemplateValue(variables[key]);
+  });
+}
+
+async function createBlockedCustomerNotificationLog(input: {
+  leadId: string;
+  templateId: string;
+  channel: NotificationChannel;
+  recipient: string;
+  contentSent: string;
+  deliveryStatus: string;
+}) {
+  return prisma.notificationLog.create({
+    data: {
+      leadId: input.leadId,
+      channel: input.channel,
+      templateId: input.templateId,
+      recipient: input.recipient,
+      contentSent: input.contentSent,
+      deliveryStatus: input.deliveryStatus,
+      attempts: 0
+    }
   });
 }
 
@@ -328,6 +446,27 @@ export async function notifyDistrictManagersAndAdmins(
   ]);
 
   const recipients = uniqueIds([...adminIds, ...districtManagerIds]);
+  if (!recipients.length) return [];
+
+  await notifyUsers(recipients, title, body, context);
+  return recipients;
+}
+
+export async function notifyDistrictManagersAndAdminsExceptUser(
+  districtId: string,
+  excludeUserId: string | null | undefined,
+  title: string,
+  body: string,
+  context?: Omit<InAppNotificationJobPayload, "userId" | "title" | "body">
+) {
+  const [adminIds, districtManagerIds] = await Promise.all([
+    getActiveAdminIds(),
+    getActiveDistrictManagerIds(districtId)
+  ]);
+
+  const recipients = uniqueIds([...adminIds, ...districtManagerIds]).filter(
+    (userId) => userId !== excludeUserId
+  );
   if (!recipients.length) return [];
 
   await notifyUsers(recipients, title, body, context);
@@ -497,7 +636,18 @@ export async function queueLeadStatusCustomerNotification(
           externalId: true,
           name: true,
           phone: true,
-          email: true
+          email: true,
+          consentGiven: true,
+          consentTimestamp: true,
+          consentIpAddress: true,
+          emailOptOut: true,
+          whatsappOptOut: true,
+          smsDndStatus: true,
+          assignedExecutive: {
+            select: {
+              fullName: true
+            }
+          }
         }
       }),
       prisma.leadStatus.findUnique({
@@ -548,16 +698,106 @@ export async function queueLeadStatusCustomerNotification(
 
     const recipient =
       template.channel === "EMAIL" ? lead.email?.trim() || "" : lead.phone?.trim() || "";
+    const previewContent = template.subject
+      ? `${template.subject}\n\n${template.bodyTemplate}`
+      : template.bodyTemplate;
+
+    const hasConsentEvidence = Boolean(
+      lead.consentGiven && lead.consentTimestamp && lead.consentIpAddress
+    );
+    if (!hasConsentEvidence) {
+      const blockedLog = await createBlockedCustomerNotificationLog({
+        leadId: lead.id,
+        templateId: template.id,
+        channel: template.channel,
+        recipient,
+        contentSent: previewContent,
+        deliveryStatus: "blocked_no_consent"
+      });
+      return {
+        queued: false,
+        reason: "blocked_no_consent",
+        logId: blockedLog.id
+      } as const;
+    }
+
+    if (template.channel === "EMAIL" && lead.emailOptOut) {
+      const blockedLog = await createBlockedCustomerNotificationLog({
+        leadId: lead.id,
+        templateId: template.id,
+        channel: template.channel,
+        recipient,
+        contentSent: previewContent,
+        deliveryStatus: "blocked_email_opt_out"
+      });
+      return {
+        queued: false,
+        reason: "blocked_email_opt_out",
+        logId: blockedLog.id
+      } as const;
+    }
+
+    if (template.channel === "WHATSAPP" && lead.whatsappOptOut) {
+      const blockedLog = await createBlockedCustomerNotificationLog({
+        leadId: lead.id,
+        templateId: template.id,
+        channel: template.channel,
+        recipient,
+        contentSent: previewContent,
+        deliveryStatus: "blocked_whatsapp_opt_out"
+      });
+      return {
+        queued: false,
+        reason: "blocked_whatsapp_opt_out",
+        logId: blockedLog.id
+      } as const;
+    }
+
+    const shouldBlockSmsForDnd =
+      template.channel === "SMS" &&
+      lead.smsDndStatus &&
+      isLikelyPromotionalSms({
+        templateName: template.name,
+        subject: template.subject,
+        bodyTemplate: template.bodyTemplate
+      });
+
+    if (shouldBlockSmsForDnd) {
+      const blockedLog = await createBlockedCustomerNotificationLog({
+        leadId: lead.id,
+        templateId: template.id,
+        channel: template.channel,
+        recipient,
+        contentSent: previewContent,
+        deliveryStatus: "blocked_sms_dnd"
+      });
+      return {
+        queued: false,
+        reason: "blocked_sms_dnd",
+        logId: blockedLog.id
+      } as const;
+    }
+
+    const executiveName = lead.assignedExecutive?.fullName ?? "";
+    const statusName = status.name;
 
     const variables = {
       customer_name: lead.name,
+      customerName: lead.name,
       lead_id: lead.id,
+      leadId: lead.id,
       lead_external_id: lead.externalId,
-      status: status.name,
-      lead_status: status.name,
+      leadExternalId: lead.externalId,
+      status: statusName,
+      statusName,
+      lead_status: statusName,
+      leadStatus: statusName,
       phone: lead.phone ?? "",
       email: lead.email ?? "",
-      transition_notes: input.transitionNotes ?? ""
+      transition_notes: input.transitionNotes ?? "",
+      transitionNotes: input.transitionNotes ?? "",
+      executive_name: executiveName,
+      executiveName
     };
 
     const renderedBody = renderTemplateVariables(template.bodyTemplate, variables);
@@ -641,29 +881,78 @@ export async function queueLeadStatusCustomerNotification(
 export async function triggerNewLeadNotification(input: {
   leadId: string;
   externalId: string;
+  districtId: string;
   assignedExecutiveId?: string | null;
   assignedManagerId?: string | null;
+  submittedByRole?: string | null;
 }) {
+  const [adminIds, districtManagerIds] = await Promise.all([
+    getActiveAdminIds(),
+    getActiveDistrictManagerIds(input.districtId)
+  ]);
+
   const recipients = uniqueIds([
     input.assignedExecutiveId,
-    input.assignedManagerId
+    input.assignedManagerId,
+    ...adminIds,
+    ...districtManagerIds
   ]);
   if (!recipients.length) return [];
 
+  const hasExecutiveAssignment = Boolean(input.assignedExecutiveId);
+  const body = hasExecutiveAssignment
+    ? `Lead ${input.externalId} was submitted and assigned for action.`
+    : `Lead ${input.externalId} was submitted and is awaiting executive assignment.`;
+
   return notifyUsers(
     recipients,
-    "New lead created",
-    `Lead ${input.externalId} is created and assigned.`,
+    "New lead submitted",
+    body,
     {
       type: "NEW_LEAD",
       leadId: input.leadId,
       entityType: "lead",
       entityId: input.leadId,
       metadata: {
-        externalId: input.externalId
+        externalId: input.externalId,
+        districtId: input.districtId,
+        hasExecutiveAssignment,
+        submittedByRole: input.submittedByRole ?? null
       }
     }
   );
+}
+
+export async function triggerLeadStatusUpdatedPortalNotification(input: {
+  leadId: string;
+  externalId: string;
+  districtId: string;
+  fromStatusName: string;
+  toStatusName: string;
+  changedByRole: string;
+  changedByUserId?: string | null;
+}) {
+  const recipients = await notifyDistrictManagersAndAdminsExceptUser(
+    input.districtId,
+    input.changedByUserId,
+    "Lead status updated",
+    `Lead ${input.externalId} moved from "${input.fromStatusName}" to "${input.toStatusName}" by ${input.changedByRole}.`,
+    {
+      type: "LEAD_STATUS_UPDATED",
+      leadId: input.leadId,
+      entityType: "lead",
+      entityId: input.leadId,
+      metadata: {
+        externalId: input.externalId,
+        fromStatus: input.fromStatusName,
+        toStatus: input.toStatusName,
+        changedByRole: input.changedByRole,
+        audience: "portal_internal"
+      }
+    }
+  );
+
+  return recipients;
 }
 
 export async function triggerExecutiveLeadStatusUpdatedNotification(input: {
@@ -769,6 +1058,7 @@ export async function triggerDocumentPendingNotification(input: {
   documentId: string;
   fileName: string;
   uploadedByUserId?: string | null;
+  uploadedByRole?: string | null;
 }) {
   const lead = await prisma.lead.findUnique({
     where: { id: input.leadId },
@@ -804,7 +1094,8 @@ export async function triggerDocumentPendingNotification(input: {
       entityId: input.documentId,
       metadata: {
         externalId: lead.externalId,
-        uploadedByUserId: input.uploadedByUserId ?? null
+        uploadedByUserId: input.uploadedByUserId ?? null,
+        uploadedByRole: input.uploadedByRole ?? null
       }
     }
   );
@@ -815,6 +1106,8 @@ export async function triggerUtrPendingNotification(input: {
   leadId: string;
   utrNumber?: string | null;
   amount: string;
+  submittedByUserId?: string | null;
+  submittedByRole?: string | null;
 }) {
   const lead = await prisma.lead.findUnique({
     where: { id: input.leadId },
@@ -851,7 +1144,9 @@ export async function triggerUtrPendingNotification(input: {
       metadata: {
         externalId: lead.externalId,
         amount: input.amount,
-        utrNumber: input.utrNumber ?? null
+        utrNumber: input.utrNumber ?? null,
+        submittedByUserId: input.submittedByUserId ?? null,
+        submittedByRole: input.submittedByRole ?? null
       }
     }
   );

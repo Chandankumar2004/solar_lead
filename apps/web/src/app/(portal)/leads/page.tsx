@@ -60,10 +60,46 @@ type TransitionsEnvelope = {
 };
 
 const fetcher = (url: string) => api.get(url).then((response) => response.data);
+const PRIORITY_STATES = ["Bihar", "Delhi"] as const;
+const PRIORITY_STATE_RANK = new Map(
+  PRIORITY_STATES.map((state, index) => [state.toLocaleLowerCase("en-US"), index])
+);
+const TERMINAL_STATUS_NAMES = new Set(
+  ["Installation Complete", "Closed (Lost)"].map((status) =>
+    status.toLocaleLowerCase("en-US")
+  )
+);
+
+function compareStateOrder(left: string, right: string) {
+  const leftKey = left.trim().toLocaleLowerCase("en-US");
+  const rightKey = right.trim().toLocaleLowerCase("en-US");
+
+  const leftRank = PRIORITY_STATE_RANK.get(leftKey);
+  const rightRank = PRIORITY_STATE_RANK.get(rightKey);
+
+  if (leftRank !== undefined || rightRank !== undefined) {
+    if (leftRank === undefined) return 1;
+    if (rightRank === undefined) return -1;
+    if (leftRank !== rightRank) return leftRank - rightRank;
+  }
+
+  return left.localeCompare(right);
+}
+
+function compareDistrictOrder(left: DistrictOption, right: DistrictOption) {
+  const stateCompare = compareStateOrder(left.state, right.state);
+  if (stateCompare !== 0) return stateCompare;
+  return left.name.localeCompare(right.name);
+}
 
 function extractApiMessage(error: unknown) {
   const maybe = error as { response?: { data?: { message?: string } } };
   return maybe.response?.data?.message ?? "Operation failed";
+}
+
+function isTerminalStatusName(statusName?: string | null) {
+  if (!statusName) return false;
+  return TERMINAL_STATUS_NAMES.has(statusName.trim().toLocaleLowerCase("en-US"));
 }
 
 export default function LeadsPage() {
@@ -140,13 +176,11 @@ export default function LeadsPage() {
   const leads = envelope?.data ?? [];
   const pagination = envelope?.pagination;
 
-  const districts = ((districtsData?.data?.districts ?? []) as DistrictOption[]).sort((a, b) =>
-    a.name.localeCompare(b.name)
+  const districts = ((districtsData?.data?.districts ?? []) as DistrictOption[]).sort(
+    compareDistrictOrder
   );
 
-  const states = Array.from(new Set(districts.map((district) => district.state))).sort((a, b) =>
-    a.localeCompare(b)
-  );
+  const states = Array.from(new Set(districts.map((district) => district.state)));
 
   const dashboardOptions = dashboardData as DashboardSummaryEnvelope | undefined;
   const statusOptions = (dashboardOptions?.data?.leadsByStatus ?? [])
@@ -210,6 +244,9 @@ export default function LeadsPage() {
     const isReassignment =
       Boolean(lead.assignedExecutive?.id) &&
       lead.assignedExecutive?.id !== selectedExecutiveId;
+    const endpoint = isReassignment
+      ? `/api/leads/${lead.id}/reassign`
+      : `/api/leads/${lead.id}/assign`;
 
     let reassignmentReason: string | null = null;
     if (isReassignment) {
@@ -225,14 +262,24 @@ export default function LeadsPage() {
       reassignmentReason = input.trim();
     }
 
+    const confirmed = window.confirm(
+      isReassignment
+        ? `Reassign lead ${lead.externalId} to selected executive?`
+        : `Assign lead ${lead.externalId} to selected executive?`
+    );
+    if (!confirmed) return;
+
     setActionMessage(null);
     setActionKeyLoading(`${lead.id}:assign`);
     try {
-      await api.patch(`/api/leads/${lead.id}`, {
+      await api.post(endpoint, {
         assignedExecutiveId: selectedExecutiveId,
-        ...(reassignmentReason ? { reassignmentReason } : {})
+        ...(reassignmentReason ? { reason: reassignmentReason } : {})
       });
-      setActionMessage({ type: "success", text: `Assigned ${lead.name} successfully` });
+      setActionMessage({
+        type: "success",
+        text: `${isReassignment ? "Reassigned" : "Assigned"} ${lead.name} successfully`
+      });
       await mutate();
     } catch (error) {
       setActionMessage({ type: "error", text: extractApiMessage(error) });
@@ -244,12 +291,39 @@ export default function LeadsPage() {
   const onChangeStatus = async (lead: LeadRow) => {
     const nextStatusId = statusDraft[lead.id];
     if (!nextStatusId) return;
+
+    const terminalReopen = isTerminalStatusName(lead.currentStatus?.name);
+    let overrideReason: string | undefined;
+    if (terminalReopen) {
+      if (user?.role !== "SUPER_ADMIN") {
+        setActionMessage({
+          type: "error",
+          text: "Only Super Admin can reopen a lead from terminal status."
+        });
+        return;
+      }
+
+      const input = window.prompt("Override reason for reopening this terminal lead:", "");
+      if (input === null) return;
+      if (input.trim().length < 5) {
+        setActionMessage({
+          type: "error",
+          text: "Override reason must be at least 5 characters."
+        });
+        return;
+      }
+      overrideReason = input.trim();
+    }
+
     setActionMessage(null);
     setActionKeyLoading(`${lead.id}:status`);
     try {
       await api.post(`/api/leads/${lead.id}/transition`, {
         nextStatusId,
-        notes: "Quick status update from leads list"
+        notes: terminalReopen
+          ? "Terminal override from leads list"
+          : "Quick status update from leads list",
+        ...(overrideReason ? { overrideReason } : {})
       });
       setActionMessage({ type: "success", text: `Updated status for ${lead.name}` });
       await mutate();
@@ -470,9 +544,15 @@ export default function LeadsPage() {
                       <td className="px-4 py-3">{lead.district?.name ?? "-"}</td>
                       <td className="px-4 py-3">
                         <p>{lead.currentStatus?.name ?? "-"}</p>
-                        <p className="mt-1 text-xs text-slate-500">
-                          {lead.isOverdue ? "SLA: Overdue" : "SLA: On time"}
-                        </p>
+                        <span
+                          className={`mt-1 inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                            lead.isOverdue
+                              ? "bg-rose-100 text-rose-700 ring-1 ring-rose-200"
+                              : "bg-emerald-100 text-emerald-700 ring-1 ring-emerald-200"
+                          }`}
+                        >
+                          {lead.isOverdue ? "SLA Overdue" : "Within SLA"}
+                        </span>
                       </td>
                       <td className="px-4 py-3">{lead.assignedExecutive?.fullName ?? "-"}</td>
                       <td className="px-4 py-3">{lead.utmSource ?? "-"}</td>

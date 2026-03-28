@@ -1,94 +1,102 @@
 # Mobile Notifications Audit (Section 6.7)
 
-Date: 2026-03-16  
-Scope: Mobile notifications module only (FCM, token registration, triggers, deep links).
+Date: 2026-03-20  
+Scope: Mobile notification module only (FCM, token registration, triggers, deep linking, executive scoping).
 
-## 1. Current Mobile Notification Implementation Found in Code
-- **Mobile push integration**: `apps/mobile/src/services/push-notifications.ts`
-  - Dynamic `@react-native-firebase/messaging` load; requests permission; registers token; handles token refresh; listens for foreground messages and tap events; reads initial notification.
-  - Stores token locally in AsyncStorage and registers/unregisters with backend `/api/notifications/device-token`.
-- **Local inbox + unread state**: `apps/mobile/src/store/notification-store.ts`
-  - AsyncStorage persistence for recent pushes; unread counter; mark-all-read.
-- **Notifications UI**:
-  - `apps/mobile/src/screens/NotificationsScreen.tsx` displays server feed + recent device pushes.
-  - `apps/mobile/src/screens/HomeScreen.tsx` shows recent notifications from dashboard summary.
-  - `apps/mobile/src/App.tsx` tab badge for unread count + push availability banner.
-- **Deep link navigation**:
-  - `apps/mobile/src/App.tsx` uses `openLeadFromPush` to navigate to Lead Detail when payload includes `leadId`.
-  - App scheme configured as `solarleadmobile://` in `apps/mobile/app.json`.
+## 1. Current mobile notification implementation found in code
+- Mobile FCM integration exists in `apps/mobile/src/services/push-notifications.ts`:
+  - permission request
+  - token fetch + refresh listener
+  - foreground handler
+  - background/open/quit open handlers
+  - backend token register/unregister calls
+- Deep-link navigation exists in `apps/mobile/src/App.tsx` and navigates to `Leads -> LeadDetail` when payload contains `leadId`.
+- Local unread/recent state exists in `apps/mobile/src/store/notification-store.ts` and is shown in `apps/mobile/src/screens/NotificationsScreen.tsx`.
+- Backend push dispatch + audit/logging exists in `apps/api/src/services/notification.service.ts` and Prisma `NotificationLog`.
 
-## 2. Required Features Already Present
-- FCM token registration to backend.
-- Foreground and tap handlers (`onMessage`, `onNotificationOpenedApp`, `getInitialNotification`).
-- Deep-linking to lead detail on notification tap (via `leadId`).
-- Notifications for required events:
-  - New lead assigned (lead creation + auto-assignment).
-  - Lead status updated by admin/manager.
-  - UTR rejected.
-  - Document rejected.
-  - Inactivity reminders (configurable days).
-  - Loan status update (via lead status transitions containing “loan”).
-- Notification logs recorded in `notification_logs`.
-- Reminder threshold configurable via `LEAD_INACTIVITY_REMINDER_DAYS`.
-- Assigned lead scoping enforced at the event source (lead assigned exec used for recipients).
+## 2. Required features already present
+- FCM token lifecycle from mobile app (register/refresh/unregister).
+- Foreground/background/open-app notification handling.
+- Tap deep-link routing to lead detail.
+- Triggers implemented for:
+  - lead status updates from admin/manager to executive
+  - UTR rejected
+  - document rejected / re-upload requested
+  - inactivity reminders with configurable threshold
+- Notification logs are persisted in database.
 
-## 3. Partially Implemented Features
-- **Expo Go limitation**: FCM is unavailable in Expo Go; push requires a dev/native build.  
-  Status: Partial only for local dev (not production).  
-  Impact: Low (expected by React Native Firebase + Expo).
+## 3. Required features partially implemented
+- Loan-status push currently depends on lead status names containing `"loan"` (`triggerExecutiveLoanStatusUpdatedNotification`), not on dedicated `loan_details.applicationStatus` mutation flow.
+- Expo Go cannot receive RN Firebase push; native/dev client build required.
 
-## 4. Missing Features
-- None detected for required notifications behavior.
+## 4. Required features missing (found during audit)
+- New-assignment push coverage for mirrored public leads was missing.
 
-## 5. Broken or Insecure Features
-- None detected in the notification pipeline for this scope.
+## 5. Required features broken or insecure (found during audit)
+- Device token API was not restricted to field executives.
+- Reassignment push sent lead deep-link context to previous assignee, who may no longer be authorized.
+- Rejection push payloads included avoidable note content in metadata/body.
 
-## 6. Backend/Schema Changes Required
-- None required. `UserDeviceToken`, `NotificationLog`, and `NotificationTemplate` are already modeled in Prisma.
+## 6. Backend/schema changes required
+- Schema change: none required.
+- Backend changes required and implemented:
+  - restrict device-token endpoints to `FIELD_EXECUTIVE`
+  - send assignment push to new assignee only during reassignment
+  - trigger assignment push for public lead mirroring
+  - minimize rejection push payload detail
 
-## 7. Mobile UI/App Changes Required
-- None required for required behavior.
+## 7. Mobile UI/app changes required
+- None required for critical/high fixes.
 
-## 8. Env/Config Changes Required
-- None required; `LEAD_INACTIVITY_REMINDER_DAYS` already in `.env.example`.
+## 8. Env/config changes required
+- None required.
+- Existing `LEAD_INACTIVITY_REMINDER_DAYS` config is valid and already present.
 
-## 9. Security and Authorization Issues Found
-- None within this module. Lead scoping enforced by assignment-based targeting and API guards.
+## 9. Security and authorization issues found
+- Fixed: backend now enforces field-executive-only access for device token endpoints.
+- Fixed: reassignment notification no longer deep-links old assignee to non-authorized lead context.
+- Improved: push rejection payload now avoids unnecessary note detail.
 
-## 10. FCM Token Registration Issues Found
-- None. Tokens are registered, refreshed, and removed on logout.
+## 10. FCM token registration issues found
+- Fixed: token endpoints were previously available to all authenticated roles.
 
-## 11. Trigger/Event Coverage Issues Found
-- None. All specified events are triggered by existing routes/services.
+## 11. Trigger/event coverage issues found
+- Fixed: mirrored public lead creation now triggers new-lead-assigned notification flow.
+- Remaining partial: loan update coverage is workflow-status-name based.
 
-## 12. Deep-Link Handling Issues Found
-- None. Lead detail deep link is handled via payload `leadId` and navigation ref.
+## 12. Deep-link handling issues found
+- Fixed: reassignment push with lead deep-link now targets new assignee only.
+- Existing API authorization (`scopeLeadWhere`) still enforces access on lead detail fetch.
 
-## 13. Reminder Threshold/Config Issues Found
-- None. `LEAD_INACTIVITY_REMINDER_DAYS` is configurable and used.
+## 13. Reminder threshold/config issues found
+- No issue found. `LEAD_INACTIVITY_REMINDER_DAYS` is configurable and consumed by inactivity monitor.
 
-## 14. Priority of Fixes
-- **Critical**: None
-- **High**: None
-- **Medium**: None
-- **Low**: Expo Go does not support RN Firebase push; use dev/native build for real push.
+## 14. Priority of fixes
+- Critical
+  - None.
+- High
+  - Fixed: field-executive restriction on token endpoints.
+  - Fixed: missing public lead mirror assignment push.
+  - Fixed: reassignment deep-link scoping to current assignee.
+- Medium
+  - Partial: loan status push tied to lead workflow status naming (not dedicated loan_detail mutation).
+- Low
+  - Expo Go runtime limitation for RN Firebase push.
 
----
+## Verification table
 
-## Verification Table
-
-| Feature | Required behavior | Current implementation | Status | Files involved | Fix required |
+| Feature | Required behavior | Current implementation | Status (Correct / Partial / Missing / Broken) | Files involved | Fix required |
 |---|---|---|---|---|---|
-| FCM token registration | Register/refresh device token with backend | Mobile registers to `/api/notifications/device-token`, refresh handled | Correct | `apps/mobile/src/services/push-notifications.ts`, `apps/api/src/routes/notifications.ts`, `apps/api/src/services/notification.service.ts` | No |
-| Foreground/Background handling | Receive notifications in foreground/background/quit | `onMessage`, `onNotificationOpenedApp`, `getInitialNotification`, background handler registered | Correct | `apps/mobile/src/services/push-notifications.ts`, `apps/mobile/index.js` | No |
-| Deep linking | Tap opens lead detail | `openLeadFromPush` navigates to Lead Detail when `leadId` present | Correct | `apps/mobile/src/App.tsx` | No |
-| New lead assigned | Push sent to assigned executive | Triggered on lead creation with auto-assignment | Correct | `apps/api/src/routes/leads.ts`, `apps/api/src/services/notification.service.ts` | No |
-| Lead status updated | Push to executive when admin/manager updates | Triggered on lead transition by admin/manager | Correct | `apps/api/src/routes/leads.ts`, `apps/api/src/services/notification.service.ts` | No |
-| UTR rejected | Push to executive for rejected payment | Triggered in payments route | Correct | `apps/api/src/routes/payments.ts` | No |
-| Document rejected | Push to executive for rejected document | Triggered in documents route | Correct | `apps/api/src/routes/documents.ts` | No |
-| Inactivity reminder | Configurable days reminder | SLA monitor + env `LEAD_INACTIVITY_REMINDER_DAYS` | Correct | `apps/api/src/services/sla-overdue.service.ts`, `apps/api/src/config/env.ts` | No |
-| Loan status update | Push on loan status update | Triggered on lead transition when status name contains “loan” | Correct | `apps/api/src/routes/leads.ts`, `apps/api/src/services/notification.service.ts` | No |
-| Notification logs | Log delivery and status | `notification_logs` written for push | Correct | `apps/api/src/services/notification.service.ts`, `apps/api/prisma/schema.prisma` | No |
-| Recent notifications UI | Recent notifications visible | Mobile home + notifications screen show feeds | Correct | `apps/mobile/src/screens/HomeScreen.tsx`, `apps/mobile/src/screens/NotificationsScreen.tsx` | No |
-| Expo Go compatibility | Push works in Expo Go | Not supported for RN Firebase | Partial (dev only) | `apps/mobile/src/services/push-notifications.ts` | No (use dev build) |
-
+| FCM token registration | Device token register/refresh/unregister | Mobile handles token lifecycle and calls backend token APIs | Correct | `apps/mobile/src/services/push-notifications.ts`, `apps/api/src/routes/notifications.ts`, `apps/api/src/services/notification.service.ts` | Done |
+| Token endpoint role restriction | Only field executives should use mobile push token flow | Backend now restricts token endpoints with `allowRoles("FIELD_EXECUTIVE")` | Correct | `apps/api/src/routes/notifications.ts` | Done |
+| New lead assigned (authenticated lead create) | Assigned executive should receive push | Trigger exists after lead creation | Correct | `apps/api/src/routes/leads.ts`, `apps/api/src/services/notification.service.ts` | No |
+| New lead assigned (public lead mirrored) | Assigned executive should receive push | Trigger now added in mirror flow | Correct | `apps/api/src/services/public-lead-submission.service.ts`, `apps/api/src/services/notification.service.ts` | Done |
+| Reassignment scoping | Only relevant currently assigned executive gets actionable lead push | Reassignment now sends assignment push only to new assignee | Correct | `apps/api/src/routes/leads.ts` | Done |
+| Lead status updated by admin/manager | Assigned executive gets status update push | Trigger exists and checks actor role + assignee | Correct | `apps/api/src/routes/leads.ts`, `apps/api/src/services/notification.service.ts` | No |
+| UTR rejected | Assigned executive gets retry push | Trigger exists; payload minimized | Correct | `apps/api/src/routes/payments.ts` | Done |
+| Document rejected / re-upload | Assigned executive gets re-upload push | Trigger exists; metadata minimized | Correct | `apps/api/src/routes/documents.ts` | Done |
+| Inactivity reminder | Remind assigned executive after configurable inactivity days | Scheduler uses `LEAD_INACTIVITY_REMINDER_DAYS` with dedupe | Correct | `apps/api/src/services/sla-overdue.service.ts`, `apps/api/src/config/env.ts` | No |
+| Loan status update | Push on loan status updates for executive leads | Implemented via lead-status transitions whose status name includes `"loan"` | Partial | `apps/api/src/routes/leads.ts`, `apps/api/src/services/notification.service.ts` | Optional medium enhancement |
+| Foreground/background/quit handling | Receive and process push across app states | Foreground/open/initial/background handlers registered | Correct | `apps/mobile/src/services/push-notifications.ts`, `apps/mobile/index.js` | No |
+| Deep-link to lead detail | Tap should open lead detail context | Navigates to `LeadDetail` via payload `leadId`; backend access control applies | Correct | `apps/mobile/src/App.tsx`, `apps/api/src/routes/leads.ts`, `apps/api/src/services/lead-access.service.ts` | No |
+| Notification logs/audit | Push delivery attempts should be logged | `notification_logs` written with delivery status and attempts | Correct | `apps/api/src/services/notification.service.ts`, `apps/api/prisma/schema.prisma` | No |

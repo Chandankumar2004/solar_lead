@@ -36,6 +36,10 @@ type NotificationTemplate = {
   isActive?: boolean;
 };
 
+type AutoAssignmentConfig = {
+  maxActiveLeadsPerExecutive: number;
+};
+
 const fetcher = (url: string) => api.get(url).then((r) => r.data?.data);
 
 function toArray<T>(value: unknown, keys: string[] = []): T[] {
@@ -135,6 +139,10 @@ export default function WorkflowPage() {
     "/api/notifications/templates?isActive=true",
     fetcher
   );
+  const {
+    data: autoAssignmentConfigData,
+    mutate: mutateAutoAssignmentConfig
+  } = useSWR("/api/leads/auto-assignment/config", fetcher);
 
   const statusItems = useMemo(
     () =>
@@ -154,6 +162,23 @@ export default function WorkflowPage() {
       ),
     [templates]
   );
+  const autoAssignmentConfig = useMemo(() => {
+    const source = autoAssignmentConfigData as
+      | AutoAssignmentConfig
+      | { config?: AutoAssignmentConfig }
+      | null
+      | undefined;
+    if (!source) {
+      return null;
+    }
+    if (typeof source === "object" && "maxActiveLeadsPerExecutive" in source) {
+      return source as AutoAssignmentConfig;
+    }
+    if (typeof source === "object" && source.config) {
+      return source.config;
+    }
+    return null;
+  }, [autoAssignmentConfigData]);
 
   const [editingStatusId, setEditingStatusId] = useState<string | null>(null);
   const [selectedStatusId, setSelectedStatusId] = useState<string | null>(null);
@@ -163,6 +188,10 @@ export default function WorkflowPage() {
   const [transitionError, setTransitionError] = useState<string | null>(null);
   const [transitionBusyKey, setTransitionBusyKey] = useState<string | null>(null);
   const [reorderBusyId, setReorderBusyId] = useState<string | null>(null);
+  const [maxActiveLoadInput, setMaxActiveLoadInput] = useState<string>("50");
+  const [savingAutoAssignmentConfig, setSavingAutoAssignmentConfig] = useState(false);
+  const [autoAssignmentConfigError, setAutoAssignmentConfigError] = useState<string | null>(null);
+  const [autoAssignmentConfigSuccess, setAutoAssignmentConfigSuccess] = useState<string | null>(null);
 
   const {
     register,
@@ -207,6 +236,11 @@ export default function WorkflowPage() {
       setSelectedFromStatusId(statusItems[0].id);
     }
   }, [selectedFromStatusId, selectedStatusId, statusItems]);
+
+  useEffect(() => {
+    if (!autoAssignmentConfig) return;
+    setMaxActiveLoadInput(String(autoAssignmentConfig.maxActiveLeadsPerExecutive));
+  }, [autoAssignmentConfig]);
 
   async function refreshWorkflowData() {
     await Promise.all([mutateStatuses(), mutateTransitions()]);
@@ -309,6 +343,32 @@ export default function WorkflowPage() {
     }
   }
 
+  async function saveAutoAssignmentConfig() {
+    setAutoAssignmentConfigError(null);
+    setAutoAssignmentConfigSuccess(null);
+
+    const parsed = Number(maxActiveLoadInput);
+    if (!Number.isInteger(parsed) || parsed < 1 || parsed > 500) {
+      setAutoAssignmentConfigError("Max active load must be an integer between 1 and 500.");
+      return;
+    }
+
+    setSavingAutoAssignmentConfig(true);
+    try {
+      await api.put("/api/leads/auto-assignment/config", {
+        maxActiveLeadsPerExecutive: parsed
+      });
+      await mutateAutoAssignmentConfig();
+      setAutoAssignmentConfigSuccess("Auto-assignment load limit updated.");
+    } catch (error) {
+      setAutoAssignmentConfigError(
+        getApiErrorMessage(error, "Unable to update auto-assignment config")
+      );
+    } finally {
+      setSavingAutoAssignmentConfig(false);
+    }
+  }
+
   return (
     <div className="min-w-0 space-y-4">
       <div>
@@ -318,6 +378,44 @@ export default function WorkflowPage() {
           requirements.
         </p>
       </div>
+
+      <section className="rounded-xl bg-white p-3 shadow-sm sm:p-4">
+        <h3 className="text-base font-semibold">Auto-Assignment Capacity</h3>
+        <p className="mt-1 text-sm text-slate-600">
+          Maximum active (non-terminal) leads allowed per field executive for auto-assignment.
+        </p>
+        <div className="mt-3 flex flex-wrap items-end gap-2">
+          <label className="min-w-[220px] text-sm">
+            <span className="mb-1 block font-medium">Max Active Leads per Executive</span>
+            <input
+              type="number"
+              min={1}
+              max={500}
+              value={maxActiveLoadInput}
+              onChange={(event) => setMaxActiveLoadInput(event.target.value)}
+              className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+            />
+          </label>
+          <button
+            type="button"
+            onClick={() => void saveAutoAssignmentConfig()}
+            disabled={savingAutoAssignmentConfig}
+            className="rounded-md bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-700 disabled:opacity-60"
+          >
+            {savingAutoAssignmentConfig ? "Saving..." : "Save Capacity"}
+          </button>
+        </div>
+        {autoAssignmentConfigError ? (
+          <div className="mt-2 rounded-md border border-rose-300 bg-rose-50 px-3 py-2 text-sm text-rose-700">
+            {autoAssignmentConfigError}
+          </div>
+        ) : null}
+        {autoAssignmentConfigSuccess ? (
+          <div className="mt-2 rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+            {autoAssignmentConfigSuccess}
+          </div>
+        ) : null}
+      </section>
 
       <div className="grid gap-4 xl:grid-cols-[1.1fr_1fr]">
         <section className="rounded-xl bg-white p-3 shadow-sm sm:p-4">

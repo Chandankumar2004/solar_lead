@@ -13,7 +13,9 @@ const REMINDER_DEDUPE_WINDOW_MS = 24 * 60 * 60 * 1000;
 type SlaCheckSummary = {
   checkedLeads: number;
   markedOverdue: number;
+  clearedOverdue: number;
   notifiedUsers: number;
+  repairedOverdueAt: number;
 };
 
 type InactivityCheckSummary = {
@@ -45,59 +47,94 @@ export async function runSlaOverdueCheck(): Promise<SlaCheckSummary> {
   const now = new Date();
   const candidates = await prisma.lead.findMany({
     where: {
-      isOverdue: false,
       currentStatus: {
         is: {
-          isTerminal: false,
-          slaDurationHours: {
-            not: null
+          isTerminal: false
+        }
+      },
+      OR: [
+        {
+          isOverdue: true
+        },
+        {
+          currentStatus: {
+            is: {
+              slaDurationHours: {
+                not: null
+              }
+            }
           }
         }
-      }
+      ]
     },
     select: {
       id: true,
       externalId: true,
       districtId: true,
-      currentStatusId: true,
-      createdAt: true,
+      statusUpdatedAt: true,
+      isOverdue: true,
+      overdueAt: true,
       currentStatus: {
         select: {
           id: true,
           name: true,
           slaDurationHours: true
         }
-      },
-      statusHistory: {
-        orderBy: {
-          createdAt: "desc"
-        },
-        take: 1,
-        select: {
-          toStatusId: true,
-          createdAt: true
-        }
       }
     }
   });
 
   let markedOverdue = 0;
+  let clearedOverdue = 0;
   let notifiedUsers = 0;
+  let repairedOverdueAt = 0;
 
   for (const lead of candidates) {
     const slaDurationHours = lead.currentStatus.slaDurationHours;
-    if (!slaDurationHours || slaDurationHours <= 0) {
+    const hasSla = typeof slaDurationHours === "number" && slaDurationHours > 0;
+    const enteredAt = lead.statusUpdatedAt;
+    const exceeded = hasSla
+      ? now.getTime() - enteredAt.getTime() > slaDurationHours * 60 * 60 * 1000
+      : false;
+
+    if (!exceeded && !lead.isOverdue) {
       continue;
     }
 
-    const latestHistory = lead.statusHistory[0];
-    const enteredAt =
-      latestHistory && latestHistory.toStatusId === lead.currentStatusId
-        ? latestHistory.createdAt
-        : lead.createdAt;
+    if (!exceeded && lead.isOverdue) {
+      const reset = await prisma.lead.updateMany({
+        where: {
+          id: lead.id,
+          isOverdue: true
+        },
+        data: {
+          isOverdue: false,
+          overdueAt: null
+        }
+      });
+      if (reset.count === 0) {
+        continue;
+      }
 
-    const exceeded = now.getTime() - enteredAt.getTime() > slaDurationHours * 60 * 60 * 1000;
-    if (!exceeded) {
+      clearedOverdue += 1;
+
+      await createAuditLog({
+        actorUserId: null,
+        action: "LEAD_OVERDUE_CLEARED_SLA",
+        entityType: "lead",
+        entityId: lead.id,
+        detailsJson: {
+          leadId: lead.id,
+          externalId: lead.externalId,
+          statusId: lead.currentStatus.id,
+          statusName: lead.currentStatus.name,
+          slaDurationHours,
+          statusUpdatedAt: lead.statusUpdatedAt.toISOString(),
+          checkedAt: now.toISOString(),
+          reason: hasSla ? "within_sla_window" : "status_without_sla"
+        },
+        ipAddress: null
+      });
       continue;
     }
 
@@ -107,11 +144,25 @@ export async function runSlaOverdueCheck(): Promise<SlaCheckSummary> {
         isOverdue: false
       },
       data: {
-        isOverdue: true
+        isOverdue: true,
+        overdueAt: now
       }
     });
 
     if (updated.count === 0) {
+      if (lead.isOverdue && !lead.overdueAt) {
+        const repaired = await prisma.lead.updateMany({
+          where: {
+            id: lead.id,
+            isOverdue: true,
+            overdueAt: null
+          },
+          data: {
+            overdueAt: now
+          }
+        });
+        repairedOverdueAt += repaired.count;
+      }
       continue;
     }
 
@@ -159,7 +210,9 @@ export async function runSlaOverdueCheck(): Promise<SlaCheckSummary> {
   return {
     checkedLeads: candidates.length,
     markedOverdue,
-    notifiedUsers
+    clearedOverdue,
+    notifiedUsers,
+    repairedOverdueAt
   };
 }
 
@@ -199,6 +252,7 @@ export async function runInactivityReminderCheck(): Promise<InactivityCheckSumma
     select: {
       id: true,
       externalId: true,
+      districtId: true,
       assignedExecutiveId: true,
       updatedAt: true,
       currentStatus: {
@@ -217,17 +271,11 @@ export async function runInactivityReminderCheck(): Promise<InactivityCheckSumma
   }
 
   const leadIds = candidates.map((lead) => lead.id);
-  const recipientIds = candidates
-    .map((lead) => lead.assignedExecutiveId)
-    .filter((value): value is string => Boolean(value));
 
   const recentReminderLogs = await prisma.notificationLog.findMany({
     where: {
       leadId: {
         in: leadIds
-      },
-      recipient: {
-        in: recipientIds
       },
       channel: "PUSH",
       createdAt: {
@@ -239,41 +287,62 @@ export async function runInactivityReminderCheck(): Promise<InactivityCheckSumma
       }
     },
     select: {
-      leadId: true,
-      recipient: true
+      leadId: true
     }
   });
 
-  const dedupeKeys = new Set(
+  const dedupeLeadIds = new Set(
     recentReminderLogs
       .filter((log) => log.leadId)
-      .map((log) => `${log.leadId}:${log.recipient}`)
+      .map((log) => log.leadId as string)
   );
 
   let remindersSent = 0;
 
   for (const lead of candidates) {
     if (!lead.assignedExecutiveId) continue;
-    const dedupeKey = `${lead.id}:${lead.assignedExecutiveId}`;
-    if (dedupeKeys.has(dedupeKey)) {
+    if (dedupeLeadIds.has(lead.id)) {
       continue;
     }
 
-    const recipients = await triggerExecutiveInactivityReminderNotification({
-      leadId: lead.id,
-      externalId: lead.externalId,
-      assignedExecutiveId: lead.assignedExecutiveId,
-      inactivityDays,
-      statusName: lead.currentStatus.name,
-      lastActivityAt: lead.updatedAt
-    });
+    const [executiveRecipients, portalRecipients] = await Promise.all([
+      triggerExecutiveInactivityReminderNotification({
+        leadId: lead.id,
+        externalId: lead.externalId,
+        assignedExecutiveId: lead.assignedExecutiveId,
+        inactivityDays,
+        statusName: lead.currentStatus.name,
+        lastActivityAt: lead.updatedAt
+      }),
+      notifyDistrictManagersAndAdmins(
+        lead.districtId,
+        "Executive inactivity reminder",
+        `Lead ${lead.externalId} has no field-executive activity for ${inactivityDays} day(s). Current status: "${lead.currentStatus.name}".`,
+        {
+          type: "LEAD_INACTIVITY_REMINDER",
+          leadId: lead.id,
+          entityType: "lead",
+          entityId: lead.id,
+          metadata: {
+            source: "sla_monitor",
+            externalId: lead.externalId,
+            inactivityDays,
+            statusName: lead.currentStatus.name,
+            lastActivityAt: lead.updatedAt.toISOString()
+          }
+        }
+      )
+    ]);
 
+    const recipients = [
+      ...new Set([...executiveRecipients, ...portalRecipients])
+    ];
     if (recipients.length === 0) {
       continue;
     }
 
     remindersSent += recipients.length;
-    dedupeKeys.add(dedupeKey);
+    dedupeLeadIds.add(lead.id);
 
     await createAuditLog({
       actorUserId: null,
@@ -321,7 +390,11 @@ export function startSlaOverdueMonitor() {
 
       const summary = await runSlaOverdueCheck();
       const inactivitySummary = await runInactivityReminderCheck();
-      if (summary.markedOverdue > 0 || inactivitySummary.remindersSent > 0) {
+      if (
+        summary.markedOverdue > 0 ||
+        summary.clearedOverdue > 0 ||
+        inactivitySummary.remindersSent > 0
+      ) {
         console.info("sla_overdue_check_completed", {
           ...summary,
           inactivityCheckedLeads: inactivitySummary.checkedLeads,

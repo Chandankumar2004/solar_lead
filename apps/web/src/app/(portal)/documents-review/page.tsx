@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import useSWR from "swr";
-import { api } from "@/lib/api";
+import { api, getApiErrorMessage } from "@/lib/api";
 import { useAuthStore } from "@/lib/auth-store";
 
 type ReviewStatus = "PENDING" | "VERIFIED" | "REJECTED";
@@ -75,22 +75,49 @@ type LeadSearchRow = {
 const fetcher = (url: string) => api.get(url).then((response) => response.data);
 
 function extractApiMessage(error: unknown) {
-  const maybe = error as { response?: { data?: { message?: string } } };
-  return maybe.response?.data?.message ?? "Operation failed";
+  return getApiErrorMessage(error, "Operation failed");
 }
+
+const MAX_DOCUMENT_SIZE_BYTES = 10 * 1024 * 1024;
+const ALLOWED_DOCUMENT_MIME_TYPES = new Set([
+  "application/pdf",
+  "image/jpeg",
+  "image/png"
+]);
 
 function inferMimeType(fileName: string, fileType?: string) {
   if (fileType && fileType !== "application/octet-stream") {
-    return fileType;
+    const normalized = fileType.toLowerCase();
+    if (ALLOWED_DOCUMENT_MIME_TYPES.has(normalized)) {
+      return normalized;
+    }
   }
 
   const lower = fileName.toLowerCase();
   if (lower.endsWith(".pdf")) return "application/pdf";
   if (lower.endsWith(".png")) return "image/png";
-  if (lower.endsWith(".webp")) return "image/webp";
-  if (lower.endsWith(".heic")) return "image/heic";
-  if (lower.endsWith(".heif")) return "image/heif";
-  return "image/jpeg";
+  if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
+  return "";
+}
+
+function validateUploadFile(file: File) {
+  const fileType = inferMimeType(file.name, file.type);
+  if (!ALLOWED_DOCUMENT_MIME_TYPES.has(fileType)) {
+    return {
+      fileType: null as string | null,
+      error: "Unsupported file type. Only PDF, JPG, JPEG, and PNG are allowed."
+    };
+  }
+  if (file.size > MAX_DOCUMENT_SIZE_BYTES) {
+    return {
+      fileType: null as string | null,
+      error: "File size must be 10 MB or smaller."
+    };
+  }
+  return {
+    fileType,
+    error: null as string | null
+  };
 }
 
 const STATUS_OPTIONS: Array<{ value: ReviewStatus; label: string }> = [
@@ -120,7 +147,7 @@ export default function DocumentsReviewPage() {
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [reviewNotes, setReviewNotes] = useState("");
   const [actionLoading, setActionLoading] = useState<
-    "verify" | "request_reupload" | "save_note" | null
+    "verify" | "request_reupload" | "save_note" | "delete" | null
   >(null);
   const [actionMessage, setActionMessage] = useState<{
     type: "success" | "error";
@@ -278,6 +305,40 @@ export default function DocumentsReviewPage() {
     }
   };
 
+  const deleteDocument = async () => {
+    if (!selectedDocument) return;
+
+    const confirmed = window.confirm(
+      `Delete document "${selectedDocument.fileName}"? This action cannot be undone.`
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    setActionMessage(null);
+    setActionLoading("delete");
+    try {
+      try {
+        await api.post(`/api/documents/${selectedDocument.id}/delete`);
+      } catch (error) {
+        const status = (error as { response?: { status?: number } })?.response?.status;
+        if (status !== 404) {
+          throw error;
+        }
+        await api.delete(`/api/documents/${selectedDocument.id}`);
+      }
+      setActionMessage({ type: "success", text: "Document deleted." });
+      setReviewNotes("");
+      setPreviewUrl(null);
+      setSelectedDocumentId(null);
+      await mutate();
+    } catch (error) {
+      setActionMessage({ type: "error", text: extractApiMessage(error) });
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
   const submitUpload = async () => {
     if (!canUploadDocuments) return;
     const leadIdentifier = uploadLeadId.trim();
@@ -325,7 +386,12 @@ export default function DocumentsReviewPage() {
       return match.id;
     };
 
-    const fileType = inferMimeType(uploadFile.name, uploadFile.type);
+    const validation = validateUploadFile(uploadFile);
+    if (validation.error || !validation.fileType) {
+      setUploadMessage({ type: "error", text: validation.error ?? "Invalid file selected." });
+      return;
+    }
+    const fileType = validation.fileType;
     setUploadSubmitting(true);
     setUploadMessage(null);
     try {
@@ -339,8 +405,10 @@ export default function DocumentsReviewPage() {
       });
 
       const uploadUrl = presignResponse.data?.data?.uploadUrl as string | undefined;
-      const s3Key = presignResponse.data?.data?.s3Key as string | undefined;
-      if (!uploadUrl || !s3Key) {
+      const storagePath =
+        (presignResponse.data?.data?.storagePath as string | undefined) ??
+        (presignResponse.data?.data?.s3Key as string | undefined);
+      if (!uploadUrl || !storagePath) {
         throw new Error("Upload URL generation failed.");
       }
 
@@ -357,7 +425,8 @@ export default function DocumentsReviewPage() {
 
       await api.post(`/api/leads/${resolvedLeadId}/documents/complete`, {
         category: categoryValue,
-        s3Key,
+        storagePath,
+        s3Key: storagePath,
         fileName: uploadFile.name,
         fileType,
         fileSize: uploadFile.size
@@ -398,7 +467,16 @@ export default function DocumentsReviewPage() {
       return <iframe title="Document preview" src={previewUrl} className="h-[360px] w-full rounded border border-slate-200 sm:h-[520px]" />;
     }
     if (selectedDocument.fileType.startsWith("image/")) {
-      return <iframe title="Image preview" src={previewUrl} className="h-[360px] w-full rounded border border-slate-200 sm:h-[520px]" />;
+      return (
+        <div className="flex h-[360px] w-full items-center justify-center overflow-hidden rounded border border-slate-200 bg-slate-50 sm:h-[520px]">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={previewUrl}
+            alt={selectedDocument.fileName || "Image preview"}
+            className="h-full w-full object-contain"
+          />
+        </div>
+      );
     }
     return (
       <div className="rounded border border-slate-200 p-4 text-sm text-slate-600">
@@ -428,7 +506,7 @@ export default function DocumentsReviewPage() {
             <input
               key={uploadInputKey}
               type="file"
-              accept=".pdf,.jpg,.jpeg,.png,.webp,.heic,.heif"
+              accept=".pdf,.jpg,.jpeg,.png"
               onChange={(event) => setUploadFile(event.target.files?.[0] ?? null)}
               className="rounded-md border border-slate-300 px-3 py-2 text-sm"
             />
@@ -675,6 +753,13 @@ export default function DocumentsReviewPage() {
                   className="rounded-md border border-slate-300 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
                 >
                   Download
+                </button>
+                <button
+                  onClick={() => void deleteDocument()}
+                  disabled={actionLoading !== null}
+                  className="rounded-md border border-rose-300 px-3 py-2 text-sm font-medium text-rose-700 disabled:opacity-50"
+                >
+                  {actionLoading === "delete" ? "Deleting..." : "Delete"}
                 </button>
               </div>
             </div>

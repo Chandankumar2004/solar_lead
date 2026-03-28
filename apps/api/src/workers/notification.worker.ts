@@ -53,10 +53,11 @@ const IN_APP_JOB = "in_app_notification";
 const CUSTOMER_JOB = "customer_notification";
 
 const queueName = env.BULL_NOTIFICATION_QUEUE;
-const attempts = Math.max(1, env.REDIS_MAX_RETRIES);
+const customerAttempts = Math.max(1, Math.min(3, env.REDIS_MAX_RETRIES));
+const inAppAttempts = Math.max(1, Math.min(3, env.REDIS_MAX_RETRIES));
 
 const defaultJobOptions = {
-  attempts,
+  attempts: customerAttempts,
   backoff: {
     type: "exponential",
     delay: 5_000
@@ -90,7 +91,7 @@ function resolveMaxAttempts(job: JobLike) {
   if (typeof job.opts.attempts === "number" && job.opts.attempts > 0) {
     return job.opts.attempts;
   }
-  return attempts;
+  return customerAttempts;
 }
 
 function ensureWorkerStarted() {
@@ -157,7 +158,7 @@ export async function enqueueInAppNotificationJob(payload: InAppNotificationJobP
 
   try {
     await notificationQueue.add(IN_APP_JOB, payload, {
-      attempts: Math.max(1, Math.min(3, attempts)),
+      attempts: inAppAttempts,
       backoff: {
         type: "exponential",
         delay: 2_000
@@ -181,7 +182,7 @@ export async function enqueueCustomerNotificationJob(
 
   try {
     await notificationQueue.add(CUSTOMER_JOB, payload, {
-      attempts,
+      attempts: customerAttempts,
       backoff: {
         type: "exponential",
         delay: 5_000

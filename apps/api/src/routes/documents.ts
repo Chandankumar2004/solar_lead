@@ -1,19 +1,23 @@
 import { DocumentReviewStatus, Prisma } from "@prisma/client";
-import { Router } from "express";
+import { Request, Response, Router } from "express";
 import { z } from "zod";
 import { ok } from "../lib/http.js";
 import { AppError } from "../lib/errors.js";
 import { prisma } from "../lib/prisma.js";
+import { env } from "../config/env.js";
 import { allowRoles } from "../middleware/rbac.js";
 import { validateBody, validateParams, validateQuery } from "../middleware/validate.js";
 import { createAuditLog, requestIp } from "../services/audit-log.service.js";
 import { notifyUsers } from "../services/notification.service.js";
-import { createDocumentDownloadUrl } from "../services/storage/supabaseStorage.js";
+import {
+  createDocumentDownloadUrl,
+  removeDocumentObject
+} from "../services/storage/supabaseStorage.js";
 import { scopeLeadWhere } from "../services/lead-access.service.js";
 
 export const documentsRouter = Router();
 
-const PRESIGNED_URL_TTL_SECONDS = 300;
+const DOCUMENT_SIGNED_URL_EXPIRES_SECONDS = env.DOCUMENT_SIGNED_URL_EXPIRES_SECONDS;
 
 const documentIdParamSchema = z.object({
   id: z.string().uuid()
@@ -358,21 +362,29 @@ documentsRouter.post(
         body.action === "request_reupload"
           ? `Please re-upload document ${updated.fileName} for lead ${updated.lead.externalId}.`
           : `Document ${updated.fileName} for lead ${updated.lead.externalId} was rejected.`;
-      await notifyUsers(
-        [updated.lead.assignedExecutiveId],
-        notificationTitle,
-        notificationMessage,
-        {
-          type: "DOCUMENT_REJECTED",
-          leadId: updated.leadId,
-          entityType: "document",
-          entityId: updated.id,
-          metadata: {
-            reviewNotes: body.notes,
-            reviewAction: body.action
+      try {
+        await notifyUsers(
+          [updated.lead.assignedExecutiveId],
+          notificationTitle,
+          notificationMessage,
+          {
+            type: "DOCUMENT_REJECTED",
+            leadId: updated.leadId,
+            entityType: "document",
+            entityId: updated.id,
+            metadata: {
+              reviewAction: body.action,
+              externalId: updated.lead.externalId
+            }
           }
-        }
-      );
+        );
+      } catch (error) {
+        console.error("document_rejection_notification_failed", {
+          documentId: updated.id,
+          leadId: updated.leadId,
+          error
+        });
+      }
     }
 
     return ok(res, updated, `Document ${actionMessage}`);
@@ -453,6 +465,121 @@ documentsRouter.post(
   }
 );
 
+async function handleDocumentDelete(req: Request, res: Response) {
+  const { id } = req.params as z.infer<typeof documentIdParamSchema>;
+
+  const existing = await prisma.document.findUnique({
+    where: { id },
+    select: {
+      id: true,
+      leadId: true,
+      category: true,
+      version: true,
+      isLatest: true,
+      fileName: true,
+      s3Key: true
+    }
+  });
+  if (!existing) {
+    throw new AppError(404, "NOT_FOUND", "Document not found");
+  }
+
+  if (req.user!.role === "MANAGER") {
+    const accessibleLead = await prisma.lead.findFirst({
+      where: {
+        AND: [{ id: existing.leadId }, managerDistrictLeadScope(req.user!.id)]
+      },
+      select: { id: true }
+    });
+    if (!accessibleLead) {
+      throw new AppError(404, "NOT_FOUND", "Document not found");
+    }
+  } else if (req.user!.role !== "SUPER_ADMIN" && req.user!.role !== "ADMIN") {
+    const accessibleLead = await prisma.lead.findFirst({
+      where: scopeLeadWhere(req.user!, { id: existing.leadId }),
+      select: { id: true }
+    });
+    if (!accessibleLead) {
+      throw new AppError(404, "NOT_FOUND", "Document not found");
+    }
+  }
+
+  await prisma.$transaction(async (tx) => {
+    await tx.document.delete({
+      where: { id: existing.id }
+    });
+
+    if (existing.isLatest) {
+      const previousVersion = await tx.document.findFirst({
+        where: {
+          leadId: existing.leadId,
+          category: existing.category
+        },
+        orderBy: [{ version: "desc" }, { createdAt: "desc" }]
+      });
+
+      if (previousVersion) {
+        await tx.document.update({
+          where: { id: previousVersion.id },
+          data: { isLatest: true }
+        });
+      }
+    }
+  });
+
+  await createAuditLog({
+    actorUserId: req.user!.id,
+    action: "DOCUMENT_DELETED",
+    entityType: "document",
+    entityId: existing.id,
+    detailsJson: {
+      leadId: existing.leadId,
+      category: existing.category,
+      version: existing.version,
+      fileName: existing.fileName
+    },
+    ipAddress: requestIp(req)
+  });
+
+  try {
+    await removeDocumentObject(existing.s3Key);
+  } catch (error) {
+    console.error("document_storage_delete_failed", {
+      documentId: existing.id,
+      leadId: existing.leadId,
+      storagePath: existing.s3Key,
+      error
+    });
+  }
+
+  return ok(
+    res,
+    {
+      id: existing.id,
+      leadId: existing.leadId
+    },
+    "Document deleted"
+  );
+}
+
+documentsRouter.post(
+  "/:id/delete",
+  allowRoles("SUPER_ADMIN", "ADMIN", "DISTRICT_MANAGER", "FIELD_EXECUTIVE"),
+  validateParams(documentIdParamSchema),
+  async (req, res) => {
+    return handleDocumentDelete(req, res);
+  }
+);
+
+documentsRouter.delete(
+  "/:id",
+  allowRoles("SUPER_ADMIN", "ADMIN", "DISTRICT_MANAGER", "FIELD_EXECUTIVE"),
+  validateParams(documentIdParamSchema),
+  async (req, res) => {
+    return handleDocumentDelete(req, res);
+  }
+);
+
 documentsRouter.get(
   "/:id/download-url",
   allowRoles("SUPER_ADMIN", "ADMIN", "DISTRICT_MANAGER", "FIELD_EXECUTIVE"),
@@ -495,7 +622,7 @@ documentsRouter.get(
 
     const downloadUrl = await createDocumentDownloadUrl(
       document.s3Key,
-      PRESIGNED_URL_TTL_SECONDS
+      DOCUMENT_SIGNED_URL_EXPIRES_SECONDS
     );
 
     return ok(
@@ -506,7 +633,7 @@ documentsRouter.get(
         fileName: document.fileName,
         fileType: document.fileType,
         downloadUrl,
-        expiresInSeconds: PRESIGNED_URL_TTL_SECONDS
+        expiresInSeconds: DOCUMENT_SIGNED_URL_EXPIRES_SECONDS
       },
       "Document download URL generated"
     );

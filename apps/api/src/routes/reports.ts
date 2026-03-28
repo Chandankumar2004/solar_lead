@@ -851,7 +851,7 @@ reportsRouter.get(
       res.setHeader("Content-Type", "text/csv; charset=utf-8");
       res.setHeader(
         "Content-Disposition",
-        `attachment; filename=\"${query.report}-${fileDate}.csv\"`
+        `attachment; filename="${query.report}-${fileDate}.csv"`
       );
       return res.status(200).send(csv);
     }
@@ -860,7 +860,7 @@ reportsRouter.get(
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader(
       "Content-Disposition",
-      `attachment; filename=\"${query.report}-${fileDate}.pdf\"`
+      `attachment; filename="${query.report}-${fileDate}.pdf"`
     );
     return res.status(200).send(pdf);
   }

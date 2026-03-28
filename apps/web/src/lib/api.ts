@@ -22,6 +22,15 @@ function isRenderHostedUrl(raw: string) {
   }
 }
 
+function isRemoteApiUrl(raw: string) {
+  try {
+    const parsed = new URL(raw);
+    return !isLocalDevHost(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
 const configuredApiBaseUrl = normalizeBaseUrl(
   process.env.NEXT_PUBLIC_API_BASE_URL ?? process.env.NEXT_PUBLIC_API_URL
 );
@@ -30,14 +39,17 @@ const fallbackApiBaseUrl =
   process.env.NODE_ENV === "production"
     ? hostedFallbackApiBaseUrl
     : "http://localhost:4000";
+const allowRemoteApiInLocalDev =
+  (process.env.NEXT_PUBLIC_ALLOW_REMOTE_API_IN_LOCAL_DEV ?? "").trim().toLowerCase() === "true";
 
 const runningLocallyInBrowser =
   typeof window !== "undefined" && isLocalDevHost(window.location.hostname);
 const shouldUseLocalApiForDev =
   process.env.NODE_ENV !== "production" &&
   runningLocallyInBrowser &&
+  !allowRemoteApiInLocalDev &&
   Boolean(configuredApiBaseUrl) &&
-  isRenderHostedUrl(configuredApiBaseUrl);
+  (isRenderHostedUrl(configuredApiBaseUrl) || isRemoteApiUrl(configuredApiBaseUrl));
 
 const apiBaseUrl = shouldUseLocalApiForDev
   ? "http://localhost:4000"

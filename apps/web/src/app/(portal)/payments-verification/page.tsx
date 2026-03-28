@@ -143,6 +143,13 @@ export default function PaymentsVerificationPage() {
 
   const submitAction = async (action: "verify" | "reject") => {
     if (!selectedPayment) return;
+    if (selectedPayment.method !== "QR_UTR") {
+      setActionMessage({
+        type: "error",
+        text: "UPI gateway payments are verified automatically via webhook and cannot be reviewed manually."
+      });
+      return;
+    }
     if (reviewNote.trim().length < 3) {
       setActionMessage({
         type: "error",
@@ -367,24 +374,38 @@ export default function PaymentsVerificationPage() {
                   Collected by: {selectedPayment.collectedByUser?.fullName ?? "-"}
                 </p>
                 <p className="text-xs text-slate-500">Status: {selectedPayment.status}</p>
+                {selectedPayment.method !== "QR_UTR" ? (
+                  <p className="mt-1 text-xs text-amber-700">
+                    Manual review disabled for gateway payments; status is webhook-driven.
+                  </p>
+                ) : null}
               </div>
               <textarea
                 value={reviewNote}
                 onChange={(event) => setReviewNote(event.target.value)}
                 placeholder="Review note (required for verify/reject)"
                 className="min-h-28 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                disabled={selectedPayment.method !== "QR_UTR"}
               />
                 <div className="flex flex-wrap items-center gap-2">
                 <button
                   onClick={() => void submitAction("verify")}
-                  disabled={actionLoading !== null || selectedPayment.status !== "PENDING"}
+                  disabled={
+                    actionLoading !== null ||
+                    selectedPayment.status !== "PENDING" ||
+                    selectedPayment.method !== "QR_UTR"
+                  }
                   className="rounded-md border border-emerald-300 px-3 py-2 text-sm font-medium text-emerald-700 disabled:opacity-50"
                 >
                   {actionLoading === "verify" ? "Verifying..." : "Verify"}
                 </button>
                 <button
                   onClick={() => void submitAction("reject")}
-                  disabled={actionLoading !== null || selectedPayment.status !== "PENDING"}
+                  disabled={
+                    actionLoading !== null ||
+                    selectedPayment.status !== "PENDING" ||
+                    selectedPayment.method !== "QR_UTR"
+                  }
                   className="rounded-md border border-rose-300 px-3 py-2 text-sm font-medium text-rose-700 disabled:opacity-50"
                 >
                   {actionLoading === "reject" ? "Rejecting..." : "Reject"}

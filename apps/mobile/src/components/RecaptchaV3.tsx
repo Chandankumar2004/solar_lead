@@ -1,6 +1,6 @@
-import React, { useMemo } from "react";
-import { View } from "react-native";
-import { WebView } from "react-native-webview";
+import React, { useEffect, useMemo } from "react";
+import { NativeModules, View } from "react-native";
+import type { WebViewMessageEvent, WebViewProps } from "react-native-webview";
 
 type RecaptchaV3Props = {
   siteKey: string;
@@ -10,6 +10,8 @@ type RecaptchaV3Props = {
   onError: (message: string) => void;
 };
 
+type WebViewComponentType = React.ComponentType<WebViewProps>;
+
 export function RecaptchaV3({
   siteKey,
   action,
@@ -17,6 +19,31 @@ export function RecaptchaV3({
   onToken,
   onError
 }: RecaptchaV3Props) {
+  const WebViewComponent = useMemo(() => {
+    if (!NativeModules?.RNCWebViewModule) {
+      return null;
+    }
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const moduleValue = require("react-native-webview") as {
+        WebView?: WebViewComponentType;
+      };
+      return moduleValue.WebView ?? null;
+    } catch {
+      return null;
+    }
+  }, [requestId]);
+
+  useEffect(() => {
+    if (!WebViewComponent) {
+      onError("reCAPTCHA requires a native dev build. Open the app in development build, not Expo Go.");
+    }
+  }, [WebViewComponent, onError, requestId]);
+
+  if (!WebViewComponent) {
+    return null;
+  }
+
   const html = useMemo(
     () => `<!doctype html>
 <html>
@@ -49,12 +76,12 @@ export function RecaptchaV3({
 
   return (
     <View style={{ width: 0, height: 0, opacity: 0 }}>
-      <WebView
+      <WebViewComponent
         key={requestId}
         originWhitelist={["*"]}
         javaScriptEnabled
         source={{ html }}
-        onMessage={(event) => {
+        onMessage={(event: WebViewMessageEvent) => {
           try {
             const data = JSON.parse(event.nativeEvent.data || "{}") as {
               type?: string;
@@ -65,7 +92,7 @@ export function RecaptchaV3({
             } else {
               onError(typeof data.payload === "string" ? data.payload : "reCAPTCHA failed");
             }
-          } catch (err) {
+          } catch {
             onError("reCAPTCHA response could not be parsed.");
           }
         }}

@@ -5,6 +5,7 @@ import { usePreferencesStore } from "../store/preferences-store";
 import { useQueueStore } from "../store/queue-store";
 import { AppButton, AppScreen, Badge, Card, SectionTitle, useAppPalette } from "../ui/primitives";
 import { spacing } from "../ui/theme";
+import { useMobileI18n } from "../i18n";
 
 export function ProfileScreen() {
   const colors = useAppPalette();
@@ -15,6 +16,9 @@ export function ProfileScreen() {
   const logout = useAuthStore((s) => s.logout);
   const themeMode = usePreferencesStore((s) => s.themeMode);
   const setThemeMode = usePreferencesStore((s) => s.setThemeMode);
+  const language = usePreferencesStore((s) => s.language);
+  const setLanguage = usePreferencesStore((s) => s.setLanguage);
+  const { t } = useMobileI18n();
   const queueItems = useQueueStore((s) => s.items);
   const flushQueue = useQueueStore((s) => s.flush);
   const [syncingQueue, setSyncingQueue] = useState(false);
@@ -47,11 +51,13 @@ export function ProfileScreen() {
   return (
     <AppScreen>
       <Card>
-        <SectionTitle title="Profile" subtitle="Account and device preferences" />
+        <SectionTitle title={t("profile.title")} subtitle={t("profile.subtitle")} />
       </Card>
 
       <Card style={styles.profileCard}>
-        <Text style={[styles.name, { color: colors.text }]}>{user?.fullName || "Field User"}</Text>
+        <Text style={[styles.name, { color: colors.text }]}>
+          {user?.fullName || t("profile.fieldUser")}
+        </Text>
         <Text style={[styles.line, { color: colors.textMuted }]}>{user?.email}</Text>
         <View style={styles.row}>
           <Badge label={user?.roleLabel ?? user?.role ?? "-"} tone="info" />
@@ -65,28 +71,28 @@ export function ProfileScreen() {
       {scopedQueueItems.length > 0 ? (
         <Card style={{ gap: spacing.sm }}>
           <SectionTitle
-            title="Offline Sync Queue"
-            subtitle="Pending actions waiting to sync"
+            title={t("profile.offlineQueueTitle")}
+            subtitle={t("profile.offlineQueueSubtitle")}
           />
           <Text style={{ color: colors.text }}>
-            Pending items: {scopedQueueItems.length}
+            {t("profile.pendingItems", { count: scopedQueueItems.length })}
           </Text>
           {failedQueueItems.length > 0 ? (
             <Text style={{ color: colors.warning, fontWeight: "700" }}>
-              Failed sync attempts: {failedQueueItems.length}
+              {t("profile.failedAttempts", { count: failedQueueItems.length })}
             </Text>
           ) : (
             <Text style={{ color: colors.textMuted }}>
-              All queued items are ready to sync when online.
+              {t("profile.queueReady")}
             </Text>
           )}
           {nonRetryableCount > 0 ? (
             <Text style={{ color: colors.danger }}>
-              {nonRetryableCount} item(s) need manual review before retrying.
+              {t("profile.manualReviewNeeded", { count: nonRetryableCount })}
             </Text>
           ) : null}
           <AppButton
-            title={syncingQueue ? "Retrying..." : "Retry Sync Now"}
+            title={syncingQueue ? t("profile.retrying") : t("profile.retryNow")}
             kind="primary"
             onPress={() => void retryQueueSync()}
             disabled={syncingQueue}
@@ -117,9 +123,11 @@ export function ProfileScreen() {
       {hasLoggedInOnce ? (
         <Card style={styles.toggleCard}>
           <View style={{ flex: 1, paddingRight: 12 }}>
-            <Text style={[styles.toggleTitle, { color: colors.text }]}>Biometric Unlock</Text>
+            <Text style={[styles.toggleTitle, { color: colors.text }]}>
+              {t("profile.biometricTitle")}
+            </Text>
             <Text style={[styles.toggleHelp, { color: colors.textMuted }]}>
-              Require fingerprint/face unlock when app is reopened.
+              {t("profile.biometricHelp")}
             </Text>
           </View>
           <Switch
@@ -133,9 +141,37 @@ export function ProfileScreen() {
 
       <Card style={styles.toggleCard}>
         <View style={{ flex: 1, paddingRight: 12 }}>
-          <Text style={[styles.toggleTitle, { color: colors.text }]}>Dark Mode</Text>
+          <Text style={[styles.toggleTitle, { color: colors.text }]}>{t("profile.language")}</Text>
           <Text style={[styles.toggleHelp, { color: colors.textMuted }]}>
-            Switch app theme for low-light usage.
+            {t("profile.languageHelp")}
+          </Text>
+          <View style={{ flexDirection: "row", gap: spacing.xs, marginTop: spacing.xs }}>
+            <AppButton
+              title={t("profile.english")}
+              kind={language === "en" ? "primary" : "ghost"}
+              onPress={() => void setLanguage("en")}
+            />
+            <AppButton
+              title={t("profile.hindi")}
+              kind={language === "hi" ? "primary" : "ghost"}
+              onPress={() => void setLanguage("hi")}
+            />
+            <AppButton
+              title={t("profile.marathi")}
+              kind={language === "mr" ? "primary" : "ghost"}
+              onPress={() => void setLanguage("mr")}
+            />
+          </View>
+        </View>
+      </Card>
+
+      <Card style={styles.toggleCard}>
+        <View style={{ flex: 1, paddingRight: 12 }}>
+          <Text style={[styles.toggleTitle, { color: colors.text }]}>
+            {t("profile.darkModeTitle")}
+          </Text>
+          <Text style={[styles.toggleHelp, { color: colors.textMuted }]}>
+            {t("profile.darkModeHelp")}
           </Text>
         </View>
         <Switch
@@ -146,7 +182,7 @@ export function ProfileScreen() {
         />
       </Card>
 
-      <AppButton title="Logout" kind="danger" onPress={() => void logout()} />
+      <AppButton title={t("profile.logout")} kind="danger" onPress={() => void logout()} />
     </AppScreen>
   );
 }

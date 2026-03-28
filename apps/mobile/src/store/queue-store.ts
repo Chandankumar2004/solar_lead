@@ -4,6 +4,11 @@ import axios from "axios";
 import { api } from "../services/api";
 import { uploadLeadDocument } from "../services/document-upload";
 import type { LeadDocumentUploadFile } from "../services/document-upload";
+import {
+  cleanupPersistentUploadUri,
+  ensurePersistentLeadAttachmentFile,
+  ensurePersistentLeadDocumentFile
+} from "../services/upload-persistence";
 
 const KEY = "offline_queue";
 
@@ -91,6 +96,15 @@ type QueueLeadPayload = {
 
 function shouldRetryQueueItem(error: unknown) {
   if (!axios.isAxiosError(error)) {
+    const message = String((error as { message?: string })?.message ?? "").toLowerCase();
+    if (
+      message.includes("unable to read selected file") ||
+      message.includes("no such file") ||
+      message.includes("cannot find file") ||
+      message.includes("file not found")
+    ) {
+      return false;
+    }
     return true;
   }
 
@@ -196,6 +210,36 @@ function normalizeQueueItem(
   };
 }
 
+async function prepareQueueItemForPersistence(item: QueueItem): Promise<QueueItem> {
+  if (item.kind === "UPLOAD_LEAD_DOCUMENT") {
+    const persistentFile = await ensurePersistentLeadDocumentFile(item.payload.file);
+    return {
+      ...item,
+      payload: {
+        ...item.payload,
+        file: persistentFile
+      }
+    };
+  }
+
+  if (item.kind === "CREATE_LEAD_WITH_ATTACHMENTS") {
+    const persistentAttachments: LeadAttachment[] = [];
+    for (const file of item.payload.attachments) {
+      const persistentFile = await ensurePersistentLeadAttachmentFile(file);
+      persistentAttachments.push(persistentFile);
+    }
+    return {
+      ...item,
+      payload: {
+        ...item.payload,
+        attachments: persistentAttachments
+      }
+    };
+  }
+
+  return item;
+}
+
 export const useQueueStore = create<QueueState>((set, get) => ({
   items: [],
   hydrate: async () => {
@@ -221,7 +265,8 @@ export const useQueueStore = create<QueueState>((set, get) => ({
     }
   },
   enqueue: async (item, options) => {
-    const normalized = normalizeQueueItem(item, options);
+    const preparedItem = await prepareQueueItemForPersistence(item);
+    const normalized = normalizeQueueItem(preparedItem, options);
     const nextBase = [...get().items];
 
     const next =
@@ -284,6 +329,7 @@ export const useQueueStore = create<QueueState>((set, get) => ({
               },
               maxAttempts: 2
             });
+            await cleanupPersistentUploadUri(file.uri);
           }
         } else if (item.kind === "UPLOAD_LEAD_DOCUMENT") {
           await uploadLeadDocument({
@@ -292,6 +338,7 @@ export const useQueueStore = create<QueueState>((set, get) => ({
             file: item.payload.file,
             maxAttempts: 2
           });
+          await cleanupPersistentUploadUri(item.payload.file.uri);
         } else if (item.kind === "UPDATE_LEAD_STATUS") {
           await api.post(`/api/leads/${item.payload.leadId}/transition`, {
             nextStatusId: item.payload.nextStatusId,

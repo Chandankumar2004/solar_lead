@@ -11,8 +11,13 @@ import { validateBody, validateParams, validateQuery } from "../middleware/valid
 import { createAuditLog, requestIp } from "../services/audit-log.service.js";
 import {
   assertValidTransition,
+  getTokenPaymentVerificationPendingStatus,
   getTokenPaymentVerifiedStatus
 } from "../services/lead-status.service.js";
+import {
+  maskUpiIdForLog,
+  sanitizePaymentPayloadForStorage
+} from "../services/payment-security.service.js";
 import {
   notifyUsers,
   queueLeadStatusCustomerNotification,
@@ -24,11 +29,19 @@ export const paymentsRouter = Router();
 
 const merchantDetails = {
   registeredName: env.PAYMENT_REGISTERED_NAME,
+  upiId: env.PAYMENT_UPI_ID?.trim() || null,
+  upiDisplayName: env.PAYMENT_UPI_NAME?.trim() || null,
+  qrImageUrl: env.PAYMENT_QR_IMAGE_URL?.trim() || null,
   cin: env.PAYMENT_CIN || null,
   pan: env.PAYMENT_PAN || null,
   tan: env.PAYMENT_TAN || null,
   gst: env.PAYMENT_GST || null
 };
+
+const TOKEN_PAYMENT_AMOUNT_INR = Number(env.TOKEN_PAYMENT_AMOUNT_INR);
+const TOKEN_PAYMENT_AMOUNT_PAISE = Math.round(TOKEN_PAYMENT_AMOUNT_INR * 100);
+const UPI_ID_REGEX = /^[a-z0-9._-]{2,256}@[a-z][a-z0-9.-]{1,63}$/i;
+const UTR_REGEX = /^[a-z0-9][a-z0-9._/-]{5,119}$/i;
 
 const paymentIdParamSchema = z.object({
   id: z.string().uuid()
@@ -37,7 +50,7 @@ const paymentIdParamSchema = z.object({
 const createQrUtrPaymentSchema = z
   .object({
     leadId: z.string().uuid(),
-    amount: z.coerce.number().positive(),
+    amount: z.coerce.number().positive().optional(),
     utrNumber: z.string().trim().min(6).max(120).optional(),
     utr_number: z.string().trim().min(6).max(120).optional()
   })
@@ -59,7 +72,7 @@ const createQrUtrPaymentSchema = z
 const createPaymentSchema = z
   .object({
     leadId: z.string().uuid(),
-    amount: z.coerce.number().positive(),
+    amount: z.coerce.number().positive().optional(),
     method: z.nativeEnum(PaymentMethod),
     utrNumber: z.string().trim().min(6).max(120).optional(),
     utr_number: z.string().trim().min(6).max(120).optional()
@@ -138,26 +151,29 @@ const listQueueQuerySchema = z
 const gatewayOrderSchema = z
   .object({
     leadId: z.string().uuid(),
-    amount: z.coerce.number().positive(),
+    amount: z.coerce.number().positive().optional(),
+    customerUpiId: z.string().trim().min(5).max(120).optional(),
+    customer_upi_id: z.string().trim().min(5).max(120).optional(),
     currency: z.string().trim().min(3).max(3).default("INR"),
     receipt: z.string().trim().min(1).max(80).optional(),
     notes: z.record(z.string(), z.string()).optional()
   })
   .transform((value) => ({
     ...value,
-    currency: value.currency.toUpperCase()
+    currency: value.currency.toUpperCase(),
+    customerUpiId: (value.customerUpiId ?? value.customer_upi_id)?.trim().toLowerCase()
   }));
 
-type RazorpayOrderResponse = {
+type RazorpayUpiCollectResponse = {
   id: string;
+  entity: string;
   amount: number;
-  amount_due: number;
-  amount_paid: number;
   currency: string;
-  receipt: string | null;
   status: string;
-  notes: Record<string, string>;
-  created_at: number;
+  order_id?: string | null;
+  vpa?: string | null;
+  notes?: Record<string, string>;
+  created_at?: number;
 };
 
 function resolveRazorpayCredentials() {
@@ -175,19 +191,78 @@ function resolveRazorpayCredentials() {
   };
 }
 
-function resolveRazorpayOrderApiUrl() {
+function resolveRazorpayUpiCollectApiUrl() {
   const sanitizedBase = env.RAZORPAY_API_BASE_URL.replace(/\/+$/, "");
   const withVersion = sanitizedBase.endsWith("/v1")
     ? sanitizedBase
     : `${sanitizedBase}/v1`;
-  return `${withVersion}/orders`;
+  const endpoint = env.RAZORPAY_UPI_COLLECT_ENDPOINT.trim();
+  if (/^https?:\/\//i.test(endpoint)) {
+    return endpoint;
+  }
+  if (endpoint.startsWith("/")) {
+    return `${withVersion}${endpoint}`;
+  }
+  return `${withVersion}/${endpoint}`;
 }
 
-async function createRazorpayOrder(input: {
+function normalizeUpiId(upiId: string) {
+  return upiId.trim().toLowerCase();
+}
+
+function assertValidUpiId(upiId: string) {
+  if (!UPI_ID_REGEX.test(upiId)) {
+    throw new AppError(400, "VALIDATION_ERROR", "customerUpiId must be a valid UPI ID");
+  }
+}
+
+function normalizeUtrNumber(utrNumber: string) {
+  return utrNumber.trim().replace(/\s+/g, "").toUpperCase();
+}
+
+function assertValidUtrNumber(utrNumber: string) {
+  if (!UTR_REGEX.test(utrNumber)) {
+    throw new AppError(
+      400,
+      "VALIDATION_ERROR",
+      "utrNumber must be 6-120 characters and contain only letters, numbers, '.', '_', '/', '-'"
+    );
+  }
+}
+
+function assertTokenAmountIsConfigured() {
+  if (!Number.isFinite(TOKEN_PAYMENT_AMOUNT_INR) || TOKEN_PAYMENT_AMOUNT_INR <= 0) {
+    throw new AppError(
+      500,
+      "TOKEN_PAYMENT_AMOUNT_INVALID",
+      "TOKEN_PAYMENT_AMOUNT_INR must be configured as a positive number"
+    );
+  }
+}
+
+function assertClientTokenAmountNotTampered(amount: number | undefined) {
+  if (amount === undefined) {
+    return;
+  }
+  const rounded = Number(amount.toFixed(2));
+  const expected = Number(TOKEN_PAYMENT_AMOUNT_INR.toFixed(2));
+  if (rounded !== expected) {
+    throw new AppError(
+      400,
+      "INVALID_TOKEN_AMOUNT",
+      `Token amount is fixed at INR ${expected.toFixed(2)}`
+    );
+  }
+}
+
+async function createRazorpayUpiCollectRequest(input: {
   amountInPaise: number;
   currency: string;
   receipt: string;
   notes: Record<string, string>;
+  customerUpiId: string;
+  customerPhone?: string | null;
+  customerEmail?: string | null;
 }) {
   const credentials = resolveRazorpayCredentials();
   const authHeader = Buffer.from(
@@ -195,7 +270,7 @@ async function createRazorpayOrder(input: {
     "utf-8"
   ).toString("base64");
 
-  const response = await fetch(resolveRazorpayOrderApiUrl(), {
+  const response = await fetch(resolveRazorpayUpiCollectApiUrl(), {
     method: "POST",
     headers: {
       Authorization: `Basic ${authHeader}`,
@@ -204,8 +279,12 @@ async function createRazorpayOrder(input: {
     body: JSON.stringify({
       amount: input.amountInPaise,
       currency: input.currency,
+      method: "upi",
+      vpa: input.customerUpiId,
       receipt: input.receipt,
-      notes: input.notes
+      notes: input.notes,
+      contact: input.customerPhone ?? undefined,
+      email: input.customerEmail ?? undefined
     })
   });
 
@@ -223,19 +302,19 @@ async function createRazorpayOrder(input: {
         ? String((parsedBody.error as Record<string, unknown>).description ?? "")
         : String(parsedBody?.message ?? "");
     const message =
-      razorpayMessage.trim() || rawBody || "Failed to create Razorpay order";
-    throw new AppError(502, "RAZORPAY_ORDER_CREATE_FAILED", message);
+      razorpayMessage.trim() || rawBody || "Failed to create Razorpay UPI collect request";
+    throw new AppError(502, "RAZORPAY_UPI_COLLECT_CREATE_FAILED", message);
   }
 
   if (!parsedBody || typeof parsedBody.id !== "string") {
     throw new AppError(
       502,
-      "RAZORPAY_ORDER_CREATE_FAILED",
-      "Invalid response from Razorpay order API"
+      "RAZORPAY_UPI_COLLECT_CREATE_FAILED",
+      "Invalid response from Razorpay UPI collect API"
     );
   }
 
-  return parsedBody as unknown as RazorpayOrderResponse;
+  return parsedBody as unknown as RazorpayUpiCollectResponse;
 }
 
 function parseDateBoundary(
@@ -279,6 +358,10 @@ async function assertLeadExists(leadId: string, actor: LeadAccessActor) {
     select: {
       id: true,
       externalId: true,
+      name: true,
+      phone: true,
+      email: true,
+      currentStatusId: true,
       assignedExecutiveId: true,
       assignedManagerId: true
     }
@@ -289,21 +372,191 @@ async function assertLeadExists(leadId: string, actor: LeadAccessActor) {
   return lead;
 }
 
+function assertActorCanInitiateTokenPayment(
+  actor: LeadAccessActor,
+  lead: {
+    assignedExecutiveId: string | null;
+  }
+) {
+  if (actor.role === "EXECUTIVE" && lead.assignedExecutiveId !== actor.id) {
+    throw new AppError(
+      403,
+      "FORBIDDEN",
+      "Only the assigned field executive can initiate token payment for this lead"
+    );
+  }
+}
+
+function assertActorCanSubmitQrUtrPayment(
+  actor: LeadAccessActor,
+  lead: {
+    assignedExecutiveId: string | null;
+  }
+) {
+  if (actor.role !== "EXECUTIVE") {
+    throw new AppError(
+      403,
+      "FORBIDDEN",
+      "Only the assigned field executive can submit QR UTR payment for this lead"
+    );
+  }
+  if (lead.assignedExecutiveId !== actor.id) {
+    throw new AppError(
+      403,
+      "FORBIDDEN",
+      "Only the assigned field executive can submit QR UTR payment for this lead"
+    );
+  }
+}
+
+async function assertNoVerifiedTokenPayment(leadId: string) {
+  const existingVerified = await prisma.payment.findFirst({
+    where: {
+      leadId,
+      status: PaymentStatus.VERIFIED
+    },
+    select: {
+      id: true
+    }
+  });
+
+  if (existingVerified) {
+    throw new AppError(
+      409,
+      "TOKEN_PAYMENT_ALREADY_CONFIRMED",
+      "A successful token payment already exists for this lead"
+    );
+  }
+}
+
+async function assertQrUtrSubmissionAllowed(leadId: string, utrNumber: string) {
+  const [existingPendingForLead, existingDuplicateUtr] = await Promise.all([
+    prisma.payment.findFirst({
+      where: {
+        leadId,
+        method: PaymentMethod.QR_UTR,
+        status: PaymentStatus.PENDING
+      },
+      select: {
+        id: true
+      }
+    }),
+    prisma.payment.findFirst({
+      where: {
+        method: PaymentMethod.QR_UTR,
+        status: {
+          in: [PaymentStatus.PENDING, PaymentStatus.VERIFIED]
+        },
+        utrNumber: {
+          equals: utrNumber,
+          mode: "insensitive"
+        }
+      },
+      select: {
+        id: true,
+        leadId: true,
+        status: true
+      }
+    })
+  ]);
+
+  if (existingPendingForLead) {
+    throw new AppError(
+      409,
+      "PAYMENT_ALREADY_PENDING",
+      "A QR UTR payment is already pending verification for this lead"
+    );
+  }
+
+  if (existingDuplicateUtr) {
+    const duplicateScope =
+      existingDuplicateUtr.leadId === leadId ? "this lead" : "another lead";
+    throw new AppError(
+      409,
+      "DUPLICATE_UTR",
+      `UTR already exists in active payment records for ${duplicateScope}`
+    );
+  }
+}
+
+async function tryAutoTransitionToTokenVerificationPendingStatus(input: {
+  leadId: string;
+  changedByUserId: string;
+  amount: number;
+  utrNumber: string;
+}) {
+  const targetStatus = await getTokenPaymentVerificationPendingStatus();
+  if (!targetStatus) {
+    return;
+  }
+
+  const lead = await prisma.lead.findUnique({
+    where: { id: input.leadId },
+    select: {
+      id: true,
+      currentStatusId: true
+    }
+  });
+  if (!lead) return;
+  if (lead.currentStatusId === targetStatus.id) return;
+
+  const allowed = await assertValidTransition(lead.currentStatusId, targetStatus.id);
+  if (!allowed) return;
+
+  const transitionNotes = [
+    "Auto transition after QR UTR payment submission",
+    `Amount: INR ${input.amount.toFixed(2)}`,
+    `UTR: ${input.utrNumber}`
+  ].join(" | ");
+
+  await prisma.lead.update({
+    where: { id: lead.id },
+    data: {
+      currentStatusId: targetStatus.id,
+      statusUpdatedAt: new Date(),
+      isOverdue: false,
+      overdueAt: null,
+      statusHistory: {
+        create: {
+          fromStatusId: lead.currentStatusId,
+          toStatusId: targetStatus.id,
+          changedByUserId: input.changedByUserId,
+          notes: transitionNotes
+        }
+      }
+    }
+  });
+
+  await queueLeadStatusCustomerNotification({
+    leadId: lead.id,
+    toStatusId: targetStatus.id,
+    changedByUserId: input.changedByUserId,
+    transitionNotes
+  });
+}
+
 async function createPendingQrUtrPayment(input: {
   leadId: string;
-  amount: number;
   utrNumber: string;
   actor: LeadAccessActor;
   actorIpAddress?: string | null;
 }) {
+  assertTokenAmountIsConfigured();
   const lead = await assertLeadExists(input.leadId, input.actor);
+  assertActorCanSubmitQrUtrPayment(input.actor, lead);
+  const normalizedUtrNumber = normalizeUtrNumber(input.utrNumber);
+  assertValidUtrNumber(normalizedUtrNumber);
+  await assertNoVerifiedTokenPayment(input.leadId);
+  await assertQrUtrSubmissionAllowed(input.leadId, normalizedUtrNumber);
+  const tokenAmount = TOKEN_PAYMENT_AMOUNT_INR;
 
   const payment = await prisma.payment.create({
     data: {
       leadId: input.leadId,
-      amount: input.amount,
+      amount: tokenAmount,
       method: "QR_UTR",
-      utrNumber: input.utrNumber,
+      provider: "manual",
+      utrNumber: normalizedUtrNumber,
       status: "PENDING",
       collectedByUserId: input.actor.id
     },
@@ -326,12 +579,37 @@ async function createPendingQrUtrPayment(input: {
     }
   });
 
-  await triggerUtrPendingNotification({
-    paymentId: payment.id,
-    leadId: payment.leadId,
-    amount: payment.amount.toString(),
-    utrNumber: payment.utrNumber
-  });
+  try {
+    await tryAutoTransitionToTokenVerificationPendingStatus({
+      leadId: input.leadId,
+      changedByUserId: input.actor.id,
+      amount: tokenAmount,
+      utrNumber: normalizedUtrNumber
+    });
+  } catch (error) {
+    console.error("token_verification_pending_auto_transition_failed", {
+      leadId: input.leadId,
+      paymentId: payment.id,
+      error
+    });
+  }
+
+  try {
+    await triggerUtrPendingNotification({
+      paymentId: payment.id,
+      leadId: payment.leadId,
+      amount: payment.amount.toString(),
+      utrNumber: payment.utrNumber,
+      submittedByUserId: input.actor.id,
+      submittedByRole: input.actor.role
+    });
+  } catch (error) {
+    console.error("utr_pending_notification_failed", {
+      paymentId: payment.id,
+      leadId: payment.leadId,
+      error
+    });
+  }
 
   await createAuditLog({
     actorUserId: input.actor.id,
@@ -354,18 +632,22 @@ async function createPendingQrUtrPayment(input: {
 
 paymentsRouter.post(
   "/qr-utr",
-  allowRoles("SUPER_ADMIN", "ADMIN", "DISTRICT_MANAGER", "FIELD_EXECUTIVE"),
+  allowRoles("FIELD_EXECUTIVE"),
   validateBody(createQrUtrPaymentSchema),
   async (req, res) => {
     const body = req.body as z.infer<typeof createQrUtrPaymentSchema>;
+    assertClientTokenAmountNotTampered(body.amount);
     const payment = await createPendingQrUtrPayment({
       leadId: body.leadId,
-      amount: body.amount,
       utrNumber: body.utrNumber,
       actor: req.user!,
       actorIpAddress: requestIp(req)
     });
-    return created(res, payment, "QR-UTR payment submitted for verification");
+    return created(
+      res,
+      payment,
+      `QR-UTR payment submitted for verification (INR ${TOKEN_PAYMENT_AMOUNT_INR.toFixed(2)})`
+    );
   }
 );
 
@@ -379,10 +661,11 @@ paymentsRouter.get(
 
 paymentsRouter.post(
   "/",
-  allowRoles("SUPER_ADMIN", "ADMIN", "DISTRICT_MANAGER", "FIELD_EXECUTIVE"),
+  allowRoles("FIELD_EXECUTIVE"),
   validateBody(createPaymentSchema),
   async (req, res) => {
     const body = req.body as z.infer<typeof createPaymentSchema>;
+    assertClientTokenAmountNotTampered(body.amount);
 
     if (body.method !== "QR_UTR") {
       throw new AppError(
@@ -398,7 +681,6 @@ paymentsRouter.post(
 
     const payment = await createPendingQrUtrPayment({
       leadId: body.leadId,
-      amount: body.amount,
       utrNumber: body.utrNumber,
       actor: req.user!,
       actorIpAddress: requestIp(req)
@@ -619,6 +901,13 @@ paymentsRouter.post(
     if (!existing) {
       throw new AppError(404, "NOT_FOUND", "Payment not found");
     }
+    if (existing.method !== PaymentMethod.QR_UTR) {
+      throw new AppError(
+        400,
+        "PAYMENT_METHOD_REVIEW_NOT_ALLOWED",
+        "Only QR UTR payments can be manually verified or rejected from this endpoint"
+      );
+    }
     if (req.user!.role === "MANAGER") {
       const accessibleLead = await prisma.lead.findFirst({
         where: {
@@ -679,8 +968,33 @@ paymentsRouter.post(
     const updatedStatus: PaymentStatus = body.action === "verify" ? "VERIFIED" : "REJECTED";
 
     const result = await prisma.$transaction(async (tx) => {
-      await tx.payment.update({
-        where: { id: existing.id },
+      if (body.action === "verify") {
+        const alreadyVerifiedForLead = await tx.payment.findFirst({
+          where: {
+            leadId: existing.leadId,
+            status: PaymentStatus.VERIFIED,
+            id: {
+              not: existing.id
+            }
+          },
+          select: {
+            id: true
+          }
+        });
+        if (alreadyVerifiedForLead) {
+          throw new AppError(
+            409,
+            "TOKEN_PAYMENT_ALREADY_CONFIRMED",
+            "A successful token payment already exists for this lead"
+          );
+        }
+      }
+
+      const marked = await tx.payment.updateMany({
+        where: {
+          id: existing.id,
+          status: PaymentStatus.PENDING
+        },
         data: {
           status: updatedStatus,
           rejectionReason: body.action === "reject" ? actionNote : null,
@@ -688,6 +1002,13 @@ paymentsRouter.post(
           verifiedAt: new Date()
         }
       });
+      if (marked.count === 0) {
+        throw new AppError(
+          409,
+          "PAYMENT_ALREADY_REVIEWED",
+          "Only pending payments can be reviewed"
+        );
+      }
 
       if (body.action === "verify" && shouldTransitionLead && tokenPaymentVerifiedStatus) {
         const historyNoteParts = [
@@ -700,6 +1021,9 @@ paymentsRouter.post(
           where: { id: existing.leadId },
           data: {
             currentStatusId: tokenPaymentVerifiedStatus.id,
+            statusUpdatedAt: new Date(),
+            isOverdue: false,
+            overdueAt: null,
             statusHistory: {
               create: {
                 fromStatusId: existing.lead.currentStatusId,
@@ -776,30 +1100,45 @@ paymentsRouter.post(
       result.leadTransitioned &&
       tokenPaymentVerifiedStatus
     ) {
-      await queueLeadStatusCustomerNotification({
-        leadId: existing.leadId,
-        toStatusId: tokenPaymentVerifiedStatus.id,
-        changedByUserId: req.user?.id,
-        transitionNotes: actionNote
-      });
+      try {
+        await queueLeadStatusCustomerNotification({
+          leadId: existing.leadId,
+          toStatusId: tokenPaymentVerifiedStatus.id,
+          changedByUserId: req.user?.id,
+          transitionNotes: actionNote
+        });
+      } catch (error) {
+        console.error("payment_verified_customer_notification_failed", {
+          paymentId: existing.id,
+          leadId: existing.leadId,
+          error
+        });
+      }
     }
 
     if (body.action === "reject" && existing.lead.assignedExecutiveId) {
-      const rejectionReasonText = actionNote ? ` Reason: ${actionNote}` : "";
-      await notifyUsers(
-        [existing.lead.assignedExecutiveId],
-        "UTR rejected",
-        `Payment UTR for lead ${existing.lead.externalId} was rejected.${rejectionReasonText}`,
-        {
-          type: "UTR_REJECTED",
-          leadId: existing.leadId,
-          entityType: "payment",
-          entityId: existing.id,
-          metadata: {
-            note: actionNote
+      try {
+        await notifyUsers(
+          [existing.lead.assignedExecutiveId],
+          "UTR rejected",
+          `Payment UTR for lead ${existing.lead.externalId} was rejected. Please submit UTR again.`,
+          {
+            type: "UTR_REJECTED",
+            leadId: existing.leadId,
+            entityType: "payment",
+            entityId: existing.id,
+            metadata: {
+              externalId: existing.lead.externalId
+            }
           }
-        }
-      );
+        );
+      } catch (error) {
+        console.error("utr_rejected_notification_failed", {
+          paymentId: existing.id,
+          leadId: existing.leadId,
+          error
+        });
+      }
     }
 
     return ok(
@@ -820,37 +1159,59 @@ paymentsRouter.post(
   validateBody(gatewayOrderSchema),
   async (req, res) => {
     const body = req.body as z.infer<typeof gatewayOrderSchema>;
+    assertClientTokenAmountNotTampered(body.amount);
+    assertTokenAmountIsConfigured();
     const lead = await assertLeadExists(body.leadId, req.user!);
-    const amountInPaise = Math.round(body.amount * 100);
-    if (!Number.isFinite(amountInPaise) || amountInPaise <= 0) {
-      throw new AppError(400, "VALIDATION_ERROR", "amount must be a valid positive number");
+    assertActorCanInitiateTokenPayment(req.user!, lead);
+    await assertNoVerifiedTokenPayment(lead.id);
+
+    if (body.currency !== "INR") {
+      throw new AppError(
+        400,
+        "VALIDATION_ERROR",
+        "Only INR is supported for token payment collection"
+      );
     }
+    const customerUpiId = normalizeUpiId(body.customerUpiId ?? "");
+    if (!customerUpiId) {
+      throw new AppError(400, "VALIDATION_ERROR", "customerUpiId is required");
+    }
+    assertValidUpiId(customerUpiId);
 
     const receipt =
       body.receipt ??
-      `lead-${lead.externalId.slice(0, 8)}-${Date.now().toString().slice(-8)}`;
+      `token-${lead.externalId.slice(0, 8)}-${Date.now().toString().slice(-8)}`;
 
-    const orderNotes = {
+    const requestNotes = {
       leadId: lead.id,
       leadExternalId: lead.externalId,
       requestedByUserId: req.user!.id,
+      customerUpiId,
       ...(body.notes ?? {})
     };
 
-    const order = await createRazorpayOrder({
-      amountInPaise,
-      currency: body.currency,
+    const collectRequest = await createRazorpayUpiCollectRequest({
+      amountInPaise: TOKEN_PAYMENT_AMOUNT_PAISE,
+      currency: "INR",
       receipt,
-      notes: orderNotes
+      notes: requestNotes,
+      customerUpiId,
+      customerPhone: lead.phone,
+      customerEmail: lead.email
     });
 
     const payment = await prisma.payment.create({
       data: {
         leadId: lead.id,
-        amount: body.amount,
+        amount: TOKEN_PAYMENT_AMOUNT_INR,
         method: PaymentMethod.UPI_GATEWAY,
+        provider: "razorpay",
+        upiId: customerUpiId,
         status: PaymentStatus.PENDING,
-        gatewayOrderId: order.id,
+        gatewayOrderId: collectRequest.order_id ?? null,
+        gatewayRequestId: collectRequest.id,
+        gatewayStatus: collectRequest.status ?? null,
+        providerPayload: sanitizePaymentPayloadForStorage(collectRequest),
         collectedByUserId: req.user!.id
       },
       include: {
@@ -866,16 +1227,18 @@ paymentsRouter.post(
 
     await createAuditLog({
       actorUserId: req.user?.id,
-      action: "PAYMENT_GATEWAY_ORDER_CREATED",
-      entityType: "payment_gateway_order",
-      entityId: order.id,
+      action: "PAYMENT_UPI_COLLECT_REQUEST_CREATED",
+      entityType: "payment_gateway_request",
+      entityId: collectRequest.id,
       detailsJson: {
         provider: "razorpay",
         leadId: lead.id,
         externalId: lead.externalId,
-        amount: body.amount,
-        currency: body.currency,
+        amount: TOKEN_PAYMENT_AMOUNT_INR,
+        currency: "INR",
         receipt,
+        customerUpiId: maskUpiIdForLog(customerUpiId),
+        gatewayOrderId: collectRequest.order_id ?? null,
         paymentId: payment.id
       },
       ipAddress: requestIp(req)
@@ -888,15 +1251,19 @@ paymentsRouter.post(
         mode: "live",
         keyId: env.RAZORPAY_KEY_ID,
         merchant: merchantDetails,
-        order: {
-          id: order.id,
-          amount: order.amount / 100,
-          amountPaise: order.amount,
-          currency: order.currency,
-          status: order.status,
-          receipt: order.receipt,
-          notes: order.notes,
-          createdAt: new Date(order.created_at * 1000).toISOString()
+        amountInr: TOKEN_PAYMENT_AMOUNT_INR,
+        orderId: collectRequest.order_id ?? null,
+        requestId: collectRequest.id,
+        collectRequest: {
+          id: collectRequest.id,
+          orderId: collectRequest.order_id ?? null,
+          status: collectRequest.status,
+          upiId: collectRequest.vpa ?? customerUpiId,
+          amount: TOKEN_PAYMENT_AMOUNT_INR,
+          currency: "INR",
+          createdAt: collectRequest.created_at
+            ? new Date(collectRequest.created_at * 1000).toISOString()
+            : new Date().toISOString()
         },
         payment: {
           id: payment.id,
@@ -905,10 +1272,13 @@ paymentsRouter.post(
           amount: payment.amount,
           method: payment.method,
           status: payment.status,
-          gatewayOrderId: payment.gatewayOrderId
+          provider: payment.provider,
+          upiId: payment.upiId,
+          gatewayOrderId: payment.gatewayOrderId,
+          gatewayRequestId: payment.gatewayRequestId
         }
       },
-      "Razorpay order created"
+      "Razorpay UPI collect request created"
     );
   }
 );
@@ -919,7 +1289,11 @@ paymentsRouter.post(
   validateBody(gatewayOrderSchema),
   async (req, res) => {
     const body = req.body as z.infer<typeof gatewayOrderSchema>;
+    assertClientTokenAmountNotTampered(body.amount);
+    assertTokenAmountIsConfigured();
     const lead = await assertLeadExists(body.leadId, req.user!);
+    assertActorCanInitiateTokenPayment(req.user!, lead);
+    await assertNoVerifiedTokenPayment(lead.id);
     const orderId = `payu_${randomUUID().replace(/-/g, "")}`;
 
     await createAuditLog({
@@ -931,7 +1305,7 @@ paymentsRouter.post(
         provider: "payu",
         leadId: lead.id,
         externalId: lead.externalId,
-        amount: body.amount,
+        amount: TOKEN_PAYMENT_AMOUNT_INR,
         currency: body.currency,
         receipt: body.receipt ?? null
       },
@@ -947,7 +1321,7 @@ paymentsRouter.post(
         orderId,
         leadId: lead.id,
         externalId: lead.externalId,
-        amount: body.amount,
+        amount: TOKEN_PAYMENT_AMOUNT_INR,
         currency: body.currency,
         receipt: body.receipt ?? `lead-${lead.externalId}`,
         notes: body.notes ?? {},

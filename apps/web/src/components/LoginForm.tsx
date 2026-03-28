@@ -11,6 +11,12 @@ import { api, getApiErrorMessage } from "@/lib/api";
 import { resolveRecaptchaSiteKey } from "@/lib/recaptcha";
 import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/lib/auth-store";
+import { useWebI18n } from "@/lib/i18n/provider";
+import {
+  WEB_DEFAULT_LANGUAGE,
+  WEB_LANGUAGE_OPTIONS,
+  WebLanguage
+} from "@/lib/i18n/translations";
 
 type LoginValues = z.infer<typeof loginSchema>;
 
@@ -47,6 +53,7 @@ export function LoginForm() {
   const [recaptchaScriptFailed, setRecaptchaScriptFailed] = useState(false);
   const router = useRouter();
   const setUser = useAuthStore((s) => s.setUser);
+  const { language, setLanguage, t } = useWebI18n();
   const rawRecaptchaSiteKey =
     process.env.NEXT_PUBLIC_RECAPTCHA_SITE_KEY ??
     process.env.NEXT_PUBLIC_GOOGLE_RECAPTCHA_SITE_KEY ??
@@ -149,12 +156,12 @@ export function LoginForm() {
     const handleLoginSuccess = async (loginResponse: Awaited<ReturnType<typeof submitLoginRequest>>) => {
       const user = loginResponse.data?.data?.user ?? null;
       if (!user) {
-        setError("Login failed");
+        setError(t("login.failed"));
         return;
       }
       if (user.role === "FIELD_EXECUTIVE") {
         await api.post("/api/auth/logout").catch(() => undefined);
-        setError("This account is restricted to the mobile app and cannot access admin portal.");
+        setError(t("login.mobileOnly"));
         return;
       }
 
@@ -195,11 +202,11 @@ export function LoginForm() {
 
     const finalRecaptchaFailure = extractRecaptchaFailureMeta(lastLoginError);
     if (finalRecaptchaFailure.browserError) {
-      setError("reCAPTCHA failed in your browser. Refresh this page and try again.");
+      setError(t("login.recaptchaBrowserFailed"));
       return;
     }
 
-    setError(getApiErrorMessage(lastLoginError, "Login failed"));
+    setError(getApiErrorMessage(lastLoginError, t("login.failed")));
   });
 
   return (
@@ -219,9 +226,29 @@ export function LoginForm() {
         />
       ) : null}
       <form onSubmit={onSubmit} className="space-y-4 rounded-xl bg-white p-4 shadow sm:p-6">
-        <h1 className="text-xl font-semibold sm:text-2xl">Admin Login</h1>
+        <div className="flex items-center justify-end gap-2">
+          <label className="text-xs text-slate-500">{t("common.language")}</label>
+          <select
+            value={language}
+            onChange={(event) =>
+              setLanguage(
+                WEB_LANGUAGE_OPTIONS.some((option) => option.value === event.target.value)
+                  ? (event.target.value as WebLanguage)
+                  : WEB_DEFAULT_LANGUAGE
+              )
+            }
+            className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700"
+          >
+            {WEB_LANGUAGE_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </div>
+        <h1 className="text-xl font-semibold sm:text-2xl">{t("login.title")}</h1>
         <div>
-          <label className="mb-1 block text-sm font-medium">Email</label>
+          <label className="mb-1 block text-sm font-medium">{t("login.email")}</label>
           <input
             className="w-full rounded border border-slate-300 px-3 py-2"
             {...register("email")}
@@ -229,7 +256,7 @@ export function LoginForm() {
           {errors.email && <p className="mt-1 text-xs text-red-600">{errors.email.message}</p>}
         </div>
         <div>
-          <label className="mb-1 block text-sm font-medium">Password</label>
+          <label className="mb-1 block text-sm font-medium">{t("login.password")}</label>
           <input
             type="password"
             className="w-full rounded border border-slate-300 px-3 py-2"
@@ -241,7 +268,7 @@ export function LoginForm() {
         </div>
         {recaptchaConfigInvalid ? (
           <p className="text-xs text-amber-700">
-            reCAPTCHA site key is invalid. Set a valid `NEXT_PUBLIC_RECAPTCHA_SITE_KEY`.
+            {t("login.recaptchaInvalid")}
           </p>
         ) : null}
         {error && <p className="text-sm text-red-600">{error}</p>}
@@ -249,7 +276,7 @@ export function LoginForm() {
           disabled={isSubmitting}
           className="w-full rounded bg-brand-600 px-4 py-2 font-medium text-white hover:bg-brand-700"
         >
-          {isSubmitting ? "Signing in..." : "Sign in"}
+          {isSubmitting ? t("login.signingIn") : t("login.signIn")}
         </button>
       </form>
     </>

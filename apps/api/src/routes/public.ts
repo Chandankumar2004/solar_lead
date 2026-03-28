@@ -13,6 +13,12 @@ import {
   countActiveLeadsByPhone,
   submitPublicLeadWithSms
 } from "../services/public-lead-submission.service.js";
+import {
+  applyLeadChannelOptOutByContact,
+  containsStopKeyword,
+  markLeadSmsDndByPhone,
+  unsubscribeFromToken
+} from "../services/customer-communication-preferences.service.js";
 
 export const publicRouter = Router();
 
@@ -101,7 +107,7 @@ const publicLeadSubmissionSchema = z.object({
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["consentGiven"],
-        message: "consent must be accepted"
+        message: "consent for SMS, Email, and WhatsApp communication is required"
       });
     }
   })
@@ -127,6 +133,47 @@ const publicLeadSubmissionSchema = z.object({
 const duplicatePhoneQuerySchema = z.object({
   phone: z.string().trim().regex(INDIAN_MOBILE_REGEX, "phone must be a valid 10-digit Indian mobile number")
 });
+
+const unsubscribeTokenQuerySchema = z.object({
+  token: z.string().trim().min(20)
+});
+
+const unsubscribeTokenBodySchema = z.object({
+  token: z.string().trim().min(20)
+});
+
+const stopOptOutBodySchema = z
+  .object({
+    channel: z.enum(["EMAIL", "WHATSAPP", "SMS"]),
+    email: z.string().trim().email().optional(),
+    phone: z.string().trim().min(6).optional(),
+    message: z.string().trim().max(500).optional(),
+    source: z.string().trim().min(2).max(120).optional(),
+    secret: z.string().trim().optional()
+  })
+  .superRefine((value, ctx) => {
+    if (value.channel === "EMAIL" && !value.email) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["email"],
+        message: "email is required when channel=EMAIL"
+      });
+    }
+    if ((value.channel === "WHATSAPP" || value.channel === "SMS") && !value.phone) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["phone"],
+        message: "phone is required for WHATSAPP/SMS channel"
+      });
+    }
+    if (value.message && !containsStopKeyword(value.message)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["message"],
+        message: "message must contain STOP/UNSUBSCRIBE intent"
+      });
+    }
+  });
 
 function parseBooleanEnv(raw: string | undefined): boolean | null {
   if (typeof raw !== "string") {
@@ -215,6 +262,121 @@ publicRouter.get(
         count
       },
       "Duplicate phone check completed"
+    );
+  }
+);
+
+function assertCommunicationWebhookAuthorized(req: Request, bodySecret?: string) {
+  const configuredSecret = env.COMMUNICATION_WEBHOOK_SECRET?.trim();
+  if (!configuredSecret) {
+    throw new AppError(
+      503,
+      "COMMUNICATION_WEBHOOK_NOT_CONFIGURED",
+      "Communication webhook secret is not configured"
+    );
+  }
+
+  const providedSecret =
+    req.headers["x-communication-webhook-secret"]?.toString().trim() ||
+    bodySecret?.trim() ||
+    "";
+
+  if (providedSecret !== configuredSecret) {
+    throw new AppError(401, "UNAUTHORIZED", "Invalid communication webhook secret");
+  }
+}
+
+publicRouter.get(
+  "/communications/unsubscribe",
+  validateQuery(unsubscribeTokenQuerySchema),
+  async (req: Request, res: Response) => {
+    const { token } = req.query as unknown as z.infer<typeof unsubscribeTokenQuerySchema>;
+    const updated = await unsubscribeFromToken({
+      token,
+      ipAddress: requestIp(req)
+    });
+
+    return ok(
+      res,
+      {
+        leadId: updated.id,
+        emailOptOut: updated.emailOptOut,
+        whatsappOptOut: updated.whatsappOptOut,
+        optOutTimestamp: updated.optOutTimestamp,
+        optOutSource: updated.optOutSource
+      },
+      "Communication preferences updated"
+    );
+  }
+);
+
+publicRouter.post(
+  "/communications/unsubscribe",
+  validateBody(unsubscribeTokenBodySchema),
+  async (req: Request, res: Response) => {
+    const { token } = req.body as z.infer<typeof unsubscribeTokenBodySchema>;
+    const updated = await unsubscribeFromToken({
+      token,
+      ipAddress: requestIp(req)
+    });
+
+    return ok(
+      res,
+      {
+        leadId: updated.id,
+        emailOptOut: updated.emailOptOut,
+        whatsappOptOut: updated.whatsappOptOut,
+        optOutTimestamp: updated.optOutTimestamp,
+        optOutSource: updated.optOutSource
+      },
+      "Communication preferences updated"
+    );
+  }
+);
+
+publicRouter.post(
+  "/communications/stop",
+  validateBody(stopOptOutBodySchema),
+  async (req: Request, res: Response) => {
+    const body = req.body as z.infer<typeof stopOptOutBodySchema>;
+    assertCommunicationWebhookAuthorized(req, body.secret);
+
+    if (body.channel === "SMS") {
+      const updated = await markLeadSmsDndByPhone({
+        phone: body.phone!,
+        source: body.source ?? "STOP_WEBHOOK",
+        ipAddress: requestIp(req)
+      });
+      return ok(
+        res,
+        {
+          leadId: updated.id,
+          smsDndStatus: updated.smsDndStatus,
+          optOutTimestamp: updated.optOutTimestamp,
+          optOutSource: updated.optOutSource
+        },
+        "SMS DND preference updated"
+      );
+    }
+
+    const updated = await applyLeadChannelOptOutByContact({
+      channel: body.channel,
+      email: body.email,
+      phone: body.phone,
+      source: body.source ?? "STOP_WEBHOOK",
+      ipAddress: requestIp(req)
+    });
+
+    return ok(
+      res,
+      {
+        leadId: updated.id,
+        emailOptOut: updated.emailOptOut,
+        whatsappOptOut: updated.whatsappOptOut,
+        optOutTimestamp: updated.optOutTimestamp,
+        optOutSource: updated.optOutSource
+      },
+      "Communication preferences updated"
     );
   }
 );

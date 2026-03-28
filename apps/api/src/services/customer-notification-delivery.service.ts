@@ -2,6 +2,7 @@ import { randomUUID } from "crypto";
 import { NotificationChannel } from "@prisma/client";
 import { env } from "../config/env.js";
 import { sendEmail } from "./email.service.js";
+import { buildEmailUnsubscribeUrl } from "./customer-communication-preferences.service.js";
 
 type DeliveryResult = {
   provider: string;
@@ -18,6 +19,7 @@ type EmailInput = {
   to: string;
   subject: string;
   body: string;
+  unsubscribeUrl?: string | null;
   metadata?: Record<string, unknown>;
 };
 
@@ -33,7 +35,7 @@ interface SmsProviderAdapter {
 }
 
 interface EmailProviderAdapter {
-  provider: "console" | "sendgrid" | "ses";
+  provider: "console" | "sendgrid" | "ses" | "resend";
   send(input: EmailInput): Promise<DeliveryResult>;
 }
 
@@ -164,8 +166,8 @@ class ConsoleEmailProvider implements EmailProviderAdapter {
     const email = await sendEmail({
       to: input.to,
       subject: input.subject,
-      text: input.body,
-      html: input.body,
+      text: buildCustomerEmailText(input.body, input.unsubscribeUrl),
+      html: buildCustomerEmailHtml(input.body, input.unsubscribeUrl),
       metadata: input.metadata,
       tags: ["customer_notification"]
     });
@@ -187,8 +189,8 @@ class SendGridEmailProvider implements EmailProviderAdapter {
     const email = await sendEmail({
       to: input.to,
       subject: input.subject,
-      text: input.body,
-      html: input.body,
+      text: buildCustomerEmailText(input.body, input.unsubscribeUrl),
+      html: buildCustomerEmailHtml(input.body, input.unsubscribeUrl),
       metadata: input.metadata,
       tags: ["customer_notification", "sendgrid"]
     });
@@ -210,13 +212,36 @@ class SesEmailProvider implements EmailProviderAdapter {
     const email = await sendEmail({
       to: input.to,
       subject: input.subject,
-      text: input.body,
-      html: input.body,
+      text: buildCustomerEmailText(input.body, input.unsubscribeUrl),
+      html: buildCustomerEmailHtml(input.body, input.unsubscribeUrl),
       metadata: input.metadata,
       tags: ["customer_notification", "ses"]
     });
     if (!email) {
       throw new Error("Email send failed using SES provider");
+    }
+
+    return {
+      provider: email.provider,
+      providerMessageId: email.messageId
+    };
+  }
+}
+
+class ResendEmailProvider implements EmailProviderAdapter {
+  provider: EmailProviderAdapter["provider"] = "resend";
+
+  async send(input: EmailInput) {
+    const email = await sendEmail({
+      to: input.to,
+      subject: input.subject,
+      text: buildCustomerEmailText(input.body, input.unsubscribeUrl),
+      html: buildCustomerEmailHtml(input.body, input.unsubscribeUrl),
+      metadata: input.metadata,
+      tags: ["customer_notification", "resend"]
+    });
+    if (!email) {
+      throw new Error("Email send failed using Resend provider");
     }
 
     return {
@@ -247,19 +272,85 @@ class ConsoleWhatsappProvider implements WhatsappProviderAdapter {
 class TwilioWhatsappProvider implements WhatsappProviderAdapter {
   provider: WhatsappProviderAdapter["provider"] = "twilio";
 
+  private normalizeFrom() {
+    const raw = (env.TWILIO_WHATSAPP_FROM ?? "").trim();
+    if (!raw) {
+      throw new Error("TWILIO_WHATSAPP_FROM is required for Twilio WhatsApp provider");
+    }
+    return raw.startsWith("whatsapp:") ? raw : `whatsapp:${raw}`;
+  }
+
+  private normalizeTo(rawPhone: string) {
+    const trimmed = rawPhone.trim();
+    if (!trimmed) {
+      throw new Error("Invalid WhatsApp recipient");
+    }
+
+    if (trimmed.startsWith("whatsapp:+")) {
+      return trimmed;
+    }
+
+    const digits = trimmed.replace(/\D/g, "");
+    if (!digits) {
+      throw new Error("Invalid WhatsApp recipient");
+    }
+
+    if (digits.length === 10) {
+      return `whatsapp:+91${digits}`;
+    }
+    if (digits.length === 12 && digits.startsWith("91")) {
+      return `whatsapp:+${digits}`;
+    }
+    if (digits.length >= 11 && digits.startsWith("0")) {
+      return `whatsapp:+91${digits.slice(1)}`;
+    }
+    if (digits.startsWith("91")) {
+      return `whatsapp:+${digits}`;
+    }
+    return `whatsapp:+${digits}`;
+  }
+
   async send(input: WhatsappInput) {
     if (!env.TWILIO_ACCOUNT_SID || !env.TWILIO_AUTH_TOKEN || !env.TWILIO_WHATSAPP_FROM) {
       throw new Error("Twilio WhatsApp provider selected but credentials are missing");
     }
 
-    const providerMessageId = `twilio-${randomUUID()}`;
-    // Placeholder integration: wire Twilio SDK/API here.
-    console.info("[whatsapp:twilio-placeholder]", {
-      providerMessageId,
-      from: env.TWILIO_WHATSAPP_FROM,
-      hasAccountSid: Boolean(env.TWILIO_ACCOUNT_SID),
-      to: input.to
+    const endpoint = `https://api.twilio.com/2010-04-01/Accounts/${env.TWILIO_ACCOUNT_SID}/Messages.json`;
+    const authToken = Buffer.from(
+      `${env.TWILIO_ACCOUNT_SID}:${env.TWILIO_AUTH_TOKEN}`,
+      "utf-8"
+    ).toString("base64");
+
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        Authorization: `Basic ${authToken}`,
+        "Content-Type": "application/x-www-form-urlencoded"
+      },
+      body: new URLSearchParams({
+        From: this.normalizeFrom(),
+        To: this.normalizeTo(input.to),
+        Body: input.body
+      }).toString()
     });
+
+    const rawBody = await response.text();
+    let parsedBody: Record<string, unknown> | null = null;
+    try {
+      parsedBody = rawBody ? (JSON.parse(rawBody) as Record<string, unknown>) : null;
+    } catch {
+      parsedBody = null;
+    }
+
+    if (!response.ok) {
+      const message =
+        String(parsedBody?.message ?? parsedBody?.error ?? "").trim() ||
+        rawBody ||
+        "Unknown Twilio error";
+      throw new Error(`Twilio WhatsApp request failed (${response.status}): ${message}`);
+    }
+
+    const providerMessageId = String(parsedBody?.sid ?? `twilio-${randomUUID()}`);
     return {
       provider: this.provider,
       providerMessageId
@@ -322,6 +413,9 @@ function resolveEmailProvider(): EmailProviderAdapter {
   if (env.EMAIL_PROVIDER === "sendgrid") {
     return new SendGridEmailProvider();
   }
+  if (env.EMAIL_PROVIDER === "resend") {
+    return new ResendEmailProvider();
+  }
   if (env.EMAIL_PROVIDER === "ses") {
     return new SesEmailProvider();
   }
@@ -353,6 +447,39 @@ export type CustomerDeliveryInput = {
   metadata?: Record<string, unknown>;
 };
 
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function buildCustomerEmailHtml(body: string, unsubscribeUrl?: string | null) {
+  const brandName = env.CUSTOMER_NOTIFICATION_BRAND_NAME ?? "Solar Admin";
+  const escapedBody = escapeHtml(body).replace(/\r?\n/g, "<br />");
+  const unsubscribeHtml = unsubscribeUrl
+    ? `<p style="margin-top:20px;font-size:12px;color:#6b7280">To manage notifications, <a href="${escapeHtml(unsubscribeUrl)}" target="_blank" rel="noreferrer">unsubscribe here</a>.</p>`
+    : "";
+
+  return `<!doctype html>
+<html>
+  <body style="margin:0;padding:24px;background:#f8fafc;font-family:Arial,sans-serif;color:#0f172a;">
+    <div style="max-width:560px;margin:0 auto;background:#ffffff;border:1px solid #e2e8f0;border-radius:10px;padding:20px;">
+      <h2 style="margin:0 0 12px 0;font-size:18px;color:#0f172a;">${escapeHtml(brandName)} Update</h2>
+      <p style="margin:0;font-size:14px;line-height:1.6;color:#1e293b;">${escapedBody}</p>
+      ${unsubscribeHtml}
+    </div>
+  </body>
+</html>`;
+}
+
+function buildCustomerEmailText(body: string, unsubscribeUrl?: string | null) {
+  if (!unsubscribeUrl) return body;
+  return `${body}\n\nManage notifications: ${unsubscribeUrl}`;
+}
+
 export async function sendCustomerNotification(
   input: CustomerDeliveryInput
 ): Promise<DeliveryResult> {
@@ -365,10 +492,22 @@ export async function sendCustomerNotification(
   }
 
   if (input.channel === "EMAIL") {
+    const metadataLeadId =
+      input.metadata && typeof input.metadata.leadId === "string"
+        ? input.metadata.leadId
+        : null;
+    const unsubscribeUrl = metadataLeadId
+      ? buildEmailUnsubscribeUrl({
+          leadId: metadataLeadId,
+          recipient: input.recipient
+        })
+      : env.CUSTOMER_NOTIFICATIONS_UNSUBSCRIBE_URL?.trim() ?? null;
+
     return emailProvider.send({
       to: input.recipient,
       subject: input.subject || "Solar Lead Update",
       body: input.body,
+      unsubscribeUrl,
       metadata: input.metadata
     });
   }

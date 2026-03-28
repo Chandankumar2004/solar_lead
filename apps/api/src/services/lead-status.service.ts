@@ -102,3 +102,19 @@ export async function getTokenPaymentVerifiedStatus() {
     "Payment Verified"
   ]);
 }
+
+export async function getTokenPaymentReceivedStatus() {
+  return findFirstStatusByNames([
+    "Token Amount Received (INR 1000)",
+    "Token Amount Received",
+    "Token Payment Received"
+  ]);
+}
+
+export async function getTokenPaymentVerificationPendingStatus() {
+  return findFirstStatusByNames([
+    "Token Payment Verification Pending",
+    "Token Verification Pending",
+    "Payment Verification Pending"
+  ]);
+}

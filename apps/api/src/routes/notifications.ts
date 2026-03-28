@@ -22,6 +22,12 @@ const allowNotificationLogReaders = allowRoles(
   "ADMIN",
   "DISTRICT_MANAGER"
 );
+const allowInternalNotificationUsers = allowRoles(
+  "SUPER_ADMIN",
+  "ADMIN",
+  "DISTRICT_MANAGER",
+  "FIELD_EXECUTIVE"
+);
 
 const customerTemplateChannelSchema = z.enum(["SMS", "EMAIL", "WHATSAPP"]);
 
@@ -194,13 +200,14 @@ notificationsRouter.get("/feed", async (req, res) => {
   return ok(res, logs, "Notification feed fetched");
 });
 
-notificationsRouter.get("/device-token", async (req, res) => {
+notificationsRouter.get("/device-token", allowInternalNotificationUsers, async (req, res) => {
   const tokens = await listUserDeviceTokens(req.user!.id);
   return ok(res, tokens, "Registered device tokens fetched");
 });
 
 notificationsRouter.post(
   "/device-token",
+  allowInternalNotificationUsers,
   validateBody(registerDeviceTokenSchema),
   async (req, res) => {
     const body = req.body as z.infer<typeof registerDeviceTokenSchema>;
@@ -242,6 +249,7 @@ notificationsRouter.post(
 
 notificationsRouter.delete(
   "/device-token",
+  allowInternalNotificationUsers,
   validateBody(removeDeviceTokenSchema),
   async (req, res) => {
     const body = req.body as z.infer<typeof removeDeviceTokenSchema>;
@@ -466,6 +474,11 @@ notificationsRouter.post(
           name: true,
           phone: true,
           email: true,
+          assignedExecutive: {
+            select: {
+              fullName: true
+            }
+          },
           currentStatus: {
             select: {
               name: true
@@ -483,14 +496,22 @@ notificationsRouter.post(
     }
 
     const statusName = body.status ?? lead.currentStatus.name;
+    const executiveName = lead.assignedExecutive?.fullName ?? "";
     const variables = {
       customer_name: lead.name,
+      customerName: lead.name,
       lead_id: lead.id,
+      leadId: lead.id,
       lead_external_id: lead.externalId,
+      leadExternalId: lead.externalId,
       status: statusName,
+      statusName,
       lead_status: statusName,
+      leadStatus: statusName,
       phone: lead.phone ?? "",
-      email: lead.email ?? ""
+      email: lead.email ?? "",
+      executive_name: executiveName,
+      executiveName
     };
 
     const renderedSubject = template.subject

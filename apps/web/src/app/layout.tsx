@@ -1,5 +1,6 @@
 import "./globals.css";
 import type { Metadata } from "next";
+import { AppProviders } from "@/components/AppProviders";
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://solar-lead.onrender.com"),
@@ -15,7 +16,9 @@ export default function RootLayout({
 }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body>
+        <AppProviders>{children}</AppProviders>
+      </body>
     </html>
   );
 }

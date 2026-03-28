@@ -13,10 +13,36 @@ type DistrictListFilters = {
   isActive?: boolean;
 };
 
+const PRIORITY_STATES = ["Bihar", "Delhi"] as const;
+const PRIORITY_STATE_RANK = new Map(
+  PRIORITY_STATES.map((state, index) => [state.toLocaleLowerCase("en-US"), index])
+);
+
 const PUBLIC_DISTRICTS_CACHE_TTL_MS = 60_000;
 const PUBLIC_DISTRICTS_FAILURE_LOG_INTERVAL_MS = 5 * 60 * 1000;
 let publicDistrictsCache: { value: PublicDistrict[]; expiresAt: number } | null = null;
 let lastPublicDistrictsFailureLogAt = 0;
+
+function compareDistrictOrder(
+  left: { state: string; name: string },
+  right: { state: string; name: string }
+) {
+  const leftKey = left.state.trim().toLocaleLowerCase("en-US");
+  const rightKey = right.state.trim().toLocaleLowerCase("en-US");
+
+  const leftRank = PRIORITY_STATE_RANK.get(leftKey);
+  const rightRank = PRIORITY_STATE_RANK.get(rightKey);
+
+  if (leftRank !== undefined || rightRank !== undefined) {
+    if (leftRank === undefined) return 1;
+    if (rightRank === undefined) return -1;
+    if (leftRank !== rightRank) return leftRank - rightRank;
+  }
+
+  const stateCompare = left.state.localeCompare(right.state);
+  if (stateCompare !== 0) return stateCompare;
+  return left.name.localeCompare(right.name);
+}
 
 async function withReadFallback<T>(
   operation: string,
@@ -35,7 +61,7 @@ async function withReadFallback<T>(
 
 export async function listDistrictsWithCounts(filters: DistrictListFilters) {
   return withReadFallback("LIST_DISTRICTS_WITH_COUNTS", async (client) => {
-    return client.district.findMany({
+    const districts = await client.district.findMany({
       where: {
         ...(filters.state ? { state: filters.state } : {}),
         ...(filters.isActive !== undefined ? { isActive: filters.isActive } : {})
@@ -47,9 +73,10 @@ export async function listDistrictsWithCounts(filters: DistrictListFilters) {
             assignments: true
           }
         }
-      },
-      orderBy: [{ state: "asc" }, { name: "asc" }]
+      }
     });
+
+    return districts.sort(compareDistrictOrder);
   });
 }
 
@@ -80,7 +107,7 @@ export async function getPublicDistrictsPayload() {
 }
 
 async function listPublicDistricts(client: PrismaClient) {
-  return client.district.findMany({
+  const districts = await client.district.findMany({
     where: { isActive: true },
     select: {
       id: true,
@@ -89,6 +116,8 @@ async function listPublicDistricts(client: PrismaClient) {
     },
     orderBy: [{ state: "asc" }, { name: "asc" }]
   });
+
+  return districts.sort(compareDistrictOrder);
 }
 
 async function listPublicDistrictsWithFallback() {
@@ -145,12 +174,11 @@ export async function getDistrictAssignmentsPayload(districtId?: string) {
             }
           }
         }
-      },
-      orderBy: [{ state: "asc" }, { name: "asc" }]
+      }
     })
   );
 
-  return districts.map((district) => {
+  return districts.sort(compareDistrictOrder).map((district) => {
     const managers = district.assignments
       .filter((a) => a.user.role === "MANAGER")
       .map((a) => ({

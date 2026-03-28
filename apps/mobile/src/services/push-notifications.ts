@@ -37,6 +37,39 @@ type MessagingFactoryLike = (() => MessagingInstanceLike) & {
   };
 };
 
+type ExpoNotificationsLike = {
+  AndroidImportance?: {
+    HIGH?: number;
+    MAX?: number;
+  };
+  setNotificationHandler?: (handler: {
+    handleNotification: () => Promise<{
+      shouldShowAlert: boolean;
+      shouldPlaySound: boolean;
+      shouldSetBadge: boolean;
+    }>;
+  }) => void;
+  setNotificationChannelAsync?: (
+    channelId: string,
+    channel: {
+      name: string;
+      importance: number;
+      sound?: "default" | null;
+      enableVibrate?: boolean;
+      vibrationPattern?: number[];
+    }
+  ) => Promise<void>;
+  scheduleNotificationAsync?: (request: {
+    content: {
+      title: string;
+      body: string;
+      data?: Record<string, string>;
+      sound?: "default" | null;
+    };
+    trigger: null;
+  }) => Promise<string>;
+};
+
 export type PushNotificationPayload = {
   leadId: string | null;
   messageId: string | null;
@@ -61,6 +94,7 @@ type PushInitOptions = {
 };
 
 let backgroundHandlerRegistered = false;
+let foregroundLocalConfigured = false;
 
 function loadMessagingFactory(): MessagingFactoryLike | null {
   try {
@@ -75,6 +109,89 @@ function loadMessagingFactory(): MessagingFactoryLike | null {
     return null;
   } catch {
     return null;
+  }
+}
+
+function loadExpoNotificationsModule(): ExpoNotificationsLike | null {
+  try {
+    const dynamicRequire = new Function("return require")() as (moduleId: string) => unknown;
+    const loaded = dynamicRequire("expo-notifications");
+    if (loaded && typeof loaded === "object") {
+      return loaded as ExpoNotificationsLike;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+async function configureForegroundLocalNotifications() {
+  if (foregroundLocalConfigured) {
+    return;
+  }
+
+  const notifications = loadExpoNotificationsModule();
+  if (!notifications) {
+    return;
+  }
+
+  try {
+    notifications.setNotificationHandler?.({
+      handleNotification: async () => ({
+        shouldShowAlert: true,
+        shouldPlaySound: true,
+        shouldSetBadge: false
+      })
+    });
+
+    if (Platform.OS === "android" && notifications.setNotificationChannelAsync) {
+      const importance =
+        notifications.AndroidImportance?.MAX ?? notifications.AndroidImportance?.HIGH;
+      if (typeof importance === "number") {
+        await notifications.setNotificationChannelAsync("default", {
+          name: "Default",
+          importance,
+          sound: "default",
+          enableVibrate: true,
+          vibrationPattern: [0, 250, 200, 250]
+        });
+      }
+    }
+
+    foregroundLocalConfigured = true;
+  } catch {
+    // Optional foreground local notification fallback.
+  }
+}
+
+async function playForegroundNotificationSound(payload: PushNotificationPayload) {
+  const notifications = loadExpoNotificationsModule();
+  if (!notifications?.scheduleNotificationAsync) {
+    return;
+  }
+
+  const title = payload.title?.trim() || "Lead update";
+  const body = payload.body?.trim() || "Open app for latest lead activity.";
+  const data: Record<string, string> = { ...payload.data };
+  if (payload.leadId && !data.leadId) {
+    data.leadId = payload.leadId;
+  }
+  if (payload.type && !data.type) {
+    data.type = payload.type;
+  }
+
+  try {
+    await notifications.scheduleNotificationAsync({
+      content: {
+        title,
+        body,
+        data,
+        sound: "default"
+      },
+      trigger: null
+    });
+  } catch {
+    // Ignore local schedule errors so push flow remains functional.
   }
 }
 
@@ -216,6 +333,8 @@ export async function initializePushNotifications(
       };
     }
 
+    await configureForegroundLocalNotifications();
+
     const token = await messaging.getToken();
     let tokenRegistered = false;
     try {
@@ -237,6 +356,7 @@ export async function initializePushNotifications(
       messaging.onMessage((message) => {
         const payload = toPayload(message);
         if (!payload) return;
+        void playForegroundNotificationSound(payload);
         options.onForegroundMessage?.(payload);
       })
     );

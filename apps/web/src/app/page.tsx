@@ -75,7 +75,7 @@ function resolveApiBaseUrl() {
   }
 
   return process.env.NODE_ENV === "production"
-    ? "https://solar-lead.onrender.com"
+    ? "https://solarlead-production.up.railway.app"
     : "http://localhost:4000";
 }
 
@@ -331,11 +331,12 @@ export default async function LandingPage() {
                   <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-[#ff7a00] via-[#ffac5f] to-[#0f8f4f]" />
                   <div className="mb-4 flex items-start justify-between gap-3">
                     <div className="flex items-center gap-2.5">
-                      <img
+                      <Image
                         src={item.avatar}
                         alt={`${item.name} customer`}
+                        width={40}
+                        height={40}
                         className="h-10 w-10 rounded-full border border-slate-200 object-cover shadow-sm"
-                        loading="lazy"
                       />
                       <div>
                         <p className="text-[13px] font-semibold leading-tight text-[#111827]">{item.name}</p>

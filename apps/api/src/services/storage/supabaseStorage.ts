@@ -2,7 +2,7 @@ import { createClient } from "@supabase/supabase-js";
 import { env } from "../../config/env.js";
 import { AppError } from "../../lib/errors.js";
 
-export const STORAGE_BUCKET_NAME = "documents";
+export const STORAGE_BUCKET_NAME = env.SUPABASE_DOCUMENTS_BUCKET;
 
 const supabaseUrl = env.SUPABASE_URL;
 const supabaseServiceRoleKey = env.SUPABASE_SERVICE_ROLE_KEY;
@@ -14,6 +14,10 @@ export const supabaseAdmin = createClient(supabaseUrl, supabaseServiceRoleKey, {
     detectSessionInUrl: false
   }
 });
+
+function normalizeStoragePath(path: string) {
+  return path.trim().replace(/^\/+/, "");
+}
 
 function toAbsoluteStorageUrl(url: string) {
   if (/^https?:\/\//i.test(url)) {
@@ -49,9 +53,10 @@ function pickSignedUrl(data: unknown) {
 }
 
 export async function createDocumentUploadUrl(path: string) {
+  const normalizedPath = normalizeStoragePath(path);
   const { data, error } = await supabaseAdmin.storage
     .from(STORAGE_BUCKET_NAME)
-    .createSignedUploadUrl(path);
+    .createSignedUploadUrl(normalizedPath);
 
   const signedUrl = pickSignedUrl(data);
   if (error || !signedUrl) {
@@ -62,9 +67,10 @@ export async function createDocumentUploadUrl(path: string) {
 }
 
 export async function createDocumentDownloadUrl(path: string, expiresInSeconds: number) {
+  const normalizedPath = normalizeStoragePath(path);
   const { data, error } = await supabaseAdmin.storage
     .from(STORAGE_BUCKET_NAME)
-    .createSignedUrl(path, expiresInSeconds);
+    .createSignedUrl(normalizedPath, expiresInSeconds);
 
   const signedUrl = pickSignedUrl(data);
   if (error || !signedUrl) {
@@ -72,4 +78,65 @@ export async function createDocumentDownloadUrl(path: string, expiresInSeconds: 
   }
 
   return toAbsoluteStorageUrl(signedUrl);
+}
+
+export async function removeDocumentObject(path: string) {
+  const normalizedPath = normalizeStoragePath(path);
+  const { error } = await supabaseAdmin.storage
+    .from(STORAGE_BUCKET_NAME)
+    .remove([normalizedPath]);
+
+  if (error) {
+    throw new AppError(500, "STORAGE_DELETE_ERROR", "Unable to delete document from storage");
+  }
+}
+
+async function storageObjectExists(path: string) {
+  const normalizedPath = normalizeStoragePath(path);
+  const parts = normalizedPath.split("/").filter(Boolean);
+  if (parts.length < 2) {
+    return false;
+  }
+
+  const fileName = parts.pop();
+  if (!fileName) {
+    return false;
+  }
+  const folder = parts.join("/");
+
+  const { data, error } = await supabaseAdmin.storage
+    .from(STORAGE_BUCKET_NAME)
+    .list(folder, {
+      search: fileName,
+      limit: 100
+    });
+
+  if (error) {
+    throw new AppError(500, "STORAGE_LIST_ERROR", "Unable to verify uploaded file");
+  }
+
+  return (data ?? []).some((item) => item.name === fileName);
+}
+
+function wait(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export async function assertDocumentObjectExists(path: string) {
+  const maxAttempts = 3;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const exists = await storageObjectExists(path);
+    if (exists) {
+      return;
+    }
+    if (attempt < maxAttempts) {
+      await wait(attempt * 200);
+    }
+  }
+
+  throw new AppError(
+    400,
+    "STORAGE_OBJECT_NOT_FOUND",
+    "Uploaded file not found in storage. Please upload again."
+  );
 }

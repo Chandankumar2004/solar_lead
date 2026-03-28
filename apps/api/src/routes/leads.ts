@@ -5,7 +5,12 @@ import { createLeadSchema, transitionLeadSchema } from "@solar/shared";
 import { allowRoles } from "../middleware/rbac.js";
 import { created, ok } from "../lib/http.js";
 import { prisma } from "../lib/prisma.js";
-import { resolveLeadAutoAssignment } from "../services/lead-assignment.service.js";
+import {
+  getAutoAssignmentConfig,
+  lockDistrictAutoAssignment,
+  resolveLeadAutoAssignment,
+  upsertAutoAssignmentConfig
+} from "../services/lead-assignment.service.js";
 import {
   assertValidTransition,
   getAssignedLeadStatus,
@@ -17,6 +22,7 @@ import {
   queueLeadStatusCustomerNotification,
   triggerExecutiveLeadStatusUpdatedNotification,
   triggerExecutiveLoanStatusUpdatedNotification,
+  triggerLeadStatusUpdatedPortalNotification,
   triggerNewLeadNotification,
   triggerOverdueLeadNotification
 } from "../services/notification.service.js";
@@ -109,6 +115,10 @@ const listLeadsQuerySchema = z
     dateTo: value.dateTo
   }));
 
+const autoAssignmentConfigBodySchema = z.object({
+  maxActiveLeadsPerExecutive: z.coerce.number().int().min(1).max(500)
+});
+
 const nullablePositiveNumber = z.preprocess(
   (input) => {
     if (input === undefined) return undefined;
@@ -181,6 +191,69 @@ const patchLeadSchema = z
         : value.reassignment_reason
   }));
 
+const assignLeadOverrideBodySchema = z
+  .object({
+    assignedExecutiveId: z.string().uuid().optional(),
+    assigned_executive_id: z.string().uuid().optional(),
+    assignedManagerId: z.union([z.string().uuid(), z.null()]).optional(),
+    assigned_manager_id: z.union([z.string().uuid(), z.null()]).optional(),
+    reason: z.string().trim().min(5).max(500).optional(),
+    reassignmentReason: z.string().trim().min(5).max(500).optional(),
+    reassignment_reason: z.string().trim().min(5).max(500).optional()
+  })
+  .transform((value) => ({
+    assignedExecutiveId: value.assignedExecutiveId ?? value.assigned_executive_id,
+    assignedManagerId:
+      value.assignedManagerId !== undefined
+        ? value.assignedManagerId
+        : value.assigned_manager_id,
+    reason: value.reason ?? value.reassignmentReason ?? value.reassignment_reason
+  }))
+  .superRefine((value, ctx) => {
+    if (!value.assignedExecutiveId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["assignedExecutiveId"],
+        message: "assignedExecutiveId is required"
+      });
+    }
+  });
+
+const reassignLeadOverrideBodySchema = z
+  .object({
+    assignedExecutiveId: z.string().uuid().optional(),
+    assigned_executive_id: z.string().uuid().optional(),
+    assignedManagerId: z.union([z.string().uuid(), z.null()]).optional(),
+    assigned_manager_id: z.union([z.string().uuid(), z.null()]).optional(),
+    reason: z.string().trim().min(5).max(500).optional(),
+    reassignmentReason: z.string().trim().min(5).max(500).optional(),
+    reassignment_reason: z.string().trim().min(5).max(500).optional()
+  })
+  .transform((value) => ({
+    assignedExecutiveId: value.assignedExecutiveId ?? value.assigned_executive_id,
+    assignedManagerId:
+      value.assignedManagerId !== undefined
+        ? value.assignedManagerId
+        : value.assigned_manager_id,
+    reason: value.reason ?? value.reassignmentReason ?? value.reassignment_reason
+  }))
+  .superRefine((value, ctx) => {
+    if (!value.assignedExecutiveId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["assignedExecutiveId"],
+        message: "assignedExecutiveId is required"
+      });
+    }
+    if (!value.reason) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["reason"],
+        message: "reason is required for reassignment"
+      });
+    }
+  });
+
 function emptyToUndefined(input: unknown) {
   if (input === undefined || input === null) return undefined;
   if (typeof input !== "string") return input;
@@ -238,7 +311,6 @@ const GENDER_OPTIONS = ["Male", "Female", "Other"] as const;
 const PROPERTY_OWNERSHIP_OPTIONS = ["Owned", "Rented", "Leased"] as const;
 const ROOF_TYPE_OPTIONS = ["RCC", "Tin", "Other"] as const;
 const CONNECTION_TYPE_OPTIONS = ["Single Phase", "Three Phase"] as const;
-const SHADOW_FREE_AREA_OPTIONS = ["Yes", "Partial", "No"] as const;
 const SITE_PHOTO_REQUIRED_MIN = 3;
 const SITE_PHOTO_ALLOWED_MAX = 10;
 const SITE_PHOTO_CATEGORY_PREFIXES = ["site_photo", "site_photograph"] as const;
@@ -721,6 +793,192 @@ const detailInclude = {
   }
 } satisfies Prisma.LeadInclude;
 
+type ManualAssignmentLeadSnapshot = {
+  id: string;
+  externalId: string;
+  districtId: string;
+  currentStatusId: string;
+  assignedExecutiveId: string | null;
+  assignedManagerId: string | null;
+};
+
+type ManualOverrideAction = "ASSIGN" | "REASSIGN";
+
+async function assertDistrictManagerMappedToLeadDistrict(
+  actorUserId: string,
+  districtId: string
+) {
+  const mapping = await prisma.userDistrictAssignment.findFirst({
+    where: {
+      userId: actorUserId,
+      districtId,
+      user: {
+        role: "MANAGER",
+        status: "ACTIVE"
+      }
+    },
+    select: { id: true }
+  });
+
+  if (!mapping) {
+    throw new AppError(
+      403,
+      "FORBIDDEN",
+      "District manager can override assignments only within mapped districts"
+    );
+  }
+}
+
+async function assertExecutiveAssignableToLeadDistrict(
+  executiveId: string,
+  districtId: string
+) {
+  const executive = await prisma.user.findUnique({
+    where: { id: executiveId },
+    select: { id: true, role: true, status: true }
+  });
+
+  if (!executive || executive.role !== "EXECUTIVE" || executive.status !== "ACTIVE") {
+    throw new AppError(400, "INVALID_EXECUTIVE", "assignedExecutiveId must be an active executive");
+  }
+
+  const mapping = await prisma.userDistrictAssignment.findFirst({
+    where: {
+      userId: executiveId,
+      districtId,
+      user: {
+        role: "EXECUTIVE",
+        status: "ACTIVE"
+      }
+    },
+    select: { id: true }
+  });
+
+  if (!mapping) {
+    throw new AppError(
+      400,
+      "INVALID_EXECUTIVE_DISTRICT_SCOPE",
+      "Assigned executive must be mapped to the lead district"
+    );
+  }
+}
+
+async function assertManagerAssignableToLeadDistrict(managerId: string, districtId: string) {
+  const manager = await prisma.user.findUnique({
+    where: { id: managerId },
+    select: { id: true, role: true, status: true }
+  });
+  if (!manager || manager.role !== "MANAGER" || manager.status !== "ACTIVE") {
+    throw new AppError(400, "INVALID_MANAGER", "assignedManagerId must be an active manager");
+  }
+
+  const mapping = await prisma.userDistrictAssignment.findFirst({
+    where: {
+      userId: managerId,
+      districtId,
+      user: {
+        role: "MANAGER",
+        status: "ACTIVE"
+      }
+    },
+    select: { id: true }
+  });
+
+  if (!mapping) {
+    throw new AppError(
+      400,
+      "INVALID_MANAGER_DISTRICT_SCOPE",
+      "Assigned manager must be mapped to the lead district"
+    );
+  }
+}
+
+async function applyManualLeadAssignmentOverride(input: {
+  lead: ManualAssignmentLeadSnapshot;
+  actor: { id: string; role: string };
+  action: ManualOverrideAction;
+  assignedExecutiveId: string;
+  assignedManagerId: string | null;
+  reason: string | null;
+  ipAddress: string | null;
+}) {
+  const now = new Date();
+  const updateMessage =
+    input.action === "ASSIGN"
+      ? "Lead manually assigned to field executive"
+      : "Lead manually reassigned to field executive";
+
+  const updatedLead = await prisma.$transaction(async (tx) => {
+    const newStatus = await getNewLeadStatus();
+    const assignedStatus = await getAssignedLeadStatus();
+
+    let shouldTransitionToAssigned = false;
+    if (
+      newStatus &&
+      assignedStatus &&
+      input.lead.currentStatusId === newStatus.id
+    ) {
+      const transitionAllowed = await assertValidTransition(newStatus.id, assignedStatus.id);
+      shouldTransitionToAssigned = transitionAllowed;
+    }
+
+    const updated = await tx.lead.update({
+      where: { id: input.lead.id },
+      data: {
+        assignedExecutiveId: input.assignedExecutiveId,
+        assignedManagerId: input.assignedManagerId,
+        noExecutiveAvailable: false,
+        ...(shouldTransitionToAssigned && assignedStatus
+          ? {
+              currentStatusId: assignedStatus.id,
+              statusUpdatedAt: now,
+              statusHistory: {
+                create: {
+                  fromStatusId: input.lead.currentStatusId,
+                  toStatusId: assignedStatus.id,
+                  changedByUserId: input.actor.id,
+                  notes: updateMessage
+                }
+              }
+            }
+          : {})
+      },
+      include: detailInclude
+    });
+
+    await tx.auditLog.create({
+      data: {
+        actorUserId: input.actor.id,
+        action: input.action === "ASSIGN" ? "LEAD_MANUAL_ASSIGNED" : "LEAD_MANUAL_REASSIGNED",
+        entityType: "lead",
+        entityId: input.lead.id,
+        detailsJson: {
+          leadId: input.lead.id,
+          externalId: input.lead.externalId,
+          previousAssignee: {
+            executiveId: input.lead.assignedExecutiveId,
+            managerId: input.lead.assignedManagerId
+          },
+          newAssignee: {
+            executiveId: input.assignedExecutiveId,
+            managerId: input.assignedManagerId
+          },
+          actorId: input.actor.id,
+          actorRole: input.actor.role,
+          reason: input.reason,
+          overrideAutoAssignment: true,
+          assignmentAction: input.action
+        },
+        ipAddress: input.ipAddress
+      }
+    });
+
+    return updated;
+  });
+
+  return updatedLead;
+}
+
 leadsRouter.use(
   allowRoles("SUPER_ADMIN", "ADMIN", "DISTRICT_MANAGER", "FIELD_EXECUTIVE")
 );
@@ -895,6 +1153,36 @@ leadsRouter.get("/", validateQuery(listLeadsQuerySchema), async (req: Request, r
     }
   );
 });
+
+leadsRouter.get(
+  "/auto-assignment/config",
+  allowRoles("SUPER_ADMIN", "ADMIN"),
+  async (_req: Request, res: Response) => {
+    const config = await getAutoAssignmentConfig();
+    return ok(res, config, "Auto-assignment configuration fetched");
+  }
+);
+
+leadsRouter.put(
+  "/auto-assignment/config",
+  allowRoles("SUPER_ADMIN"),
+  validateBody(autoAssignmentConfigBodySchema),
+  async (req: Request, res: Response) => {
+    const body = req.body as z.infer<typeof autoAssignmentConfigBodySchema>;
+    const updatedConfig = await upsertAutoAssignmentConfig(body.maxActiveLeadsPerExecutive);
+
+    await createAuditLog({
+      actorUserId: req.user?.id,
+      action: "AUTO_ASSIGNMENT_CONFIG_UPDATED",
+      entityType: "auto_assignment_config",
+      entityId: "GLOBAL",
+      detailsJson: updatedConfig,
+      ipAddress: requestIp(req)
+    });
+
+    return ok(res, updatedConfig, "Auto-assignment configuration updated");
+  }
+);
 
 leadsRouter.get(
   "/:id",
@@ -1519,6 +1807,283 @@ leadsRouter.put(
   }
 );
 
+leadsRouter.post(
+  "/:id/assign",
+  allowRoles("SUPER_ADMIN", "ADMIN", "DISTRICT_MANAGER"),
+  validateParams(leadIdParamSchema),
+  validateBody(assignLeadOverrideBodySchema),
+  async (req: Request, res: Response) => {
+    if (!req.user?.id) {
+      throw new AppError(401, "UNAUTHORIZED", "Login required");
+    }
+
+    const { id } = req.params as z.infer<typeof leadIdParamSchema>;
+    const payload = req.body as z.infer<typeof assignLeadOverrideBodySchema>;
+    const assignedExecutiveId = payload.assignedExecutiveId;
+    if (!assignedExecutiveId) {
+      throw new AppError(
+        400,
+        "INVALID_EXECUTIVE",
+        "assignedExecutiveId is required for manual assignment"
+      );
+    }
+
+    const existing = await prisma.lead.findFirst({
+      where: scopeLeadWhere(req.user, { id }),
+      select: {
+        id: true,
+        externalId: true,
+        districtId: true,
+        currentStatusId: true,
+        assignedExecutiveId: true,
+        assignedManagerId: true
+      }
+    });
+    if (!existing) {
+      throw new AppError(404, "NOT_FOUND", "Lead not found");
+    }
+
+    if (req.user.role === "MANAGER") {
+      await assertDistrictManagerMappedToLeadDistrict(req.user.id, existing.districtId);
+      if (
+        payload.assignedManagerId !== undefined &&
+        payload.assignedManagerId !== existing.assignedManagerId
+      ) {
+        throw new AppError(
+          403,
+          "FORBIDDEN",
+          "District managers cannot override district manager ownership"
+        );
+      }
+    }
+
+    if (existing.assignedExecutiveId) {
+      throw new AppError(
+        409,
+        "LEAD_ALREADY_ASSIGNED",
+        "Lead already has an executive assignment. Use /reassign endpoint."
+      );
+    }
+
+    await assertExecutiveAssignableToLeadDistrict(assignedExecutiveId, existing.districtId);
+
+    const nextAssignedManagerId =
+      payload.assignedManagerId !== undefined
+        ? payload.assignedManagerId
+        : existing.assignedManagerId;
+
+    if (nextAssignedManagerId) {
+      await assertManagerAssignableToLeadDistrict(nextAssignedManagerId, existing.districtId);
+    }
+
+    const updated = await applyManualLeadAssignmentOverride({
+      lead: existing,
+      actor: {
+        id: req.user.id,
+        role: req.user.role
+      },
+      action: "ASSIGN",
+      assignedExecutiveId,
+      assignedManagerId: nextAssignedManagerId ?? null,
+      reason: payload.reason ?? null,
+      ipAddress: requestIp(req)
+    });
+
+    if (updated.currentStatusId !== existing.currentStatusId) {
+      try {
+        await queueLeadStatusCustomerNotification({
+          leadId: existing.id,
+          toStatusId: updated.currentStatusId,
+          changedByUserId: req.user.id,
+          transitionNotes: "Lead manually assigned to field executive"
+        });
+      } catch (error) {
+        console.error("manual_assign_customer_notification_failed", {
+          leadId: existing.id,
+          toStatusId: updated.currentStatusId,
+          error
+        });
+      }
+    }
+
+    try {
+      await notifyUsers(
+        [assignedExecutiveId],
+        "New lead assigned",
+        `Lead ${existing.externalId} has been manually assigned to you.`,
+        {
+          type: "NEW_LEAD",
+          leadId: existing.id,
+          entityType: "lead",
+          entityId: existing.id,
+          metadata: {
+            externalId: existing.externalId,
+            assignedByRole: req.user.role,
+            assignmentAction: "ASSIGN",
+            reason: payload.reason ?? null
+          }
+        }
+      );
+    } catch (error) {
+      console.error("manual_assign_notification_failed", {
+        leadId: existing.id,
+        assignedExecutiveId,
+        error
+      });
+    }
+
+    return ok(
+      res,
+      sanitizeLeadResponseForRole(updated, req.user.role),
+      "Lead assigned"
+    );
+  }
+);
+
+leadsRouter.post(
+  "/:id/reassign",
+  allowRoles("SUPER_ADMIN", "ADMIN", "DISTRICT_MANAGER"),
+  validateParams(leadIdParamSchema),
+  validateBody(reassignLeadOverrideBodySchema),
+  async (req: Request, res: Response) => {
+    if (!req.user?.id) {
+      throw new AppError(401, "UNAUTHORIZED", "Login required");
+    }
+
+    const { id } = req.params as z.infer<typeof leadIdParamSchema>;
+    const payload = req.body as z.infer<typeof reassignLeadOverrideBodySchema>;
+    const assignedExecutiveId = payload.assignedExecutiveId;
+    if (!assignedExecutiveId) {
+      throw new AppError(
+        400,
+        "INVALID_EXECUTIVE",
+        "assignedExecutiveId is required for manual reassignment"
+      );
+    }
+
+    const existing = await prisma.lead.findFirst({
+      where: scopeLeadWhere(req.user, { id }),
+      select: {
+        id: true,
+        externalId: true,
+        districtId: true,
+        currentStatusId: true,
+        assignedExecutiveId: true,
+        assignedManagerId: true
+      }
+    });
+    if (!existing) {
+      throw new AppError(404, "NOT_FOUND", "Lead not found");
+    }
+
+    if (req.user.role === "MANAGER") {
+      await assertDistrictManagerMappedToLeadDistrict(req.user.id, existing.districtId);
+      if (
+        payload.assignedManagerId !== undefined &&
+        payload.assignedManagerId !== existing.assignedManagerId
+      ) {
+        throw new AppError(
+          403,
+          "FORBIDDEN",
+          "District managers cannot override district manager ownership"
+        );
+      }
+    }
+
+    if (!existing.assignedExecutiveId) {
+      throw new AppError(
+        409,
+        "LEAD_NOT_ASSIGNED",
+        "Lead has no executive assignment yet. Use /assign endpoint."
+      );
+    }
+
+    await assertExecutiveAssignableToLeadDistrict(assignedExecutiveId, existing.districtId);
+
+    const nextAssignedManagerId =
+      payload.assignedManagerId !== undefined
+        ? payload.assignedManagerId
+        : existing.assignedManagerId;
+
+    if (nextAssignedManagerId) {
+      await assertManagerAssignableToLeadDistrict(nextAssignedManagerId, existing.districtId);
+    }
+
+    const assignmentChanged =
+      assignedExecutiveId !== existing.assignedExecutiveId ||
+      (nextAssignedManagerId ?? null) !== (existing.assignedManagerId ?? null);
+    if (!assignmentChanged) {
+      throw new AppError(
+        400,
+        "NO_ASSIGNMENT_CHANGE",
+        "New assignment must be different from current assignment"
+      );
+    }
+
+    const updated = await applyManualLeadAssignmentOverride({
+      lead: existing,
+      actor: {
+        id: req.user.id,
+        role: req.user.role
+      },
+      action: "REASSIGN",
+      assignedExecutiveId,
+      assignedManagerId: nextAssignedManagerId ?? null,
+      reason: payload.reason ?? null,
+      ipAddress: requestIp(req)
+    });
+
+    if (updated.currentStatusId !== existing.currentStatusId) {
+      try {
+        await queueLeadStatusCustomerNotification({
+          leadId: existing.id,
+          toStatusId: updated.currentStatusId,
+          changedByUserId: req.user.id,
+          transitionNotes: payload.reason ?? "Lead manually reassigned to field executive"
+        });
+      } catch (error) {
+        console.error("manual_reassign_customer_notification_failed", {
+          leadId: existing.id,
+          toStatusId: updated.currentStatusId,
+          error
+        });
+      }
+    }
+
+    try {
+      await notifyUsers(
+        [assignedExecutiveId],
+        "Lead reassigned",
+        `Lead ${existing.externalId} has been reassigned to you.`,
+        {
+          type: "NEW_LEAD",
+          leadId: existing.id,
+          entityType: "lead",
+          entityId: existing.id,
+          metadata: {
+            externalId: existing.externalId,
+            assignedByRole: req.user.role,
+            assignmentAction: "REASSIGN",
+            reason: payload.reason ?? null
+          }
+        }
+      );
+    } catch (error) {
+      console.error("manual_reassign_notification_failed", {
+        leadId: existing.id,
+        assignedExecutiveId,
+        error
+      });
+    }
+
+    return ok(
+      res,
+      sanitizeLeadResponseForRole(updated, req.user.role),
+      "Lead reassigned"
+    );
+  }
+);
+
 leadsRouter.patch(
   "/:id",
   allowRoles("SUPER_ADMIN", "ADMIN", "DISTRICT_MANAGER"),
@@ -1557,6 +2122,14 @@ leadsRouter.patch(
 
     if (assignmentFieldsTouched && !canReassignLead) {
       throw new AppError(403, "FORBIDDEN", "You cannot reassign this lead");
+    }
+
+    if (assignmentFieldsTouched) {
+      throw new AppError(
+        400,
+        "ASSIGNMENT_OVERRIDE_ENDPOINT_REQUIRED",
+        "Use dedicated assignment override endpoints: POST /api/leads/:id/assign or POST /api/leads/:id/reassign"
+      );
     }
 
     if (isExecutiveReassignment && !payload.reassignmentReason) {
@@ -1685,12 +2258,18 @@ leadsRouter.patch(
           : {}),
         ...(payload.message !== undefined ? { message: payload.message } : {}),
         ...(payload.assignedExecutiveId !== undefined
-          ? { assignedExecutiveId: payload.assignedExecutiveId }
+          ? {
+              assignedExecutiveId: payload.assignedExecutiveId,
+              ...(payload.assignedExecutiveId ? { noExecutiveAvailable: false } : {})
+            }
           : {}),
         ...(payload.assignedManagerId !== undefined
           ? { assignedManagerId: payload.assignedManagerId }
           : {}),
-        ...(payload.isOverdue !== undefined ? { isOverdue: payload.isOverdue } : {})
+        ...(payload.isOverdue !== undefined ? { isOverdue: payload.isOverdue } : {}),
+        ...(payload.isOverdue !== undefined
+          ? { overdueAt: payload.isOverdue ? new Date() : null }
+          : {})
       },
       include: detailInclude
     });
@@ -1728,25 +2307,21 @@ leadsRouter.patch(
         ipAddress: requestIp(req)
       });
 
-      const reassignmentRecipients = [
-        existing.assignedExecutiveId,
-        payload.assignedExecutiveId ?? null
-      ].filter((value): value is string => Boolean(value));
-
-      if (reassignmentRecipients.length > 0) {
+      const newlyAssignedExecutiveId = payload.assignedExecutiveId ?? null;
+      if (newlyAssignedExecutiveId) {
         await notifyUsers(
-          reassignmentRecipients,
-          "Lead reassigned",
-          `Lead ${existing.externalId} has been reassigned.${payload.reassignmentReason ? ` Reason: ${payload.reassignmentReason}` : ""}`,
+          [newlyAssignedExecutiveId],
+          "New lead assigned",
+          `Lead ${existing.externalId} has been assigned to you.`,
           {
-            type: "INTERNAL",
+            type: "NEW_LEAD",
             leadId: id,
             entityType: "lead",
             entityId: id,
             metadata: {
-              fromAssignedExecutiveId: existing.assignedExecutiveId,
-              toAssignedExecutiveId: payload.assignedExecutiveId ?? null,
-              reassignmentReason: payload.reassignmentReason ?? null
+              externalId: existing.externalId,
+              reassignmentReason: payload.reassignmentReason ?? null,
+              assignedByRole: actorRole
             }
           }
         );
@@ -1812,6 +2387,7 @@ leadsRouter.post(
   async (req: Request, res: Response) => {
     const { districtId, source, customer } = req.body as z.infer<typeof createLeadSchema>;
     await assertDistrictAccessForLeadCreation(req.user!, districtId);
+    const now = new Date();
 
     const newStatus = await getNewLeadStatus();
     if (!newStatus) {
@@ -1822,42 +2398,48 @@ leadsRouter.post(
       );
     }
 
-    const assignedStatus = await getAssignedLeadStatus();
-    if (!assignedStatus) {
-      throw new AppError(
-        400,
-        "NO_STATUS_CONFIG",
-        'Lead status "Assigned" is not configured'
-      );
-    }
+    const assignmentOutcome = await prisma.$transaction(async (tx) => {
+      await lockDistrictAutoAssignment(tx, districtId);
+      const autoAssignment = await resolveLeadAutoAssignment(districtId, { client: tx });
+      let assignedStatus: { id: string; name: string } | null = null;
+      let autoAssignmentNote: string | null = null;
+      let autoAssignmentFailureReason: string | null = null;
+      let shouldAutoTransitionToAssigned = false;
 
-    const autoAssignment = await resolveLeadAutoAssignment(districtId);
-    if (!autoAssignment) {
-      throw new AppError(
-        400,
-        "NO_ASSIGNEE_AVAILABLE",
-        "No valid auto-assignment target is available. Ensure the district has at least one active district manager and active assignees."
-      );
-    }
+      if (autoAssignment.mode === "EXECUTIVE") {
+        assignedStatus = await getAssignedLeadStatus();
+        if (!assignedStatus) {
+          throw new AppError(
+            400,
+            "NO_STATUS_CONFIG",
+            'Lead status "Assigned" is not configured'
+          );
+        }
 
-    const isNewToAssignedAllowed = await assertValidTransition(
-      newStatus.id,
-      assignedStatus.id
-    );
-    if (!isNewToAssignedAllowed) {
-      throw new AppError(
-        400,
-        "AUTO_ASSIGN_TRANSITION_NOT_ALLOWED",
-        'Transition "New -> Assigned" is not allowed in lead status transition config'
-      );
-    }
+        const isNewToAssignedAllowed = await assertValidTransition(
+          newStatus.id,
+          assignedStatus.id
+        );
+        if (!isNewToAssignedAllowed) {
+          throw new AppError(
+            400,
+            "AUTO_ASSIGN_TRANSITION_NOT_ALLOWED",
+            'Transition "New -> Assigned" is not allowed in lead status transition config'
+          );
+        }
 
-    const autoAssignmentNote =
-      autoAssignment.mode === "EXECUTIVE"
-        ? "Auto-assigned to field executive"
-        : `Auto-assigned to district manager. ${autoAssignment.fallbackReason}`;
+        shouldAutoTransitionToAssigned = true;
+        autoAssignmentNote = "Auto-assigned to field executive";
+      } else if (autoAssignment.mode === "MANAGER_FALLBACK") {
+        autoAssignmentFailureReason =
+          autoAssignment.fallbackReason ??
+          "No active field executive is available in this district. Lead assigned to district manager and kept in New status.";
+      } else {
+        autoAssignmentFailureReason =
+          autoAssignment.failureReason ??
+          "No eligible assignee available. Lead remains in New status pending manual assignment.";
+      }
 
-    const lead = await prisma.$transaction(async (tx) => {
       const createdLead = await tx.lead.create({
         data: {
           name: customer.fullName,
@@ -1865,9 +2447,12 @@ leadsRouter.post(
           email: customer.email,
           districtId,
           currentStatusId: newStatus.id,
+          statusUpdatedAt: now,
           assignedExecutiveId: autoAssignment.assignedExecutiveId,
           assignedManagerId: autoAssignment.assignedManagerId,
-          isOverdue: autoAssignment.flagged,
+          noExecutiveAvailable: autoAssignment.noExecutiveAvailable,
+          isOverdue: false,
+          overdueAt: null,
           message: source,
           customerDetail: {
             create: {
@@ -1884,13 +2469,31 @@ leadsRouter.post(
               notes: "Lead created"
             }
           }
-        }
+        },
+        include: detailInclude
       });
 
-      return tx.lead.update({
+      if (
+        autoAssignment.mode !== "EXECUTIVE" ||
+        !shouldAutoTransitionToAssigned ||
+        !assignedStatus ||
+        !autoAssignmentNote
+      ) {
+        return {
+          lead: createdLead,
+          autoAssignment,
+          assignedStatus,
+          autoAssignmentNote,
+          autoAssignmentFailureReason,
+          shouldAutoTransitionToAssigned
+        };
+      }
+
+      const transitionedLead = await tx.lead.update({
         where: { id: createdLead.id },
         data: {
           currentStatusId: assignedStatus.id,
+          statusUpdatedAt: now,
           statusHistory: {
             create: {
               fromStatusId: newStatus.id,
@@ -1902,27 +2505,108 @@ leadsRouter.post(
         },
         include: detailInclude
       });
+
+      return {
+        lead: transitionedLead,
+        autoAssignment,
+        assignedStatus,
+        autoAssignmentNote,
+        autoAssignmentFailureReason,
+        shouldAutoTransitionToAssigned
+      };
     });
 
-    await triggerNewLeadNotification({
-      leadId: lead.id,
-      externalId: lead.externalId,
-      assignedExecutiveId: autoAssignment.assignedExecutiveId,
-      assignedManagerId: autoAssignment.assignedManagerId
-    });
+    const {
+      lead,
+      autoAssignment,
+      assignedStatus,
+      autoAssignmentNote,
+      autoAssignmentFailureReason,
+      shouldAutoTransitionToAssigned
+    } = assignmentOutcome;
 
-    await queueLeadStatusCustomerNotification({
-      leadId: lead.id,
-      toStatusId: assignedStatus.id,
-      changedByUserId: req.user?.id,
-      transitionNotes: autoAssignmentNote
-    });
+    try {
+      await triggerNewLeadNotification({
+        leadId: lead.id,
+        externalId: lead.externalId,
+        districtId,
+        assignedExecutiveId: autoAssignment.assignedExecutiveId,
+        assignedManagerId: autoAssignment.assignedManagerId,
+        submittedByRole: req.user?.role ?? null
+      });
+    } catch (error) {
+      console.error("lead_create_notification_failed", {
+        leadId: lead.id,
+        error
+      });
+    }
+
+    try {
+      await queueLeadStatusCustomerNotification({
+        leadId: lead.id,
+        toStatusId: newStatus.id,
+        changedByUserId: req.user?.id,
+        transitionNotes: "Lead submitted"
+      });
+    } catch (error) {
+      console.error("lead_create_new_status_customer_notification_failed", {
+        leadId: lead.id,
+        error
+      });
+    }
+
+    if (
+      autoAssignment.mode === "EXECUTIVE" &&
+      shouldAutoTransitionToAssigned &&
+      assignedStatus &&
+      autoAssignmentNote
+    ) {
+      try {
+        await queueLeadStatusCustomerNotification({
+          leadId: lead.id,
+          toStatusId: assignedStatus.id,
+          changedByUserId: req.user?.id,
+          transitionNotes: autoAssignmentNote
+        });
+      } catch (error) {
+        console.error("lead_create_customer_notification_failed", {
+          leadId: lead.id,
+          error
+        });
+      }
+    }
 
     let alertedAdminIds: string[] = [];
-    if (autoAssignment.flagged) {
+    if (autoAssignment.mode === "MANAGER_FALLBACK") {
       alertedAdminIds = await notifyActiveAdmins(
         "Executive unavailable in district",
-        `Lead ${lead.externalId} was assigned to a district manager because no active executive was available.`
+        `Lead ${lead.externalId} was assigned to district manager and kept in "New" status because no eligible field executive was available.`,
+        {
+          type: "INTERNAL",
+          leadId: lead.id,
+          entityType: "lead",
+          entityId: lead.id,
+          metadata: {
+            externalId: lead.externalId,
+            fallbackReason: autoAssignment.fallbackReason ?? autoAssignmentFailureReason ?? null,
+            assignedManagerId: autoAssignment.assignedManagerId
+          }
+        }
+      );
+    } else if (autoAssignment.mode === "UNASSIGNED") {
+      alertedAdminIds = await notifyActiveAdmins(
+        "Lead auto-assignment failed",
+        `Lead ${lead.externalId} remains in "New" status because auto-assignment could not resolve an eligible assignee.`,
+        {
+          type: "INTERNAL",
+          leadId: lead.id,
+          entityType: "lead",
+          entityId: lead.id,
+          metadata: {
+            externalId: lead.externalId,
+            failureReason: autoAssignmentFailureReason ?? autoAssignment.failureReason ?? null
+          }
+        }
       );
     }
 
@@ -1936,30 +2620,48 @@ leadsRouter.post(
         externalId: lead.externalId,
         assignedExecutiveId: autoAssignment.assignedExecutiveId,
         assignedManagerId: autoAssignment.assignedManagerId,
+        noExecutiveAvailable: autoAssignment.noExecutiveAvailable,
         initialStatusId: newStatus.id
       },
       ipAddress: requestIp(req)
     });
 
-    await createAuditLog({
-      actorUserId: req.user?.id,
-      entityType: "lead",
-      entityId: lead.id,
-      action: "LEAD_AUTO_ASSIGNED",
-      detailsJson: {
-        leadId: lead.id,
-        externalId: lead.externalId,
-        fromStatusId: newStatus.id,
-        toStatusId: assignedStatus.id,
-        assignmentMode: autoAssignment.mode,
-        assignedExecutiveId: autoAssignment.assignedExecutiveId,
-        assignedManagerId: autoAssignment.assignedManagerId,
-        flagged: autoAssignment.flagged
-      },
-      ipAddress: requestIp(req)
-    });
+    if (autoAssignment.mode === "EXECUTIVE" && assignedStatus) {
+      await createAuditLog({
+        actorUserId: req.user?.id,
+        entityType: "lead",
+        entityId: lead.id,
+        action: "LEAD_AUTO_ASSIGNED",
+        detailsJson: {
+          leadId: lead.id,
+          externalId: lead.externalId,
+          fromStatusId: newStatus.id,
+          toStatusId: assignedStatus.id,
+          assignmentMode: autoAssignment.mode,
+          assignedExecutiveId: autoAssignment.assignedExecutiveId,
+          assignedManagerId: autoAssignment.assignedManagerId,
+          noExecutiveAvailable: autoAssignment.noExecutiveAvailable,
+          maxActiveLeadsPerExecutive: autoAssignment.maxActiveLeadsPerExecutive
+        },
+        ipAddress: requestIp(req)
+      });
+    } else if (autoAssignment.mode === "UNASSIGNED") {
+      await createAuditLog({
+        actorUserId: req.user?.id,
+        entityType: "lead",
+        entityId: lead.id,
+        action: "LEAD_AUTO_ASSIGNMENT_FAILED",
+        detailsJson: {
+          leadId: lead.id,
+          externalId: lead.externalId,
+          reason: autoAssignmentFailureReason ?? autoAssignment.failureReason ?? null,
+          alertedAdminIds
+        },
+        ipAddress: requestIp(req)
+      });
+    }
 
-    if (autoAssignment.flagged) {
+    if (autoAssignment.mode === "MANAGER_FALLBACK") {
       await createAuditLog({
         actorUserId: req.user?.id,
         entityType: "lead",
@@ -1968,15 +2670,12 @@ leadsRouter.post(
         detailsJson: {
           leadId: lead.id,
           externalId: lead.externalId,
-          fallbackReason: autoAssignment.fallbackReason,
+          fallbackReason: autoAssignment.fallbackReason ?? autoAssignmentFailureReason ?? null,
+          assignedManagerId: autoAssignment.assignedManagerId,
+          statusRemains: "New",
           alertedAdminIds
         },
         ipAddress: requestIp(req)
-      });
-
-      await triggerOverdueLeadNotification({
-        leadId: lead.id,
-        reason: autoAssignment.fallbackReason
       });
     }
 
@@ -2104,6 +2803,9 @@ leadsRouter.post(
         where: { id: lead.id },
         data: {
           currentStatusId: parsed.nextStatusId,
+          statusUpdatedAt: new Date(),
+          isOverdue: false,
+          overdueAt: null,
           statusHistory: {
             create: {
               fromStatusId: lead.currentStatusId,
@@ -2142,28 +2844,59 @@ leadsRouter.post(
         transitionNotes: historyNotes ?? null
       });
 
+      try {
+        await triggerLeadStatusUpdatedPortalNotification({
+          leadId: lead.id,
+          externalId: lead.externalId,
+          districtId: lead.districtId,
+          fromStatusName: lead.currentStatus.name,
+          toStatusName: toStatus.name,
+          changedByRole: req.user.role,
+          changedByUserId: req.user.id
+        });
+      } catch (error) {
+        console.error("lead_status_portal_notification_failed", {
+          leadId: lead.id,
+          error
+        });
+      }
+
       const actorRole = req.user.role;
       const changedByAdminOrManager =
         actorRole === "SUPER_ADMIN" || actorRole === "ADMIN" || actorRole === "MANAGER";
       if (changedByAdminOrManager && lead.assignedExecutiveId) {
-        await triggerExecutiveLeadStatusUpdatedNotification({
-          leadId: lead.id,
-          externalId: lead.externalId,
-          assignedExecutiveId: lead.assignedExecutiveId,
-          fromStatusName: lead.currentStatus.name,
-          toStatusName: toStatus.name,
-          changedByRole: actorRole,
-          changedByUserId: req.user.id
-        });
+        try {
+          await triggerExecutiveLeadStatusUpdatedNotification({
+            leadId: lead.id,
+            externalId: lead.externalId,
+            assignedExecutiveId: lead.assignedExecutiveId,
+            fromStatusName: lead.currentStatus.name,
+            toStatusName: toStatus.name,
+            changedByRole: actorRole,
+            changedByUserId: req.user.id
+          });
+        } catch (error) {
+          console.error("lead_status_executive_notification_failed", {
+            leadId: lead.id,
+            error
+          });
+        }
 
-        await triggerExecutiveLoanStatusUpdatedNotification({
-          leadId: lead.id,
-          externalId: lead.externalId,
-          assignedExecutiveId: lead.assignedExecutiveId,
-          statusName: toStatus.name,
-          changedByRole: actorRole,
-          changedByUserId: req.user.id
-        });
+        try {
+          await triggerExecutiveLoanStatusUpdatedNotification({
+            leadId: lead.id,
+            externalId: lead.externalId,
+            assignedExecutiveId: lead.assignedExecutiveId,
+            statusName: toStatus.name,
+            changedByRole: actorRole,
+            changedByUserId: req.user.id
+          });
+        } catch (error) {
+          console.error("loan_status_executive_notification_failed", {
+            leadId: lead.id,
+            error
+          });
+        }
       }
 
       return ok(res, updated, "Status updated");

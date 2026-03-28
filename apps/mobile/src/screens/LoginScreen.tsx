@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Alert, StyleSheet, Text, TextInput, View } from "react-native";
 import * as LocalAuthentication from "expo-local-authentication";
 import axios from "axios";
@@ -13,6 +13,7 @@ import {
   recaptchaLoginAction,
   recaptchaSiteKey
 } from "../services/recaptcha";
+import { RecaptchaV3 } from "../components/RecaptchaV3";
 import {
   AppButton,
   AppScreen,
@@ -23,29 +24,28 @@ import {
   useTextInputStyle
 } from "../ui/primitives";
 import { spacing } from "../ui/theme";
+import { useMobileI18n } from "../i18n";
 
-const RecaptchaComponent = recaptchaBypassEnabled
-  ? null
-  : (require("../components/RecaptchaV3") as typeof import("../components/RecaptchaV3"))
-      .RecaptchaV3;
+const RecaptchaComponent = recaptchaBypassEnabled ? null : RecaptchaV3;
 
-const loginSchema = z.object({
-  email: z.string().email(),
-  password: z.string().min(8)
-});
+type LoginValues = {
+  email: string;
+  password: string;
+};
 
-type LoginValues = z.infer<typeof loginSchema>;
-
-function getLoginErrorMessage(error: unknown): string {
+function getLoginErrorMessage(
+  error: unknown,
+  t: (key: string) => string
+): string {
   if (axios.isAxiosError(error)) {
     const code = error.response?.data?.code;
     const apiMessage = error.response?.data?.message;
     if (typeof apiMessage === "string" && apiMessage.trim()) {
       if (code === "RECAPTCHA_TOKEN_REQUIRED") {
-        return "reCAPTCHA token is required. Configure the mobile site key and retry.";
+        return t("login.recaptchaRequired");
       }
       if (code === "RECAPTCHA_TOKEN_INVALID") {
-        return "reCAPTCHA verification failed. Ensure the mobile site key is valid.";
+        return t("login.recaptchaFailed");
       }
       return apiMessage;
     }
@@ -58,12 +58,13 @@ function getLoginErrorMessage(error: unknown): string {
     return error.message;
   }
 
-  return "Login failed. Check credentials or account status.";
+  return t("login.failed");
 }
 
 export function LoginScreen() {
   const colors = useAppPalette();
   const textInputStyle = useTextInputStyle();
+  const { t } = useMobileI18n();
   const login = useAuthStore((s) => s.login);
   const authNotice = useAuthStore((s) => s.authNotice);
   const clearAuthNotice = useAuthStore((s) => s.clearAuthNotice);
@@ -75,6 +76,19 @@ export function LoginScreen() {
   const [recaptchaRequestId, setRecaptchaRequestId] = useState<number | null>(null);
   const recaptchaResolveRef = useRef<((token: string | null) => void) | null>(null);
   const recaptchaTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const loginSchema = useMemo(
+    () =>
+      z.object({
+        email: z
+          .string()
+          .trim()
+          .min(1, t("validation.emailRequired"))
+          .email(t("validation.emailInvalid")),
+        password: z.string().min(8, t("validation.passwordMin"))
+      }),
+    [t]
+  );
 
   const {
     control,
@@ -134,7 +148,7 @@ export function LoginScreen() {
       if (recaptchaSiteKey) {
         recaptchaToken = await requestRecaptchaToken();
         if (!recaptchaToken) {
-          throw new Error("Unable to obtain reCAPTCHA token. Check mobile site key configuration.");
+          throw new Error(t("login.recaptchaTokenUnavailable"));
         }
       }
 
@@ -151,12 +165,12 @@ export function LoginScreen() {
 
         if (hasHardware && isEnrolled) {
           Alert.alert(
-            "Enable biometric unlock?",
-            "Use your fingerprint or face unlock on next app open.",
+            t("login.biometricEnablePromptTitle"),
+            t("login.biometricEnablePromptBody"),
             [
-              { text: "Not now", style: "cancel" },
+              { text: t("login.biometricEnableLater"), style: "cancel" },
               {
-                text: "Enable",
+                text: t("login.biometricEnableNow"),
                 onPress: () => {
                   void setBiometricEnabled(true);
                 }
@@ -166,7 +180,7 @@ export function LoginScreen() {
         }
       }
     } catch (error) {
-      setError(getLoginErrorMessage(error));
+      setError(getLoginErrorMessage(error, t));
     } finally {
       setIsSubmitting(false);
     }
@@ -195,21 +209,21 @@ export function LoginScreen() {
         />
       ) : null}
       <Card style={styles.headerCard}>
-        <SectionTitle title="Field Login" subtitle="Solar Lead Management" />
-        <Badge label="Secure Cookie Session" tone="success" />
+        <SectionTitle title={t("login.title")} subtitle={t("login.subtitle")} />
+        <Badge label={t("login.secureSession")} tone="success" />
       </Card>
 
       <Card style={styles.formCard}>
         {authNotice ? <Text style={[styles.notice, { color: colors.warning }]}>{authNotice}</Text> : null}
 
         <View style={styles.field}>
-          <Text style={[styles.label, { color: colors.text }]}>Email</Text>
+          <Text style={[styles.label, { color: colors.text }]}>{t("login.email")}</Text>
           <Controller
             control={control}
             name="email"
             render={({ field: { onChange, value } }) => (
               <TextInput
-                placeholder="you@company.com"
+                placeholder={t("login.emailPlaceholder")}
                 placeholderTextColor={colors.textMuted}
                 autoCapitalize="none"
                 keyboardType="email-address"
@@ -223,13 +237,13 @@ export function LoginScreen() {
         </View>
 
         <View style={styles.field}>
-          <Text style={[styles.label, { color: colors.text }]}>Password</Text>
+          <Text style={[styles.label, { color: colors.text }]}>{t("login.password")}</Text>
           <Controller
             control={control}
             name="password"
             render={({ field: { onChange, value } }) => (
               <TextInput
-                placeholder="Minimum 8 characters"
+                placeholder={t("login.passwordPlaceholder")}
                 placeholderTextColor={colors.textMuted}
                 secureTextEntry
                 value={value}
@@ -244,14 +258,14 @@ export function LoginScreen() {
         {error ? <Text style={[styles.error, { color: colors.danger }]}>{error}</Text> : null}
 
         <AppButton
-          title={isSubmitting ? "Signing in..." : "Login"}
+          title={isSubmitting ? t("login.signingIn") : t("login.login")}
           onPress={() => void onSubmit()}
           busy={isSubmitting}
         />
 
         {authNotice ? (
           <AppButton
-            title="Dismiss Message"
+            title={t("login.dismissMessage")}
             kind="ghost"
             onPress={() => {
               void clearAuthNotice();

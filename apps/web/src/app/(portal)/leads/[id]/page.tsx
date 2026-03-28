@@ -28,6 +28,12 @@ type LeadDetail = {
   recaptchaScore?: string | number | null;
   consentGiven?: boolean;
   consentTimestamp?: string | null;
+  consentIpAddress?: string | null;
+  emailOptOut?: boolean;
+  whatsappOptOut?: boolean;
+  smsDndStatus?: boolean;
+  optOutTimestamp?: string | null;
+  optOutSource?: string | null;
   district?: { id: string; name: string; state: string } | null;
   currentStatus?: { id: string; name: string } | null;
   assignedExecutive?: { id: string; fullName: string; email: string } | null;
@@ -166,6 +172,42 @@ type DownloadEnvelope = {
   };
 };
 
+const MAX_DOCUMENT_SIZE_BYTES = 10 * 1024 * 1024;
+const ALLOWED_DOCUMENT_MIME_TYPES = new Set([
+  "application/pdf",
+  "image/jpeg",
+  "image/png"
+]);
+
+function inferDocumentMimeTypeFromName(fileName: string) {
+  const lower = fileName.toLowerCase();
+  if (lower.endsWith(".pdf")) return "application/pdf";
+  if (lower.endsWith(".png")) return "image/png";
+  if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
+  return "";
+}
+
+function validateWebDocumentFile(file: File) {
+  const normalizedType = (file.type || "").toLowerCase();
+  const resolvedMimeType = ALLOWED_DOCUMENT_MIME_TYPES.has(normalizedType)
+    ? normalizedType
+    : inferDocumentMimeTypeFromName(file.name);
+
+  if (!ALLOWED_DOCUMENT_MIME_TYPES.has(resolvedMimeType)) {
+    return {
+      fileType: null as string | null,
+      error: "Unsupported file type. Only PDF, JPG, JPEG, and PNG are allowed."
+    };
+  }
+  if (file.size > MAX_DOCUMENT_SIZE_BYTES) {
+    return {
+      fileType: null as string | null,
+      error: "File size must be 10 MB or smaller."
+    };
+  }
+  return { fileType: resolvedMimeType, error: null as string | null };
+}
+
 type TabId =
   | "overview"
   | "timeline"
@@ -220,12 +262,14 @@ export default function LeadDetailPage() {
   const user = useAuthStore((state) => state.user);
   const isSuperAdmin = user?.role === "SUPER_ADMIN";
   const canWebUploadDocument = user?.role === "SUPER_ADMIN" || user?.role === "ADMIN";
+  const canViewDocumentHistory = user?.role === "SUPER_ADMIN" || user?.role === "ADMIN";
   const canViewInternalNotes =
     user?.role === "SUPER_ADMIN" ||
     user?.role === "ADMIN" ||
     user?.role === "DISTRICT_MANAGER";
   const canReassign =
     user?.role === "SUPER_ADMIN" || user?.role === "ADMIN" || user?.role === "DISTRICT_MANAGER";
+  const canSubmitQrUtr = user?.role === "FIELD_EXECUTIVE";
   const visibleTabs = useMemo(
     () => baseTabs.filter((tab) => (tab.id === "notes" ? canViewInternalNotes : true)),
     [canViewInternalNotes]
@@ -251,6 +295,7 @@ export default function LeadDetailPage() {
     type: "success" | "error";
     text: string;
   } | null>(null);
+  const [showDocumentHistory, setShowDocumentHistory] = useState(false);
   const [uploadInputKey, setUploadInputKey] = useState(0);
   const [paymentAmount, setPaymentAmount] = useState("");
   const [paymentUtrNumber, setPaymentUtrNumber] = useState("");
@@ -294,22 +339,43 @@ export default function LeadDetailPage() {
   }, [activeTab, canViewInternalNotes]);
 
   const currentExecutiveId = lead?.assignedExecutive?.id ?? "";
-  const canSubmitReassignment =
+  const isReassignment = Boolean(currentExecutiveId);
+  const hasAssignmentChange =
     Boolean(assignmentExecutiveId) &&
-    assignmentExecutiveId !== currentExecutiveId &&
-    assignmentReason.trim().length >= 5 &&
-    !assignmentLoading;
+    assignmentExecutiveId !== currentExecutiveId;
+  const hasRequiredReason = !isReassignment || assignmentReason.trim().length >= 5;
+  const canSubmitReassignment = hasAssignmentChange && hasRequiredReason && !assignmentLoading;
+  const visibleDocuments = useMemo(() => {
+    const documents = lead?.documents ?? [];
+    if (showDocumentHistory) return documents;
+    return documents.filter((document) => document.isLatest);
+  }, [lead?.documents, showDocumentHistory]);
 
   const handleReassign = async () => {
     if (!lead || !canSubmitReassignment) return;
+    const endpoint = isReassignment
+      ? `/api/leads/${lead.id}/reassign`
+      : `/api/leads/${lead.id}/assign`;
+    const confirmed = window.confirm(
+      isReassignment
+        ? "Confirm reassignment for this lead?"
+        : "Confirm manual assignment for this lead?"
+    );
+    if (!confirmed) return;
+
     setAssignmentLoading(true);
     setAssignmentMessage(null);
     try {
-      await api.patch(`/api/leads/${lead.id}`, {
+      await api.post(endpoint, {
         assignedExecutiveId: assignmentExecutiveId,
-        reassignmentReason: assignmentReason.trim()
+        ...(isReassignment ? { reason: assignmentReason.trim() } : {})
       });
-      setAssignmentMessage({ type: "success", text: "Lead reassigned successfully." });
+      setAssignmentMessage({
+        type: "success",
+        text: isReassignment
+          ? "Lead reassigned successfully."
+          : "Lead assigned successfully."
+      });
       setAssignmentReason("");
       await Promise.all([mutate(), mutateWorkload()]);
     } catch (error) {
@@ -320,7 +386,7 @@ export default function LeadDetailPage() {
   };
 
   const requestDocumentUrl = async (documentId: string) => {
-    const response = await api.get(`/api/uploads/${documentId}/download-url`);
+    const response = await api.get(`/api/documents/${documentId}/download-url`);
     return response.data as DownloadEnvelope;
   };
 
@@ -357,9 +423,14 @@ export default function LeadDetailPage() {
       setUploadMessage({ type: "error", text: "Please select a file to upload." });
       return;
     }
+    const validation = validateWebDocumentFile(uploadFile);
+    if (validation.error || !validation.fileType) {
+      setUploadMessage({ type: "error", text: validation.error ?? "Invalid file selected." });
+      return;
+    }
 
     const category = uploadCategory.trim().length >= 2 ? uploadCategory.trim() : "general";
-    const fileType = uploadFile.type || "application/octet-stream";
+    const fileType = validation.fileType;
 
     setUploadSubmitting(true);
     setUploadMessage(null);
@@ -372,8 +443,10 @@ export default function LeadDetailPage() {
       });
 
       const uploadUrl = presignResponse.data?.data?.uploadUrl as string | undefined;
-      const s3Key = presignResponse.data?.data?.s3Key as string | undefined;
-      if (!uploadUrl || !s3Key) {
+      const storagePath =
+        (presignResponse.data?.data?.storagePath as string | undefined) ??
+        (presignResponse.data?.data?.s3Key as string | undefined);
+      if (!uploadUrl || !storagePath) {
         throw new Error("Upload URL generation failed.");
       }
 
@@ -390,7 +463,8 @@ export default function LeadDetailPage() {
 
       await api.post(`/api/leads/${lead.id}/documents/complete`, {
         category,
-        s3Key,
+        storagePath,
+        s3Key: storagePath,
         fileName: uploadFile.name,
         fileType,
         fileSize: uploadFile.size
@@ -409,6 +483,13 @@ export default function LeadDetailPage() {
 
   const submitQrUtrPayment = async () => {
     if (!lead) return;
+    if (!canSubmitQrUtr) {
+      setPaymentMessage({
+        type: "error",
+        text: "Only assigned field executive can submit QR UTR payment."
+      });
+      return;
+    }
 
     const amount = Number(paymentAmount);
     if (!Number.isFinite(amount) || amount <= 0) {
@@ -571,7 +652,11 @@ export default function LeadDetailPage() {
             <textarea
               value={assignmentReason}
               onChange={(event) => setAssignmentReason(event.target.value)}
-              placeholder="Reason is required for reassignment (min 5 chars)"
+              placeholder={
+                isReassignment
+                  ? "Reason is required for reassignment (min 5 chars)"
+                  : "Optional note for assignment"
+              }
               disabled={!canReassign}
               rows={3}
               className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm disabled:opacity-60"
@@ -586,7 +671,13 @@ export default function LeadDetailPage() {
               disabled={!canSubmitReassignment}
               className="rounded-md bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-700 disabled:opacity-60"
             >
-              {assignmentLoading ? "Reassigning..." : "Reassign Lead"}
+              {assignmentLoading
+                ? isReassignment
+                  ? "Reassigning..."
+                  : "Assigning..."
+                : isReassignment
+                  ? "Reassign Lead"
+                  : "Assign Lead"}
             </button>
             {assignmentMessage ? (
               <p
@@ -670,6 +761,15 @@ export default function LeadDetailPage() {
                   "Consent Timestamp",
                   lead.consentTimestamp ? new Date(lead.consentTimestamp).toLocaleString() : null
                 )}
+                {renderField("Consent IP Address", lead.consentIpAddress)}
+                {renderField("Email Opt-Out", lead.emailOptOut)}
+                {renderField("WhatsApp Opt-Out", lead.whatsappOptOut)}
+                {renderField("SMS DND", lead.smsDndStatus)}
+                {renderField(
+                  "Opt-Out Timestamp",
+                  lead.optOutTimestamp ? new Date(lead.optOutTimestamp).toLocaleString() : null
+                )}
+                {renderField("Opt-Out Source", lead.optOutSource)}
               </div>
             </div>
             <div className="space-y-3 rounded-md border border-slate-200 p-3">
@@ -761,7 +861,7 @@ export default function LeadDetailPage() {
                   <input
                     key={uploadInputKey}
                     type="file"
-                    accept=".pdf,.jpg,.jpeg,.png,.webp,.heic,.heif"
+                    accept=".pdf,.jpg,.jpeg,.png"
                     onChange={(event) => setUploadFile(event.target.files?.[0] ?? null)}
                     className="rounded-md border border-slate-300 px-3 py-2 text-sm"
                   />
@@ -784,6 +884,21 @@ export default function LeadDetailPage() {
                 ) : null}
               </div>
             ) : null}
+            <div className="rounded-md border border-slate-200 px-3 py-2 text-sm">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-slate-600">
+                  Showing {showDocumentHistory ? "latest + previous" : "latest"} document versions.
+                </p>
+                {canViewDocumentHistory ? (
+                  <button
+                    onClick={() => setShowDocumentHistory((current) => !current)}
+                    className="rounded border border-slate-300 px-2 py-1 text-xs hover:bg-slate-50"
+                  >
+                    {showDocumentHistory ? "Hide Previous Versions" : "Show Previous Versions"}
+                  </button>
+                ) : null}
+              </div>
+            </div>
             <div className="overflow-x-auto">
               <table className="min-w-full text-sm">
                 <thead className="bg-slate-100 text-left text-xs uppercase text-slate-600">
@@ -797,43 +912,56 @@ export default function LeadDetailPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {(lead.documents ?? []).map((document) => (
-                    <tr key={document.id} className="border-t border-slate-100">
-                      <td className="px-3 py-2">
-                        <p className="font-medium">{document.fileName}</p>
-                        <p className="text-xs text-slate-500">
-                          {document.fileType} • {(document.fileSize / 1024).toFixed(1)} KB
-                        </p>
-                      </td>
-                      <td className="px-3 py-2">{document.category}</td>
-                      <td className="px-3 py-2">
-                        <p>{document.reviewStatus}</p>
-                        <p className="text-xs text-slate-500">{document.reviewNotes ?? "-"}</p>
-                      </td>
-                      <td className="px-3 py-2">{document.uploadedByUser?.fullName ?? "-"}</td>
-                      <td className="px-3 py-2">
-                        {new Date(document.createdAt).toLocaleString()}
-                      </td>
-                      <td className="px-3 py-2">
-                        <div className="flex flex-wrap gap-2">
-                          <button
-                            onClick={() => void handlePreview(document.id)}
-                            disabled={previewLoadingDocId === document.id}
-                            className="rounded border border-slate-300 px-2 py-1 text-xs hover:bg-slate-50 disabled:opacity-60"
-                          >
-                            {previewLoadingDocId === document.id ? "Loading..." : "Preview"}
-                          </button>
-                          <button
-                            onClick={() => void handleDownload(document.id)}
-                            disabled={previewLoadingDocId === document.id}
-                            className="rounded border border-slate-300 px-2 py-1 text-xs hover:bg-slate-50 disabled:opacity-60"
-                          >
-                            Download
-                          </button>
-                        </div>
+                  {visibleDocuments.length === 0 ? (
+                    <tr className="border-t border-slate-100">
+                      <td className="px-3 py-3 text-slate-500" colSpan={6}>
+                        No documents found for the selected view.
                       </td>
                     </tr>
-                  ))}
+                  ) : (
+                    visibleDocuments.map((document) => (
+                      <tr key={document.id} className="border-t border-slate-100">
+                        <td className="px-3 py-2">
+                          <p className="font-medium">{document.fileName}</p>
+                          <p className="text-xs text-slate-500">
+                            v{document.version}
+                            {document.isLatest ? " (latest)" : ""}
+                            {" • "}
+                            {document.fileType}
+                            {" • "}
+                            {(document.fileSize / 1024).toFixed(1)} KB
+                          </p>
+                        </td>
+                        <td className="px-3 py-2">{document.category}</td>
+                        <td className="px-3 py-2">
+                          <p>{document.reviewStatus}</p>
+                          <p className="text-xs text-slate-500">{document.reviewNotes ?? "-"}</p>
+                        </td>
+                        <td className="px-3 py-2">{document.uploadedByUser?.fullName ?? "-"}</td>
+                        <td className="px-3 py-2">
+                          {new Date(document.createdAt).toLocaleString()}
+                        </td>
+                        <td className="px-3 py-2">
+                          <div className="flex flex-wrap gap-2">
+                            <button
+                              onClick={() => void handlePreview(document.id)}
+                              disabled={previewLoadingDocId === document.id}
+                              className="rounded border border-slate-300 px-2 py-1 text-xs hover:bg-slate-50 disabled:opacity-60"
+                            >
+                              {previewLoadingDocId === document.id ? "Loading..." : "Preview"}
+                            </button>
+                            <button
+                              onClick={() => void handleDownload(document.id)}
+                              disabled={previewLoadingDocId === document.id}
+                              className="rounded border border-slate-300 px-2 py-1 text-xs hover:bg-slate-50 disabled:opacity-60"
+                            >
+                              Download
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))
+                  )}
                 </tbody>
               </table>
             </div>
@@ -865,30 +993,36 @@ export default function LeadDetailPage() {
           <div className="mt-4 space-y-4">
             <div className="rounded-md border border-slate-200 p-3">
               <h3 className="text-sm font-semibold">Create QR-UTR Payment</h3>
-              <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                <input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={paymentAmount}
-                  onChange={(event) => setPaymentAmount(event.target.value)}
-                  placeholder="Amount"
-                  className="rounded-md border border-slate-300 px-3 py-2 text-sm"
-                />
-                <input
-                  value={paymentUtrNumber}
-                  onChange={(event) => setPaymentUtrNumber(event.target.value)}
-                  placeholder="UTR Number"
-                  className="rounded-md border border-slate-300 px-3 py-2 text-sm"
-                />
-                <button
-                  onClick={() => void submitQrUtrPayment()}
-                  disabled={paymentSubmitting}
-                  className="rounded-md bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-700 disabled:opacity-60"
-                >
-                  {paymentSubmitting ? "Creating..." : "Create Pending Payment"}
-                </button>
-              </div>
+              {canSubmitQrUtr ? (
+                <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={paymentAmount}
+                    onChange={(event) => setPaymentAmount(event.target.value)}
+                    placeholder="Amount"
+                    className="rounded-md border border-slate-300 px-3 py-2 text-sm"
+                  />
+                  <input
+                    value={paymentUtrNumber}
+                    onChange={(event) => setPaymentUtrNumber(event.target.value)}
+                    placeholder="UTR Number"
+                    className="rounded-md border border-slate-300 px-3 py-2 text-sm"
+                  />
+                  <button
+                    onClick={() => void submitQrUtrPayment()}
+                    disabled={paymentSubmitting}
+                    className="rounded-md bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-700 disabled:opacity-60"
+                  >
+                    {paymentSubmitting ? "Creating..." : "Create Pending Payment"}
+                  </button>
+                </div>
+              ) : (
+                <p className="mt-3 text-sm text-slate-600">
+                  QR-UTR submission is allowed only for assigned field executives via mobile app.
+                </p>
+              )}
               {paymentMessage ? (
                 <p
                   className={`mt-2 text-sm ${

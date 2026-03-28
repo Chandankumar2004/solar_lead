@@ -50,11 +50,36 @@ type Pagination = {
   totalPages: number;
 };
 
+const TEMPLATE_NAME_MAX_LENGTH = 120;
+const TEMPLATE_SUBJECT_MAX_LENGTH = 200;
+const TEMPLATE_BODY_MAX_LENGTH = 5_000;
+const INTERNAL_TITLE_MAX_LENGTH = 120;
+const INTERNAL_BODY_MAX_LENGTH = 500;
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 const fetcher = (url: string) => api.get(url).then((r) => r.data);
 
 function extractApiMessage(error: unknown) {
-  const maybe = error as { response?: { data?: { message?: string } } };
+  const maybe = error as {
+    response?: {
+      data?: {
+        message?: string;
+        error?: {
+          details?: Array<{ message?: string }>;
+        };
+      };
+    };
+  };
+  const detailedMessage = maybe.response?.data?.error?.details?.[0]?.message;
+  if (typeof detailedMessage === "string" && detailedMessage.trim().length > 0) {
+    return detailedMessage.trim();
+  }
   return maybe.response?.data?.message ?? "Operation failed";
+}
+
+function isUuid(value: string) {
+  return UUID_PATTERN.test(value);
 }
 
 export default function NotificationsPage() {
@@ -182,14 +207,61 @@ export default function NotificationsPage() {
     event.preventDefault();
     if (!canManageTemplates) return;
 
+    const normalizedName = templateName.trim();
+    const normalizedSubject = templateSubject.trim();
+    const normalizedBody = templateBody.trim();
+
+    if (normalizedName.length < 2) {
+      setTemplateMessage({
+        type: "error",
+        text: "Template name must be at least 2 characters."
+      });
+      return;
+    }
+    if (normalizedName.length > TEMPLATE_NAME_MAX_LENGTH) {
+      setTemplateMessage({
+        type: "error",
+        text: `Template name cannot exceed ${TEMPLATE_NAME_MAX_LENGTH} characters.`
+      });
+      return;
+    }
+    if (normalizedBody.length < 3) {
+      setTemplateMessage({
+        type: "error",
+        text: "Template body must be at least 3 characters."
+      });
+      return;
+    }
+    if (normalizedBody.length > TEMPLATE_BODY_MAX_LENGTH) {
+      setTemplateMessage({
+        type: "error",
+        text: `Template body cannot exceed ${TEMPLATE_BODY_MAX_LENGTH} characters.`
+      });
+      return;
+    }
+    if (normalizedSubject.length > TEMPLATE_SUBJECT_MAX_LENGTH) {
+      setTemplateMessage({
+        type: "error",
+        text: `Template subject cannot exceed ${TEMPLATE_SUBJECT_MAX_LENGTH} characters.`
+      });
+      return;
+    }
+    if (formChannel === "EMAIL" && normalizedSubject.length === 0) {
+      setTemplateMessage({
+        type: "error",
+        text: "Email template subject is required."
+      });
+      return;
+    }
+
     setTemplateSubmitting(true);
     setTemplateMessage(null);
     try {
       const payload = {
-        name: templateName,
+        name: normalizedName,
         channel: formChannel,
-        subject: templateSubject.trim().length ? templateSubject.trim() : null,
-        bodyTemplate: templateBody,
+        subject: normalizedSubject.length ? normalizedSubject : null,
+        bodyTemplate: normalizedBody,
         isActive: formIsActive
       };
       if (editingTemplateId) {
@@ -236,10 +308,18 @@ export default function NotificationsPage() {
   };
 
   const onRenderPreview = async () => {
-    if (!editingTemplateId || !templateLeadPreviewId.trim()) {
+    const leadId = templateLeadPreviewId.trim();
+    if (!editingTemplateId || !leadId) {
       setTemplateMessage({
         type: "error",
         text: "Enter a lead ID and select a template to render preview."
+      });
+      return;
+    }
+    if (!isUuid(leadId)) {
+      setTemplateMessage({
+        type: "error",
+        text: "Lead ID must be a valid UUID."
       });
       return;
     }
@@ -247,7 +327,7 @@ export default function NotificationsPage() {
       const response = await api.post(
         `/api/notifications/templates/${editingTemplateId}/render`,
         {
-          leadId: templateLeadPreviewId.trim()
+          leadId
         }
       );
       const rendered = response.data?.data?.rendered as
@@ -274,11 +354,27 @@ export default function NotificationsPage() {
   const onInternalSubmit = async (event: FormEvent) => {
     event.preventDefault();
     setFeedError(null);
+
+    const title = feedTitle.trim();
+    const body = feedBody.trim();
+    if (title.length === 0 || body.length === 0) {
+      setFeedError("Title and body are required.");
+      return;
+    }
+    if (title.length > INTERNAL_TITLE_MAX_LENGTH) {
+      setFeedError(`Title cannot exceed ${INTERNAL_TITLE_MAX_LENGTH} characters.`);
+      return;
+    }
+    if (body.length > INTERNAL_BODY_MAX_LENGTH) {
+      setFeedError(`Body cannot exceed ${INTERNAL_BODY_MAX_LENGTH} characters.`);
+      return;
+    }
+
     setFeedSubmitting(true);
     try {
       await api.post("/api/notifications/internal", {
-        title: feedTitle,
-        body: feedBody
+        title,
+        body
       });
       setFeedTitle("");
       setFeedBody("");
@@ -441,6 +537,7 @@ export default function NotificationsPage() {
                 placeholder="Template name"
                 className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
                 disabled={!canManageTemplates}
+                maxLength={TEMPLATE_NAME_MAX_LENGTH}
                 required
               />
               <select
@@ -459,14 +556,16 @@ export default function NotificationsPage() {
                 placeholder="Subject (required for email)"
                 className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
                 disabled={!canManageTemplates}
+                maxLength={TEMPLATE_SUBJECT_MAX_LENGTH}
               />
               <textarea
                 value={templateBody}
                 onChange={(event) => setTemplateBody(event.target.value)}
-                placeholder="Body template (use {{customer_name}}, {{lead_id}}, {{status}})"
+                placeholder="Body template (use {{customerName}} or {{customer_name}}, {{leadId}} or {{lead_id}}, {{status}}, {{executiveName}})"
                 rows={6}
                 className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
                 disabled={!canManageTemplates}
+                maxLength={TEMPLATE_BODY_MAX_LENGTH}
                 required
               />
               <label className="flex items-center gap-2 text-sm text-slate-700">
@@ -740,6 +839,7 @@ export default function NotificationsPage() {
                     onChange={(event) => setFeedTitle(event.target.value)}
                     placeholder="Title"
                     className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                    maxLength={INTERNAL_TITLE_MAX_LENGTH}
                     required
                   />
                   <textarea
@@ -748,6 +848,7 @@ export default function NotificationsPage() {
                     placeholder="Body"
                     rows={4}
                     className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                    maxLength={INTERNAL_BODY_MAX_LENGTH}
                     required
                   />
                   {feedError ? <p className="text-sm text-rose-600">{feedError}</p> : null}

@@ -2,12 +2,12 @@ import { Router } from "express";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { ok } from "../lib/http.js";
+import { env } from "../config/env.js";
 import { requireAuth } from "../middleware/auth.js";
 import { allowRoles } from "../middleware/rbac.js";
 import { prisma } from "../lib/prisma.js";
 import { validateBody, validateParams } from "../middleware/validate.js";
 import { AppError } from "../lib/errors.js";
-import { triggerDocumentPendingNotification } from "../services/notification.service.js";
 import {
   createDocumentDownloadUrl,
   createDocumentUploadUrl,
@@ -16,6 +16,7 @@ import {
 import { type LeadAccessActor, scopeLeadWhere } from "../services/lead-access.service.js";
 
 export const uploadsRouter = Router();
+const DOCUMENT_SIGNED_URL_EXPIRES_SECONDS = env.DOCUMENT_SIGNED_URL_EXPIRES_SECONDS;
 const MAX_DOCUMENT_SIZE_BYTES = 10 * 1024 * 1024;
 const ALLOWED_MIME_TYPES = new Set([
   "application/pdf",
@@ -26,6 +27,7 @@ const ALLOWED_MIME_TYPES = new Set([
 const createUploadSchema = z.object({
   leadId: z.string().uuid(),
   fileName: z.string().min(1),
+  category: z.string().trim().min(2).max(80).optional(),
   mimeType: z.string().min(3),
   sizeBytes: z.number().int().positive()
 });
@@ -51,6 +53,19 @@ function assertFileTypeAndSize(mimeType: string, sizeBytes: number) {
   }
 }
 
+function sanitizeFileName(fileName: string) {
+  return fileName.replace(/[^a-zA-Z0-9._-]/g, "_");
+}
+
+function normalizeCategory(category: string) {
+  const normalized = category
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "_")
+    .replace(/[^a-z0-9_-]/g, "_");
+  return normalized.length >= 2 ? normalized : "general";
+}
+
 async function assertLeadAccessible(leadId: string, actor: LeadAccessActor) {
   const lead = await prisma.lead.findFirst({
     where: scopeLeadWhere(actor, { id: leadId }),
@@ -68,31 +83,18 @@ uploadsRouter.post("/presign", requireAuth, validateBody(createUploadSchema), as
   assertFileTypeAndSize(parsed.mimeType, parsed.sizeBytes);
   await assertLeadAccessible(parsed.leadId, req.user!);
 
-  const fileKey = `leads/${parsed.leadId}/${randomUUID()}-${parsed.fileName}`;
+  const safeCategory = normalizeCategory(parsed.category ?? "general");
+  const safeFileName = sanitizeFileName(parsed.fileName);
+  const timestamp = new Date().toISOString().replace(/[^0-9]/g, "").slice(0, 14);
+  const fileKey = `leads/${parsed.leadId}/documents/${safeCategory}/${timestamp}_${randomUUID()}_${safeFileName}`;
   const uploadUrl = await createDocumentUploadUrl(fileKey);
-
-  const document = await prisma.document.create({
-    data: {
-      leadId: parsed.leadId,
-      category: "general",
-      s3Key: fileKey,
-      fileName: parsed.fileName,
-      fileType: parsed.mimeType,
-      fileSize: parsed.sizeBytes,
-      uploadedByUserId: req.user?.id
-    }
-  });
-
-  await triggerDocumentPendingNotification({
-    leadId: parsed.leadId,
-    documentId: document.id,
-    fileName: parsed.fileName,
-    uploadedByUserId: req.user?.id
-  });
 
   return ok(res, {
     uploadUrl,
+    storagePath: fileKey,
+    s3Key: fileKey,
     fileKey,
+    expiresInSeconds: DOCUMENT_SIGNED_URL_EXPIRES_SECONDS,
     bucket: STORAGE_BUCKET_NAME
   });
 });
@@ -127,13 +129,18 @@ uploadsRouter.get(
       }
     }
 
-    const downloadUrl = await createDocumentDownloadUrl(document.s3Key, 300);
+    const downloadUrl = await createDocumentDownloadUrl(
+      document.s3Key,
+      DOCUMENT_SIGNED_URL_EXPIRES_SECONDS
+    );
 
     return ok(res, {
       documentId: document.id,
+      leadId: document.leadId,
       fileName: document.fileName,
       fileType: document.fileType,
-      downloadUrl
+      downloadUrl,
+      expiresInSeconds: DOCUMENT_SIGNED_URL_EXPIRES_SECONDS
     });
   }
 );

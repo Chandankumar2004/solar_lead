@@ -1,9 +1,11 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useMemo, useState } from "react";
 import { FlatList, Pressable, RefreshControl, StyleSheet, Text, View } from "react-native";
+import { useFocusEffect } from "@react-navigation/native";
 import { api } from "../services/api";
 import { useNotificationStore } from "../store/notification-store";
 import { AppScreen, Badge, Card, SectionTitle, useAppPalette } from "../ui/primitives";
 import { spacing } from "../ui/theme";
+import { useMobileI18n } from "../i18n";
 
 type FeedItem = {
   id: string;
@@ -13,14 +15,11 @@ type FeedItem = {
   createdAt: string;
 };
 
-function formatDate(value: string) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return `${date.toLocaleDateString()} ${date.toLocaleTimeString()}`;
-}
+const AUTO_REFRESH_MS = 15000;
 
 export function NotificationsScreen() {
   const colors = useAppPalette();
+  const { t, formatDateTime } = useMobileI18n();
   const unreadCount = useNotificationStore((s) => s.unreadCount);
   const localPushRecent = useNotificationStore((s) => s.recent);
   const markAllRead = useNotificationStore((s) => s.markAllRead);
@@ -28,37 +27,54 @@ export function NotificationsScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    setRefreshing(true);
+  const load = useCallback(async (options?: { silent?: boolean }) => {
+    const silent = options?.silent ?? false;
+    if (!silent) {
+      setRefreshing(true);
+    }
     setError(null);
     try {
       const response = await api.get("/api/notifications/feed");
       const data = Array.isArray(response.data?.data) ? (response.data.data as FeedItem[]) : [];
       setItems(data);
     } catch {
-      setError("Could not load notifications.");
+      setError(t("notifications.loadFailed"));
     } finally {
-      setRefreshing(false);
+      if (!silent) {
+        setRefreshing(false);
+      }
     }
-  }, []);
+  }, [t]);
 
-  useEffect(() => {
-    void load();
-  }, [load]);
+  useFocusEffect(
+    useCallback(() => {
+      void load();
+      const timer = setInterval(() => {
+        void load({ silent: true });
+      }, AUTO_REFRESH_MS);
+
+      return () => {
+        clearInterval(timer);
+      };
+    }, [load])
+  );
 
   const keyExtractor = useCallback((item: FeedItem) => item.id, []);
 
   const emptyLabel = useMemo(
-    () => (refreshing ? "Loading..." : "No notifications yet."),
-    [refreshing]
+    () => (refreshing ? t("notifications.loading") : t("notifications.empty")),
+    [refreshing, t]
   );
 
   return (
     <AppScreen style={{ paddingBottom: 0 }}>
       <Card>
-        <SectionTitle title="Notifications" subtitle="Recent communication and internal alerts" />
+        <SectionTitle title={t("notifications.title")} subtitle={t("notifications.subtitle")} />
         <View style={styles.headerMeta}>
-          <Badge label={`Unread: ${unreadCount}`} tone={unreadCount > 0 ? "warning" : "success"} />
+          <Badge
+            label={t("notifications.unread", { count: unreadCount })}
+            tone={unreadCount > 0 ? "warning" : "success"}
+          />
           {unreadCount > 0 ? (
             <Pressable
               onPress={() => {
@@ -66,27 +82,37 @@ export function NotificationsScreen() {
               }}
               style={styles.markAllButton}
             >
-              <Text style={{ color: colors.primary, fontWeight: "700" }}>Mark all read</Text>
+              <Text style={{ color: colors.primary, fontWeight: "700" }}>
+                {t("notifications.markAllRead")}
+              </Text>
             </Pressable>
           ) : null}
         </View>
       </Card>
       {localPushRecent.length > 0 ? (
         <Card>
-          <SectionTitle title="Device Push Inbox" subtitle="Latest push events received on this device" />
+          <SectionTitle
+            title={t("notifications.deviceInboxTitle")}
+            subtitle={t("notifications.deviceInboxSubtitle")}
+          />
           {localPushRecent.slice(0, 5).map((item) => (
             <View key={item.id} style={styles.localRow}>
               <View style={styles.topRow}>
-                <Badge label={item.type ?? "INTERNAL"} tone="info" />
-                <Badge label={item.isRead ? "READ" : "UNREAD"} tone={item.isRead ? "neutral" : "warning"} />
+                <Badge label={item.type ?? t("notifications.defaultType")} tone="info" />
+                <Badge
+                  label={item.isRead ? t("notifications.read") : t("notifications.unreadStatus")}
+                  tone={item.isRead ? "neutral" : "warning"}
+                />
               </View>
               <Text style={[styles.message, { color: colors.text }]}>
-                {item.title ?? "Notification"}
+                {item.title ?? t("notifications.defaultTitle")}
               </Text>
               {item.body ? (
                 <Text style={[styles.message, { color: colors.textMuted }]}>{item.body}</Text>
               ) : null}
-              <Text style={[styles.date, { color: colors.textMuted }]}>{formatDate(item.createdAt)}</Text>
+              <Text style={[styles.date, { color: colors.textMuted }]}>
+                {formatDateTime(item.createdAt)}
+              </Text>
             </View>
           ))}
         </Card>
@@ -103,7 +129,9 @@ export function NotificationsScreen() {
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
-            onRefresh={load}
+            onRefresh={() => {
+              void load();
+            }}
             tintColor={colors.primary}
           />
         }
@@ -122,14 +150,14 @@ export function NotificationsScreen() {
           return (
             <Card style={styles.rowCard}>
               <View style={styles.topRow}>
-                <Badge label={item.channel ?? "IN_APP"} tone="info" />
+                <Badge label={item.channel ?? t("notifications.defaultChannel")} tone="info" />
                 <Badge label={status} tone={tone} />
               </View>
               <Text style={[styles.message, { color: colors.text }]}>
-                {item.contentSent ?? "Notification message"}
+                {item.contentSent ?? t("notifications.defaultMessage")}
               </Text>
               <Text style={[styles.date, { color: colors.textMuted }]}>
-                {formatDate(item.createdAt)}
+                {formatDateTime(item.createdAt)}
               </Text>
             </Card>
           );
