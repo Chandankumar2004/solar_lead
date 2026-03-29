@@ -8,7 +8,12 @@ export const metadata: Metadata = {
     default: "Solar Lead",
     template: "%s | Solar Lead"
   },
-  description: "Solar panel installation lead management and consultation portal"
+  description: "Solar panel installation lead management and consultation portal",
+  icons: {
+    icon: "/favicon.ico",
+    shortcut: "/favicon.ico",
+    apple: "/favicon.png"
+  }
 };
 
 export default function RootLayout({
@@ -16,6 +21,11 @@ export default function RootLayout({
 }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en">
+      <head>
+        <link rel="icon" href="/favicon.ico" />
+        <link rel="icon" type="image/png" href="/favicon.png" />
+        <link rel="apple-touch-icon" href="/favicon.png" />
+      </head>
       <body>
         <AppProviders>{children}</AppProviders>
       </body>
